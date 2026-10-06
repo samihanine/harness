@@ -21,7 +21,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="gap-5">
+      <DialogContent className="grid-cols-[minmax(0,1fr)] gap-5">
         <DialogTitle className="text-[13px] font-medium">Settings</DialogTitle>
         {value && (
           <>
@@ -34,7 +34,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
                 value={value.aiKey}
                 onFocus={() => setRevealed(true)}
                 onChange={(e) => setValue({ ...value, aiKey: e.target.value })}
-                className="font-mono text-[12px]"
+                className="field-sizing-fixed resize-none font-mono text-[12px] break-all"
                 style={{ WebkitTextSecurity: revealed ? "none" : "disc" } as React.CSSProperties}
               />
               <span className="text-[11px] text-muted-foreground">Stored in this browser only.</span>
