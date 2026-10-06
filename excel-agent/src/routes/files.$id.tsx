@@ -536,7 +536,7 @@ function NewRowDialog({
 /** Sets (or changes) the folder where image fields store their files. */
 async function chooseImagesFolder(link: FileLink) {
   try {
-    const folder = await window.showDirectoryPicker({ mode: "readwrite", id: `images-${link.id}` });
+    const folder = await window.showDirectoryPicker({ mode: "readwrite", id: `images-${link.id.slice(0, 8)}` });
     await handles.setImages(link.id, folder);
     links.put({ ...link, imagesFolder: folder.name });
     return true;

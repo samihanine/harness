@@ -9,6 +9,13 @@ import ExcelJS from "exceljs";
 import type { Field, Row, Schema } from "./schema";
 import { coerce, labelOf } from "./schema";
 
+type TableModel = {
+  name: string;
+  tableRef: string;
+  autoFilterRef: string;
+  columns: { name: string; filterButton?: boolean; totalsRowFunction?: string; totalsRowLabel?: string }[];
+};
+
 export type SaveState = { status: "saved" | "saving" | "error"; error?: string; at?: number };
 
 const WIDTH: Partial<Record<Field["type"], number>> = { text: 48, string: 24, date: 12, boolean: 8, image: 28 };
@@ -129,6 +136,35 @@ export class ExcelFile {
     }
   }
 
+  /**
+   * Keeps the rows as an Excel table (header + data, from A1), created when missing, so the file
+   * can be filtered in Excel and used as a Power BI / Power Query table.
+   */
+  private syncTable() {
+    const sheet = this.sheet;
+    const width = Math.max(...this.columns.values());
+    const names = Array.from({ length: width }, (_, i) => text(sheet.getCell(1, i + 1).value) || `Column${i + 1}`);
+    const ref = `A1:${sheet.getColumn(width).letter}${Math.max(2, this.lastLine())}`;
+    const tables = () => (sheet as unknown as { getTables(): { table: TableModel }[] }).getTables().map((t) => t.table);
+    let table = tables()[0];
+    if (table && !/^A1:/.test(table.tableRef)) return; // a table of the user elsewhere: leave the sheet as is
+    if (!table) {
+      const used = new Set(this.workbook.worksheets.flatMap((ws) => (ws as unknown as { getTables(): { table: TableModel }[] }).getTables().map((t) => t.table.name)));
+      let name = this.schema.sheet.replace(/[^\p{L}\p{N}_]/gu, "_").replace(/^(\d)/, "_$1") || "Data";
+      for (let i = 2; used.has(name); i++) name = `${name}_${i}`;
+      sheet.addTable({ name, ref: "A1", headerRow: true, style: { theme: "TableStyleLight9", showRowStripes: true }, columns: names.map((n) => ({ name: n, filterButton: true })), rows: [] });
+      table = tables()[0];
+    }
+    table.tableRef = ref;
+    table.autoFilterRef = ref;
+    table.columns = names.map((name, i) => ({
+      ...table.columns.find((c) => c.name === name),
+      name,
+      filterButton: true,
+      ...(i === 0 ? { totalsRowLabel: "Total" } : { totalsRowFunction: "none" }),
+    }));
+  }
+
   /** Last line holding values (rowCount may include empty formatted lines). */
   private lastLine() {
     let line = this.sheet.rowCount;
@@ -222,6 +258,7 @@ export class ExcelFile {
   write() {
     this.writing = this.writing.then(async () => {
       try {
+        this.syncTable();
         const buffer = await this.workbook.xlsx.writeBuffer();
         const stream = await this.handle.createWritable();
         await stream.write(buffer);
