@@ -15,5 +15,5 @@ bun dev        # http://localhost:3202 — needs ia-agent running on http://loca
 - The file is read with ExcelJS; each change touches only its cells, then the workbook is written back
   (debounced). Changes made in Excel are picked up every few seconds.
 - Table (inline editing) and form views, search, option filters, sort — remembered per file.
-- Agent: **read** mode (sees the schema and the rows of the current view), **edit** mode (adds, updates,
-  deletes rows; every change can be undone from the chat).
+- Agent: sees the schema and the rows of the current view, and adds, updates or deletes rows (every
+  change can be undone from the chat). The + button opens a form for a new row.

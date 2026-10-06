@@ -5,12 +5,10 @@ import {
   ArrowUpIcon,
   CheckIcon,
   CloudAlertIcon,
-  EyeIcon,
   FileSpreadsheetIcon,
   FilterIcon,
   LoaderIcon,
   PanelLeftIcon,
-  PencilIcon,
   PlusIcon,
   SearchIcon,
   TableIcon,
@@ -23,6 +21,7 @@ import { IconButton } from "@/components/icon-button";
 import { EmptyState } from "@/components/page";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TINTS } from "@/lib/colors";
@@ -78,17 +77,13 @@ function Editor({ link, schema, excel, images }: { link: FileLink; schema: Schem
     }
   };
   const change = (row: Row, field: string, value: unknown) => run(() => excel.update([{ id: row.id, values: { [field]: value } }]));
-  const add = () =>
-    run(() => {
-      const [row] = excel.insert([{}]);
-      setSelected(row.id);
-    });
+  const [adding, setAdding] = useState(false);
 
-  useAgent(link, schema, excel, latest, view.mode);
+  useAgent(link, schema, excel, latest);
 
   return (
     <div className="flex h-full flex-col">
-      <Toolbar link={link} schema={schema} excel={excel} view={view} setView={setView} count={rows.length} onAdd={add} />
+      <Toolbar link={link} schema={schema} excel={excel} view={view} setView={setView} count={rows.length} onAdd={() => setAdding(true)} />
       {(error || excel.save.status === "error") && (
         <p className="border-b bg-destructive/5 px-4 py-1.5 text-[12px] text-destructive">{error || excel.save.error}</p>
       )}
@@ -100,17 +95,27 @@ function Editor({ link, schema, excel, images }: { link: FileLink; schema: Schem
       ) : (
         <FormLayout schema={schema} rows={rows} selected={selected} onSelect={setSelected} images={images} onChange={change} />
       )}
+      <NewRowDialog
+        open={adding}
+        schema={schema}
+        images={images}
+        onClose={() => setAdding(false)}
+        onCreate={(values) => {
+          const [row] = excel.insert([values]);
+          setSelected(row.id);
+        }}
+      />
     </div>
   );
 }
 
 /** What the agent can see and do on this page. */
-function useAgent(link: FileLink, schema: Schema, excel: ExcelFile, latest: { current: { rows: Row[]; view: View } }, mode: View["mode"]) {
+function useAgent(link: FileLink, schema: Schema, excel: ExcelFile, latest: { current: { rows: Row[]; view: View } }) {
   const jsonl = (rows: Row[]) => rows.map((r) => JSON.stringify(r)).join("\n");
   const page = `File editor: "${link.name}" (local file ${link.fileName}, schema "${schema.name}"${schema.description ? `: ${schema.description}` : ""}).
 ${excel.rows.length} rows in total; the user's current view shows ${latest.current.rows.length} rows (${describeView(latest.current.view)}).
 excel://view holds the rows of the current view, excel://rows all rows (one JSON row per line, with its id).
-${mode === "edit" ? "Edit mode: you may add, update and delete rows." : "Read mode: you can only read; if the user asks for changes, tell them to switch the agent to Edit mode (pencil in the toolbar)."}`;
+You may add, update and delete rows.`;
 
   useAgentFeatures(
     page,
@@ -138,7 +143,6 @@ ${mode === "edit" ? "Edit mode: you may add, update and delete rows." : "Read mo
           messages: [{ role: "user", content: { type: "text", text: "Summarize the rows of the current view: counts, notable values, missing data." } }],
         })),
       ];
-      if (mode !== "edit") return items;
       const values = z.record(z.string(), z.unknown()).describe("field name → value (options: allowed values; dates: YYYY-MM-DD)");
       return [
         ...items,
@@ -183,7 +187,7 @@ ${mode === "edit" ? "Edit mode: you may add, update and delete rows." : "Read mo
         ),
       ];
     },
-    [link.id, schema, excel, mode],
+    [link.id, schema, excel],
   );
 }
 
@@ -258,14 +262,6 @@ function Toolbar({
         items={[
           { value: "table", label: "Table", icon: <TableIcon /> },
           { value: "form", label: "Form", icon: <PanelLeftIcon /> },
-        ]}
-      />
-      <Segmented
-        value={view.mode}
-        onChange={(mode) => setView({ mode })}
-        items={[
-          { value: "read", label: "Agent can read the view", icon: <EyeIcon /> },
-          { value: "edit", label: "Agent can change rows", icon: <PencilIcon /> },
         ]}
       />
       <IconButton label="Add row" onClick={onAdd}>
@@ -448,5 +444,60 @@ function FormLayout({
         )}
       </div>
     </div>
+  );
+}
+
+/** New row: a form with every field; required fields are checked on create. */
+function NewRowDialog({
+  open,
+  schema,
+  images,
+  onClose,
+  onCreate,
+}: {
+  open: boolean;
+  schema: Schema;
+  images?: FileSystemDirectoryHandle;
+  onClose: () => void;
+  onCreate: (values: Record<string, unknown>) => void;
+}) {
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [error, setError] = useState("");
+  const close = () => {
+    setValues({});
+    setError("");
+    onClose();
+  };
+  const create = () => {
+    try {
+      onCreate(values);
+      close();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && close()}>
+      <DialogContent className="max-h-[85dvh] grid-cols-[minmax(0,1fr)] gap-4 overflow-y-auto sm:max-w-lg">
+        <DialogTitle className="text-[13px] font-medium">New row</DialogTitle>
+        {schema.fields.map((field) => (
+          <label key={field.name} className="flex flex-col gap-1.5">
+            <span className="text-[12px] font-medium">
+              {labelOf(field)}
+              {field.required && <span className="text-destructive/70"> *</span>}
+            </span>
+            <FieldInput variant="form" field={field} value={values[field.name]} images={images} onChange={(v) => setValues((s) => ({ ...s, [field.name]: v }))} />
+            {field.description && <span className="text-[11px] text-muted-foreground">{field.description}</span>}
+          </label>
+        ))}
+        {error && <p className="text-[12px] text-destructive">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={close}>
+            Cancel
+          </Button>
+          <Button onClick={create}>Create</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -7,11 +7,9 @@ export type View = {
   filters: Record<string, string[]>;
   sort: { field: string; direction: "asc" | "desc" } | null;
   layout: "table" | "form";
-  /** What the agent may do: read the view, or also change rows. */
-  mode: "read" | "edit";
 };
 
-const initial: View = { search: "", filters: {}, sort: null, layout: "table", mode: "read" };
+const initial: View = { search: "", filters: {}, sort: null, layout: "table" };
 
 /** View settings of a file, remembered in this browser. */
 export function useView(fileId: string) {
