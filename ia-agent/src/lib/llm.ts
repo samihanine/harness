@@ -6,6 +6,7 @@
  * (and one per sub-agent). A session is either a remote conversation (stateful API) or
  * a local message list replayed with every call (stateless API).
  */
+import { MODELS } from "./config";
 import { settings } from "./store";
 
 /* -------------------------------------------------------------------------- */
@@ -15,8 +16,8 @@ import { settings } from "./store";
 /** Base URL of the API. */
 const AI_BASE_URL = "https://api.openai.com/v1";
 
-/** Models offered in the composer (the first one is the default). */
-export const AI_MODELS = ["gpt-5", "gpt-6-luna"];
+/** Models offered in the composer: see MODELS in config.ts. */
+export const AI_MODELS: readonly string[] = MODELS;
 
 /**
  * Remote conversations: path that creates one (POST, body `{ name }`) and the response field

@@ -5,7 +5,7 @@ import { zipSync } from "fflate";
 
 const root = join(import.meta.dir, "..");
 const name = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).name as string;
-const skip = new Set(["node_modules", "dist", "exports", ".local", ".DS_Store"]);
+const skip = new Set(["node_modules", "dist", "exports", ".local", ".DS_Store", ".env"]);
 const files: Record<string, Uint8Array> = {};
 
 const walk = (dir: string) => {

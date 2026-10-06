@@ -141,8 +141,8 @@ To compare two sources, bind each row label to the matching column of both sourc
       ),
       server.registerTool(
         "set_pivot",
-        { description: "Replaces the pivot (rows, columns, values, filters). The result appears in research://pivot.", inputSchema: z.object({ pivot: pivotSchema }) },
-        async ({ pivot: next }) => {
+        { description: "Replaces the pivot (rows, columns, values, filters). The result appears in research://pivot.", inputSchema: pivotSchema },
+        async (next) => {
           if (!latest.current.allowMeasures && next.values.some((v) => v.expression || v.computed)) return errorResult("New measures are disabled: use model measures or aggregated columns only.");
           try {
             next.values.forEach((v) => v.computed && compile(v.computed, next));

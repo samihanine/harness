@@ -36,7 +36,7 @@ export function AgentPanel() {
   };
 
   return (
-    <div className="flex h-dvh flex-col bg-background">
+    <div className="flex h-dvh flex-col overflow-x-hidden bg-background">
       <header className="flex h-10 shrink-0 items-center gap-1 border-b px-1.5">
         <HistoryMenu
           title={conversation.title}
@@ -64,7 +64,7 @@ export function AgentPanel() {
         </IconButton>
       </header>
 
-      <main className="min-h-0 flex-1 overflow-y-auto">
+      <main className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         {conversation.items.length === 0 ? (
           <Empty host={host} onPick={setDraft} />
         ) : (

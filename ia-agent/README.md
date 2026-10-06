@@ -58,3 +58,15 @@ Prefer one JSON object per line (JSONL) for tabular resources: the agent pages a
 - `src/lib/config.ts`: limits (steps, sizes, sub-agents…).
 - Every run keeps a full trace (prompts, replies, tools, sub-agents): "View trace" on each answer;
   conversations (with traces) export as JSON.
+
+## Evaluation
+
+`evals/` runs the real harness on realistic host apps (MCP servers in memory, same tools as excel-agent /
+pbi-agent) with a real model, and checks the outcome (data changed correctly, question asked when it should…):
+
+```bash
+bun test evals --timeout 900000                  # AI_KEY from .env, model gpt-6-luna
+EVAL_MODEL=gpt-5 EVAL_ONLY=pbi bun test evals --timeout 900000
+```
+
+Full traces are written to `evals/out/` (gitignored).

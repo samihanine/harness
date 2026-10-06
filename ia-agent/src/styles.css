@@ -89,7 +89,7 @@
     @apply font-sans antialiased;
   }
   body {
-    @apply bg-background text-[13px] leading-relaxed text-foreground;
+    @apply overflow-x-hidden bg-background text-[13px] leading-relaxed text-foreground;
   }
   ::selection {
     @apply bg-foreground/15;

@@ -38,6 +38,8 @@ export type HostResource = {
   description?: string;
   mimeType?: string;
   inline: boolean;
+  /** Lines, when known (inline resources too large to include). */
+  lines?: number;
   /** URI template (RFC 6570), e.g. `table://{name}/rows`. */
   template?: boolean;
 };
@@ -60,6 +62,11 @@ export class Host {
     Host.listeners.add(onChange);
     Host.connection ??= Host.open(() => Host.listeners.forEach((listener) => listener()));
     return Host.connection;
+  }
+
+  /** Host over an already connected MCP client (tests, other transports). */
+  static fromClient(client: Client) {
+    return new Host(client);
   }
 
   private static async open(onChange: () => void): Promise<Host | null> {

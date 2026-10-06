@@ -76,7 +76,10 @@ export async function runAgent(ctx: RunContext, trace: Step, request: Request): 
     const changed: { resource: HostResource; text: string }[] = [];
     for (const resource of resources.filter((r) => r.inline)) {
       const text = await host!.read(resource.uri).catch((e: unknown) => `Unreadable: ${message(e)}`);
-      if (text.length > AGENT.inlineChars) resource.inline = false;
+      if (text.length > AGENT.inlineChars) {
+        resource.inline = false;
+        resource.lines = text.split("\n").length;
+      }
       else if (seen.get(resource.uri) !== text) changed.push({ resource, text });
       if (resource.inline) seen.set(resource.uri, text);
     }
@@ -177,6 +180,7 @@ export async function runAgent(ctx: RunContext, trace: Step, request: Request): 
 
   async function run(call: Call): Promise<ToolResult> {
     const tool = byName.get(call.name)!;
+    call = { ...call, args: wrapArgs(tool, call.args) };
     const step = child("tool", call.name, { input: call.args, label: summary(call.args) });
     try {
       let text = await invoke(tool, call.args, step);
@@ -277,6 +281,18 @@ export async function runAgent(ctx: RunContext, trace: Step, request: Request): 
     await Promise.all(Array.from({ length: Math.min(AGENT.maxParallel, tasks.length) }, worker));
     return reports.map((report, i) => `## Sub-agent ${i + 1}\n${report}`).join("\n\n");
   }
+}
+
+/**
+ * Models often flatten single-object arguments (`set_x({a, b})` for `set_x({x: {a, b}})`):
+ * when the only required key is missing, the arguments are wrapped in it.
+ */
+function wrapArgs(tool: ToolDef, args: Record<string, unknown>) {
+  const required = tool.schema.required ?? [];
+  const props = tool.schema.properties ?? {};
+  if (required.length !== 1 || required[0] in args || Object.keys(props).length !== 1) return args;
+  const inner = props[required[0]];
+  return inner?.type === "object" || inner?.properties ? { [required[0]]: args } : args;
 }
 
 function progress(log: string[], results: ToolResult[]) {

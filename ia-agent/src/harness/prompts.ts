@@ -33,7 +33,8 @@ EXAMPLES OF VALID REPLIES
 
 export const REPLY_FORMAT = tag(
   "reply_format",
-  `Reply now with ONE raw JSON object {"tools": [{"name": …, "args": {…}}]} and nothing else. Use "answer" alone to finish.`,
+  `Reply now with ONE raw JSON object and nothing else: {"tools": [{"name": …, "args": {…}}]}.
+When you are done, your final reply is still JSON: {"tools": [{"name": "answer", "args": {"text": "…"}}]}`,
 );
 
 export function toolsSection(tools: ToolDef[]) {
@@ -44,7 +45,7 @@ export function resourcesSection(resources: HostResource[]) {
   if (resources.length === 0) return "";
   const lines = resources.map(
     (r) =>
-      `- ${r.uri}${r.template ? " (template)" : ""}: ${r.name}${r.description ? `. ${r.description}` : ""}${r.inline ? " [included below]" : ""}`,
+      `- ${r.uri}${r.template ? " (template)" : ""}: ${r.name}${r.description ? `. ${r.description}` : ""}${r.inline ? " [included below]" : r.lines ? ` [${r.lines} lines, too large to include: use search, or read a range]` : ""}`,
   );
   return tag("resources", lines.join("\n"));
 }

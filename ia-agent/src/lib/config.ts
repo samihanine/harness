@@ -1,3 +1,6 @@
+/** Exact model names sent with each request (the first one is the default). */
+export const MODELS = ["gpt-6-luna", "gpt-5.5", "gpt-5", "gpt-5-mini"] as const;
+
 /** Harness tuning. Sizes are in characters (≈ 4 characters per token). */
 export const AGENT = {
   /** Tool turns allowed for one user request before the agent must answer. */

@@ -32,7 +32,7 @@ export function HistoryMenu({
 }) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="min-w-0 gap-1 px-2 font-medium" />}>
+      <DropdownMenuTrigger render={<Button variant="ghost" size="sm" className="min-w-0 shrink gap-1 px-2 font-medium" />}>
         <span className="truncate">{title}</span>
         <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
       </DropdownMenuTrigger>
