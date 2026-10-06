@@ -9,6 +9,7 @@ import {
   FilterIcon,
   LoaderIcon,
   PanelLeftIcon,
+  FolderIcon,
   PlusIcon,
   SearchIcon,
   TableIcon,
@@ -28,7 +29,7 @@ import { TINTS } from "@/lib/colors";
 import type { ExcelFile } from "@/lib/excel";
 import { labelOf } from "@/lib/schema";
 import type { Row, Schema } from "@/lib/schema";
-import { links, schemas } from "@/lib/store";
+import { handles, links, schemas } from "@/lib/store";
 import type { FileLink } from "@/lib/store";
 import { useExcel } from "@/lib/use-excel";
 import { cn } from "@/lib/utils";
@@ -58,10 +59,22 @@ function FilePage() {
     );
   if (state.status === "error" || !link || !schema)
     return <p className="p-8 text-[12px] text-destructive">{state.status === "error" ? state.error : "Not found."}</p>;
-  return <Editor link={link} schema={schema} excel={state.excel} images={state.images} />;
+  return <Editor link={link} schema={schema} excel={state.excel} images={state.images} onReload={() => void grant()} />;
 }
 
-function Editor({ link, schema, excel, images }: { link: FileLink; schema: Schema; excel: ExcelFile; images?: FileSystemDirectoryHandle }) {
+function Editor({
+  link,
+  schema,
+  excel,
+  images,
+  onReload,
+}: {
+  link: FileLink;
+  schema: Schema;
+  excel: ExcelFile;
+  images?: FileSystemDirectoryHandle;
+  onReload: () => void;
+}) {
   const [view, setView] = useView(link.id);
   const rows = applyView(excel.rows, view, schema);
   const [selected, setSelected] = useState<string | null>(null);
@@ -83,7 +96,20 @@ function Editor({ link, schema, excel, images }: { link: FileLink; schema: Schem
 
   return (
     <div className="flex h-full flex-col">
-      <Toolbar link={link} schema={schema} excel={excel} view={view} setView={setView} count={rows.length} onAdd={() => setAdding(true)} />
+      <Toolbar
+        link={link}
+        schema={schema}
+        excel={excel}
+        view={view}
+        setView={setView}
+        count={rows.length}
+        onAdd={() => setAdding(true)}
+        onImagesFolder={() =>
+          void chooseImagesFolder(link)
+            .then((changed) => changed && onReload())
+            .catch((e: Error) => setError(e.message))
+        }
+      />
       {(error || excel.save.status === "error") && (
         <p className="border-b bg-destructive/5 px-4 py-1.5 text-[12px] text-destructive">{error || excel.save.error}</p>
       )}
@@ -199,6 +225,7 @@ function Toolbar({
   setView,
   count,
   onAdd,
+  onImagesFolder,
 }: {
   link: FileLink;
   schema: Schema;
@@ -207,6 +234,7 @@ function Toolbar({
   setView: (patch: Partial<View>) => void;
   count: number;
   onAdd: () => void;
+  onImagesFolder: () => void;
 }) {
   const optionFields = schema.fields.filter((f) => f.type === "option");
   const active = Object.values(view.filters).filter((v) => v.length).length;
@@ -264,6 +292,9 @@ function Toolbar({
           { value: "form", label: "Form", icon: <PanelLeftIcon /> },
         ]}
       />
+      <IconButton label={link.imagesFolder ? `Images folder: ${link.imagesFolder} (change)` : "Choose an images folder"} onClick={onImagesFolder}>
+        <FolderIcon />
+      </IconButton>
       <IconButton label="Add row" onClick={onAdd}>
         <PlusIcon />
       </IconButton>
@@ -500,4 +531,17 @@ function NewRowDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** Sets (or changes) the folder where image fields store their files. */
+async function chooseImagesFolder(link: FileLink) {
+  try {
+    const folder = await window.showDirectoryPicker({ mode: "readwrite", id: `images-${link.id}` });
+    await handles.setImages(link.id, folder);
+    links.put({ ...link, imagesFolder: folder.name });
+    return true;
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return false;
+    throw e;
+  }
 }

@@ -189,7 +189,7 @@ function ImageInput({ value, onChange, variant, images }: InputProps) {
       <PopoverContent align="start" className="w-64 gap-2 p-2">
         {value ? <Thumbnail folder={images} name={value} className="max-h-48 w-full" /> : null}
         {!images ? (
-          <p className="text-[12px] text-muted-foreground">No images folder for this file: set one to add images.</p>
+          <p className="text-[12px] text-muted-foreground">No images folder for this file: choose one with the folder button in the toolbar.</p>
         ) : (
           <>
             <input ref={input} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && void upload(e.target.files[0])} />
