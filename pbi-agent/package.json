@@ -23,6 +23,7 @@
     "clsx": "^2.1.1",
     "echarts": "^6.1.0",
     "exceljs": "^4.4.0",
+    "fast-json-patch": "^3.1.1",
     "fflate": "^0.8.3",
     "hono": "^4.13.13",
     "idb-keyval": "^6.3.0",
