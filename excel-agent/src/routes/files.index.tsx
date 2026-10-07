@@ -18,7 +18,7 @@ function Files() {
   return (
     <Page
       title="Files"
-      subtitle="Local Excel files edited with a schema"
+      subtitle="Excel files (this computer, SharePoint, OneDrive) edited with a schema"
       actions={
         <Button size="sm" variant="outline" onClick={() => setCreating(true)}>
           <PlusIcon /> Add file
@@ -37,7 +37,7 @@ function Files() {
               <Link to="/files/$id" params={{ id: file.id }} className="min-w-0 flex-1 after:absolute after:inset-0">
                 <span className="block truncate font-medium">{file.name}</span>
                 <span className="block truncate text-[12px] text-muted-foreground">
-                  {file.fileName} · {allSchemas.find((s) => s.id === file.schemaId)?.name ?? "missing schema"}
+                  {file.source.kind === "sharepoint" ? "SharePoint · " : ""}{file.source.name} · {allSchemas.find((s) => s.id === file.schemaId)?.name ?? "missing schema"}
                 </span>
               </Link>
               <span className="text-[12px] text-muted-foreground group-hover:hidden">{ago(file.openedAt)}</span>

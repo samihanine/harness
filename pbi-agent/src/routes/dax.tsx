@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { PlayIcon } from "lucide-react";
 import { z } from "zod";
 import { errorResult, textResult, useAgentFeatures, useLatest } from "@/agent/server";
 import { NeedsDb } from "@/components/guards";
 import { ModelTree } from "@/components/model-tree";
 import { ResultTable } from "@/components/result-table";
-import { SimpleSelect } from "@/components/simple-select";
+import { SearchSelect } from "@/components/search-select";
 import { Button } from "@/components/ui/button";
 import { useDb } from "@/db/db";
 import { useSources } from "@/lib/use-source";
@@ -25,6 +25,7 @@ export const Route = createFileRoute("/dax")({
 type Run = { result?: QueryResult; error?: string; ms?: number; running?: boolean };
 
 function DaxRunner() {
+  const navigate = useNavigate();
   const data = useDb();
   const datasets = data.rows("datasets");
   const [datasetId, setDatasetId] = useState<string | null>(() => localStorage.getItem("pbi-agent:dax-dataset"));
@@ -132,12 +133,14 @@ function DaxRunner() {
     <div className="flex h-full">
       <div className="flex w-64 shrink-0 flex-col border-r">
         <div className="p-2">
-          <SimpleSelect
+          <SearchSelect
             size="sm"
             value={datasetId}
             onChange={setDatasetId}
             placeholder="Choose a dataset"
-            options={datasets.map((d) => ({ value: d.id, label: String(d.title) }))}
+            onAdd={() => void navigate({ to: "/database" })}
+            addLabel="Add a dataset"
+            options={datasets.map((d) => ({ value: d.id, label: String(d.title), recent: String(d.updated_at ?? "") }))}
           />
         </div>
         {source && <ModelTree sources={[source]} onPick={(_, f) => insert(f.ref)} />}

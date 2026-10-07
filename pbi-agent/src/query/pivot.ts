@@ -25,9 +25,9 @@ export const pivotSchema = z.object({
         field: field.optional(),
         aggregate: z.enum(AGGREGATES).optional(),
         /** Native expression of the source: DAX for remote, SQL aggregate for local. */
-        expression: z.string().optional(),
+        expression: z.string().optional().describe("new measure: only when no model measure / aggregated column fits"),
         /** Combination of other values by label: `{Sales A} - {Sales B}`, DIVIDE(a, b), ABS(x). */
-        computed: z.string().optional(),
+        computed: z.string().optional().describe("new computed value: only when the question needs it (e.g. a gap the user asked for)"),
         format: z.enum(["number", "integer", "percent", "currency"]).optional(),
       }),
     )

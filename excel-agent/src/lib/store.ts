@@ -1,25 +1,37 @@
 /**
- * Local persistence: schemas and file links in localStorage (small JSON), file and folder
+ * App persistence: schemas and file links in localStorage (small JSON), local file and folder
  * handles in IndexedDB (localStorage cannot hold them).
  */
 import { useSyncExternalStore } from "react";
 import { createStore, del, get, set } from "idb-keyval";
+import type { FileSource, ImagesSource } from "@/storage/types";
 import type { Schema } from "./schema";
 
-/** A local Excel file edited with a schema. */
+/** An Excel file (local or on SharePoint / OneDrive) edited with a schema. */
 export type FileLink = {
   id: string;
   name: string;
   schemaId: string;
-  fileName: string;
-  imagesFolder?: string;
+  source: FileSource;
+  images?: ImagesSource;
   openedAt: number;
 };
 
-function localList<T extends { id: string }>(key: string) {
+/** Links saved before storage sources existed (local only). */
+type LegacyLink = Omit<FileLink, "source" | "images"> & { fileName?: string; imagesFolder?: string; source?: FileSource; images?: ImagesSource };
+const migrate = (link: LegacyLink): FileLink => {
+  const { fileName, imagesFolder, ...rest } = link;
+  return {
+    ...rest,
+    source: link.source ?? { kind: "local", name: fileName ?? "file.xlsx" },
+    images: link.images ?? (imagesFolder ? { kind: "local", name: imagesFolder } : undefined),
+  };
+};
+
+function localList<T extends { id: string }>(key: string, upgrade: (item: T) => T = (item) => item) {
   const listeners = new Set<() => void>();
   let cache: T[] | undefined;
-  const read = () => (cache ??= JSON.parse(localStorage.getItem(key) ?? "[]") as T[]);
+  const read = () => (cache ??= (JSON.parse(localStorage.getItem(key) ?? "[]") as T[]).map(upgrade));
   const write = (items: T[]) => {
     cache = items;
     localStorage.setItem(key, JSON.stringify(items));
@@ -47,7 +59,7 @@ function localList<T extends { id: string }>(key: string) {
 }
 
 export const schemas = localList<Schema>("excel-agent:schemas");
-export const links = localList<FileLink>("excel-agent:files");
+export const links = localList<FileLink>("excel-agent:files", migrate as (item: FileLink) => FileLink);
 
 const handlesDb = createStore("excel-agent", "handles");
 export const handles = {

@@ -1,19 +1,18 @@
 /**
- * Power BI sign-in for a generic tenant with the Microsoft "Azure PowerShell" public client
- * (no app registration): device code once, then refresh tokens renewed here.
- * Refresh tokens live in .local/tokens.json (gitignored), on this machine only.
+ * Microsoft 365 sign-in (SharePoint / OneDrive files through Microsoft Graph) for a generic
+ * tenant with the Microsoft Office public client (no app registration): device code once,
+ * then refresh tokens renewed here. They live in .local/tokens.json (gitignored), on this machine only.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
 const TENANT = "organizations";
-const CLIENT_ID = "1950a258-227b-4e31-a9cf-717495945fc2"; // Microsoft Azure PowerShell (public client, Power BI / Fabric pre-authorized)
+const CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"; // Microsoft Office
 const LOGIN = `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0`;
 const STORE = ".local/tokens.json";
 
-/** Token audiences: Power BI REST + embed, Fabric REST (report definitions). */
+/** Token audiences: Microsoft Graph (files, Excel workbooks). */
 export const SCOPES = {
-  powerbi: "https://analysis.windows.net/powerbi/api/.default offline_access openid profile",
-  fabric: "https://api.fabric.microsoft.com/.default offline_access",
+  graph: "https://graph.microsoft.com/.default offline_access openid profile",
 } as const;
 export type Audience = keyof typeof SCOPES;
 
@@ -52,13 +51,13 @@ const accountOf = (token: string) => {
 
 function remember(audience: Audience, tokens: Tokens) {
   if (tokens.refresh_token) state.refreshToken = tokens.refresh_token;
-  if (audience === "powerbi") state.account = accountOf(tokens.access_token!);
+  if (audience === "graph") state.account = accountOf(tokens.access_token!);
   access.set(audience, { token: tokens.access_token!, expiresAt: Date.now() + ((tokens.expires_in ?? 3600) - 300) * 1000 });
   void save();
 }
 
 /** Valid access token (cached, renewed with the refresh token); null when a sign-in is needed. */
-export async function accessToken(audience: Audience = "powerbi") {
+export async function accessToken(audience: Audience = "graph") {
   const cached = access.get(audience);
   if (cached && cached.expiresAt > Date.now()) return { token: cached.token, expiresAt: cached.expiresAt };
   if (!state.refreshToken) return null;
@@ -69,7 +68,7 @@ export async function accessToken(audience: Audience = "powerbi") {
     scope: SCOPES[audience],
   });
   if (!tokens.access_token) {
-    if (audience === "powerbi" && /invalid_grant|interaction_required/.test(String(tokens.error))) state = {};
+    if (audience === "graph" && /invalid_grant|interaction_required/.test(String(tokens.error))) state = {};
     return null;
   }
   remember(audience, tokens);
@@ -77,7 +76,7 @@ export async function accessToken(audience: Audience = "powerbi") {
 }
 
 export async function startLogin() {
-  const device = await post("devicecode", { client_id: CLIENT_ID, scope: SCOPES.powerbi });
+  const device = await post("devicecode", { client_id: CLIENT_ID, scope: SCOPES.graph });
   if (!device.device_code) throw new Error(String(device.error_description ?? "Could not start the sign-in"));
   pending = {
     userCode: String(device.user_code),
@@ -102,7 +101,7 @@ async function poll(deviceCode: string, interval: number, code: string) {
       continue;
     }
     if (tokens.access_token) {
-      remember("powerbi", tokens);
+      remember("graph", tokens);
       pending = null;
     } else if (pending) pending.error = tokens.error_description ?? "Sign-in failed";
     return;
@@ -111,7 +110,7 @@ async function poll(deviceCode: string, interval: number, code: string) {
 
 export async function status() {
   if (pending && pending.expiresAt < Date.now()) pending = null;
-  const token = await accessToken("powerbi").catch(() => null);
+  const token = await accessToken("graph").catch(() => null);
   return { signedIn: !!token, account: token ? state.account : undefined, pending };
 }
 

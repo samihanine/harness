@@ -106,6 +106,7 @@ export function buildLayout(report: BuilderReport, model: ModelContent) {
   return {
     id: 0,
     sections: report.pages.map((page, ordinal) => ({
+      id: ordinal,
       name: page.name,
       displayName: page.displayName,
       ordinal,
@@ -124,7 +125,14 @@ export function buildLayout(report: BuilderReport, model: ModelContent) {
         filters: JSON.stringify(visualFilters(visual)),
       })),
     })),
-    config: JSON.stringify({ version: "5.43", activeSectionIndex: 0, defaultDrillFilterOtherVisuals: true, settings: { useStylableVisualContainerHeader: true } }),
+    config: JSON.stringify({
+      version: "5.43",
+      themeCollection: {},
+      activeSectionIndex: 0,
+      modelExtensions: [],
+      defaultDrillFilterOtherVisuals: true,
+      settings: { useNewFilterPaneExperience: true, allowChangeFilterTypes: true, useStylableVisualContainerHeader: true },
+    }),
     layoutOptimization: 0,
     filters: "[]",
   };

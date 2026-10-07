@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
@@ -37,26 +38,29 @@ export function HistoryMenu({
         <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
       </DropdownMenuTrigger>
       <DropdownMenuContent className="max-h-96 w-72">
-        <DropdownMenuLabel>Conversations</DropdownMenuLabel>
-        {list.length === 0 && <p className="px-2 py-1.5 text-[12px] text-muted-foreground">No conversation yet.</p>}
-        {list.map((c) => (
-          <DropdownMenuItem key={c.id} onClick={() => onOpen(c.id)} className="group/row gap-2">
-            <MessageSquareIcon className={c.id === currentId ? "" : "opacity-40"} />
-            <span className="truncate">{c.title}</span>
-            <span className="ml-auto shrink-0 text-[11px] text-muted-foreground group-hover/row:hidden">{ago(c.updatedAt)}</span>
-            <button
-              type="button"
-              aria-label="Delete"
-              className="ml-auto hidden shrink-0 text-muted-foreground hover:text-destructive group-hover/row:block"
-              onClick={(e) => {
-                e.stopPropagation();
-                onRemove(c.id);
-              }}
-            >
-              <Trash2Icon className="size-3.5" />
-            </button>
-          </DropdownMenuItem>
-        ))}
+        {/* A group label must sit inside a group (Base UI). */}
+        <DropdownMenuGroup>
+          <DropdownMenuLabel>Conversations</DropdownMenuLabel>
+          {list.length === 0 && <p className="px-2 py-1.5 text-[12px] text-muted-foreground">No conversation yet.</p>}
+          {list.map((c) => (
+            <DropdownMenuItem key={c.id} onClick={() => onOpen(c.id)} className="group/row gap-2">
+              <MessageSquareIcon className={c.id === currentId ? "" : "opacity-40"} />
+              <span className="truncate">{c.title}</span>
+              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground group-hover/row:hidden">{ago(c.updatedAt)}</span>
+              <button
+                type="button"
+                aria-label="Delete"
+                className="ml-auto hidden shrink-0 text-muted-foreground hover:text-destructive group-hover/row:block"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemove(c.id);
+                }}
+              >
+                <Trash2Icon className="size-3.5" />
+              </button>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuGroup>
       </DropdownMenuContent>
     </DropdownMenu>
   );

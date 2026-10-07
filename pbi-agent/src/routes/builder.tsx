@@ -14,6 +14,7 @@ import { builderReports } from "@/builder/store";
 import { NeedsDb } from "@/components/guards";
 import { IconButton } from "@/components/icon-button";
 import { EmptyState } from "@/components/page";
+import { SearchSelect } from "@/components/search-select";
 import { SimpleSelect } from "@/components/simple-select";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -199,7 +200,7 @@ function Builder() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b px-3">
-        <SimpleSelect size="sm" className="w-56" value={report?.id ?? null} placeholder="Open a report…" onChange={setCurrentId} options={all.map((r) => ({ value: r.id, label: r.title }))} />
+        <SearchSelect size="sm" className="w-56" value={report?.id ?? null} placeholder="Open a report…" onChange={setCurrentId} onAdd={() => setCreating(true)} addLabel="New report" options={all.map((r) => ({ value: r.id, label: r.title }))} />
         <IconButton label="New report" onClick={() => setCreating(true)}>
           <PlusIcon />
         </IconButton>
@@ -567,7 +568,7 @@ function NewReportDialog({ open, onClose, onCreate }: { open: boolean; onClose: 
       <DialogContent className="gap-3 sm:max-w-md">
         <DialogTitle className="text-[13px] font-medium">New report</DialogTitle>
         <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
-        <SimpleSelect value={datasetId} onChange={setDatasetId} placeholder="Dataset (published semantic model)" options={remote.map((d) => ({ value: d.id, label: String(d.title) }))} />
+        <SearchSelect value={datasetId} onChange={setDatasetId} placeholder="Dataset (published semantic model)" options={remote.map((d) => ({ value: d.id, label: String(d.title), recent: String(d.updated_at ?? "") }))} />
         {remote.length === 0 && <p className="text-[11px] text-muted-foreground">The builder needs a published dataset: add a report using it in the database.</p>}
         <div className="flex flex-col gap-1">
           <span className="text-[12px] font-medium">Example reports (optional, context for the agent)</span>

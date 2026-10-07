@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { ChevronRightIcon, FileTextIcon, LinkIcon, PencilIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { db } from "@/db/db";
 import type { Row } from "@/db/schema";
 import type { ReportContent } from "@/pbi/types";
 import { IconButton } from "./icon-button";
 import { Markdown } from "./markdown";
 import { SimpleSelect } from "./simple-select";
+
+/** Guide editing (create, edit, link, delete). false = guides are read-only. */
+export const GUIDE_EDITING = true;
 
 /** "reportId/pageName/visualName" links of a guide. */
 export const linksOf = (row: Row) =>
@@ -112,7 +116,7 @@ export function GuidePanel({
     return (
       <div className="flex flex-col">
         {crumbs}
-        {unmatched && (
+        {unmatched && GUIDE_EDITING && (
           <div className="m-3 flex flex-col gap-2 rounded-lg border bg-card p-3 shadow-soft animate-in fade-in-0 slide-in-from-top-1">
             <p className="text-[12px]">
               No guide for <span className="font-medium">{visualTitle(selection.pageName, selection.visualName)}</span> yet.
@@ -134,10 +138,12 @@ export function GuidePanel({
             )}
           </div>
         )}
-        <List items={pageGuides.map((g) => ({ id: g.id, label: String(g.title), hint: `${linksOf(g).length} visual(s)`, onClick: () => setView({ kind: "guide", id: g.id }) }))} empty="No guide on this page: click a visual to write one." />
-        <Button variant="ghost" size="sm" className="m-2 w-fit text-muted-foreground" onClick={() => create(view.pageName)}>
-          <PlusIcon /> Page guide
-        </Button>
+        <List items={pageGuides.map((g) => ({ id: g.id, label: String(g.title), hint: `${linksOf(g).length} visual(s)`, onClick: () => setView({ kind: "guide", id: g.id }) }))} empty={GUIDE_EDITING ? "No guide on this page: click a visual to write one." : "No guide on this page."} />
+        {GUIDE_EDITING && (
+          <Button variant="ghost" size="sm" className="m-2 w-fit text-muted-foreground" onClick={() => create(view.pageName)}>
+            <PlusIcon /> Page guide
+          </Button>
+        )}
       </div>
     );
   }
@@ -202,7 +208,7 @@ function GuideEntry({
   const [confirm, setConfirm] = useState(false);
   useEffect(() => {
     setDraft({ title: String(guide.title ?? ""), content: String(guide.content ?? "") });
-    setEditing(!guide.content);
+    setEditing(GUIDE_EDITING && !guide.content);
     setConfirm(false);
   }, [guide.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const links = linksOf(guide);
@@ -238,9 +244,11 @@ function GuideEntry({
         <>
           <div className="flex items-start gap-2">
             <h3 className="flex-1 text-[14px] font-medium">{String(guide.title)}</h3>
-            <IconButton label="Edit" size="icon-xs" onClick={() => setEditing(true)}>
-              <PencilIcon />
-            </IconButton>
+            {GUIDE_EDITING && (
+              <IconButton label="Edit" size="icon-xs" onClick={() => setEditing(true)}>
+                <PencilIcon />
+              </IconButton>
+            )}
           </div>
           {guide.content ? <Markdown>{String(guide.content)}</Markdown> : <p className="text-[12px] text-muted-foreground">Empty guide.</p>}
         </>
@@ -250,50 +258,54 @@ function GuideEntry({
         <span className="text-[11px] text-muted-foreground">Linked to</span>
         <div className="flex flex-wrap gap-1">
           {links.map((l) => (
-            <span key={l.link} className="inline-flex h-6 items-center gap-1 rounded-md border bg-card pl-2 text-[12px]">
+            <span key={l.link} className={cn("inline-flex h-6 items-center gap-1 rounded-md border bg-card pl-2 text-[12px]", !GUIDE_EDITING && "pr-2")}>
               <button type="button" onClick={() => l.pageName && onGoTo(l.pageName, l.visualName)} className="max-w-48 truncate hover:underline">
                 {l.reportId !== reportId ? "Other report" : l.visualName ? visualTitle(l.pageName, l.visualName) : pageTitle(l.pageName) || "Report"}
               </button>
-              <button type="button" aria-label="Unlink" onClick={() => setLinks(links.filter((x) => x.link !== l.link).map((x) => x.link))} className="px-1 text-muted-foreground hover:text-foreground">
-                <XIcon className="size-3" />
-              </button>
+              {GUIDE_EDITING && (
+                <button type="button" aria-label="Unlink" onClick={() => setLinks(links.filter((x) => x.link !== l.link).map((x) => x.link))} className="px-1 text-muted-foreground hover:text-foreground">
+                  <XIcon className="size-3" />
+                </button>
+              )}
             </span>
           ))}
         </div>
-        {selection.visualName && !links.some((l) => l.visualName === selection.visualName) && (
+        {GUIDE_EDITING && selection.visualName && !links.some((l) => l.visualName === selection.visualName) && (
           <Button size="xs" variant="outline" className="w-fit" onClick={() => setLinks([...links.map((l) => l.link), `${reportId}/${selection.pageName}/${selection.visualName}`])}>
             <LinkIcon /> Link the selected visual
           </Button>
         )}
-        {candidates.length > 0 && (
+        {GUIDE_EDITING && candidates.length > 0 && (
           <SimpleSelect size="sm" value={null} placeholder="Link another visual…" onChange={(value) => setLinks([...links.map((l) => l.link), value])} options={candidates} />
         )}
       </div>
 
-      <div className="border-t pt-3">
-        {confirm ? (
-          <div className="flex items-center gap-2 text-[12px]">
-            Delete this guide?
-            <Button
-              size="xs"
-              variant="destructive"
-              onClick={() => {
-                void db.remove("guides", guide.id);
-                onDeleted();
-              }}
-            >
-              Delete
+      {GUIDE_EDITING && (
+        <div className="border-t pt-3">
+          {confirm ? (
+            <div className="flex items-center gap-2 text-[12px]">
+              Delete this guide?
+              <Button
+                size="xs"
+                variant="destructive"
+                onClick={() => {
+                  void db.remove("guides", guide.id);
+                  onDeleted();
+                }}
+              >
+                Delete
+              </Button>
+              <Button size="xs" variant="ghost" onClick={() => setConfirm(false)}>
+                Cancel
+              </Button>
+            </div>
+          ) : (
+            <Button size="xs" variant="ghost" className="text-muted-foreground" onClick={() => setConfirm(true)}>
+              <Trash2Icon /> Delete guide
             </Button>
-            <Button size="xs" variant="ghost" onClick={() => setConfirm(false)}>
-              Cancel
-            </Button>
-          </div>
-        ) : (
-          <Button size="xs" variant="ghost" className="text-muted-foreground" onClick={() => setConfirm(true)}>
-            <Trash2Icon /> Delete guide
-          </Button>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

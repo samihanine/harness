@@ -16,5 +16,5 @@
     "noFallthroughCasesInSwitch": true,
     "paths": { "@/*": ["./src/*"] }
   },
-  "include": ["src", "scripts", "vite.config.ts"]
+  "include": ["src", "server", "scripts", "tests", "vite.config.ts"]
 }

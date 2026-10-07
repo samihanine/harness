@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { richToText } from "./rich";
 import type { Row, Schema } from "./schema";
 
 export type View = {
@@ -20,6 +21,7 @@ export function useView(fileId: string) {
 }
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const plain = (field: { type: string } | undefined, value: unknown) => (field?.type === "text" ? richToText(value) : value);
 const flat = (value: unknown) => [value].flat().filter((v) => v !== null && v !== undefined).join(", ");
 
 export function applyView(rows: Row[], view: View, schema: Schema) {
@@ -27,13 +29,14 @@ export function applyView(rows: Row[], view: View, schema: Schema) {
   let out = rows.filter(
     (row) =>
       Object.entries(view.filters).every(([name, values]) => !values.length || [row[name]].flat().some((v) => values.includes(String(v)))) &&
-      (!search || schema.fields.some((f) => flat(row[f.name]).toLowerCase().includes(search))),
+      (!search || schema.fields.some((f) => flat(plain(f, row[f.name])).toLowerCase().includes(search))),
   );
   if (view.sort) {
     const { field, direction } = view.sort;
     const factor = direction === "asc" ? 1 : -1;
+    const def = schema.fields.find((f) => f.name === field);
     out = [...out].sort((a, b) => {
-      const [x, y] = [a[field], b[field]];
+      const [x, y] = [plain(def, a[field]), plain(def, b[field])];
       if (flat(x) === "" || flat(y) === "") return Number(flat(x) === "") - Number(flat(y) === "");
       if (typeof x === "number" && typeof y === "number") return (x - y) * factor;
       return collator.compare(flat(x), flat(y)) * factor;

@@ -3,12 +3,14 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
+  ExternalLinkIcon,
   CheckIcon,
   CloudAlertIcon,
   FileSpreadsheetIcon,
   FilterIcon,
   LoaderIcon,
   PanelLeftIcon,
+  CloudIcon,
   FolderIcon,
   PlusIcon,
   SearchIcon,
@@ -17,7 +19,7 @@ import {
 } from "lucide-react";
 import { z } from "zod";
 import { errorResult, textResult, useAgentFeatures, useLatest } from "@/agent/server";
-import { FieldInput } from "@/components/field-input";
+import { FieldInput, OptionBadges } from "@/components/field-input";
 import { IconButton } from "@/components/icon-button";
 import { EmptyState } from "@/components/page";
 import { Button } from "@/components/ui/button";
@@ -32,6 +34,10 @@ import type { Row, Schema } from "@/lib/schema";
 import { handles, links, schemas } from "@/lib/store";
 import type { FileLink } from "@/lib/store";
 import { useExcel } from "@/lib/use-excel";
+import type { ImageStore } from "@/storage/types";
+import { ImagesPicker } from "@/components/images-picker";
+import type { ImagesChoice } from "@/components/images-picker";
+import { MicrosoftSignIn } from "@/components/storage-ui";
 import { cn } from "@/lib/utils";
 import { applyView, describeView, useView } from "@/lib/view";
 import type { View } from "@/lib/view";
@@ -42,7 +48,7 @@ function FilePage() {
   const { id } = Route.useParams();
   const link = links.use().find((l) => l.id === id);
   const schema = schemas.use().find((s) => s.id === link?.schemaId);
-  const { state, grant } = useExcel(link, schema);
+  const { state, reopen } = useExcel(link, schema);
 
   if (state.status === "loading")
     return <p className="shimmer p-8 text-[12px]">Opening the file…</p>;
@@ -51,15 +57,24 @@ function FilePage() {
       <div className="p-8">
         <EmptyState icon={<FileSpreadsheetIcon />} title={`Allow access to ${state.fileName}`}>
           <p className="mb-3">The browser needs your permission to read and write this file.</p>
-          <Button size="sm" onClick={() => void grant()}>
+          <Button size="sm" onClick={() => void reopen()}>
             Allow access
           </Button>
         </EmptyState>
       </div>
     );
+  if (state.status === "signin")
+    return (
+      <div className="mx-auto max-w-md p-8">
+        <EmptyState icon={<CloudIcon />} title="Sign in to open this file">
+          <p className="mb-3">It is stored on SharePoint / OneDrive.</p>
+          <MicrosoftSignIn onSignedIn={() => void reopen()} />
+        </EmptyState>
+      </div>
+    );
   if (state.status === "error" || !link || !schema)
     return <p className="p-8 text-[12px] text-destructive">{state.status === "error" ? state.error : "Not found."}</p>;
-  return <Editor link={link} schema={schema} excel={state.excel} images={state.images} onReload={() => void grant()} />;
+  return <Editor link={link} schema={schema} excel={state.excel} images={state.images} onReload={() => void reopen()} />;
 }
 
 function Editor({
@@ -72,7 +87,7 @@ function Editor({
   link: FileLink;
   schema: Schema;
   excel: ExcelFile;
-  images?: FileSystemDirectoryHandle;
+  images?: ImageStore;
   onReload: () => void;
 }) {
   const [view, setView] = useView(link.id);
@@ -91,6 +106,7 @@ function Editor({
   };
   const change = (row: Row, field: string, value: unknown) => run(() => excel.update([{ id: row.id, values: { [field]: value } }]));
   const [adding, setAdding] = useState(false);
+  const [imagesOpen, setImagesOpen] = useState(false);
 
   useAgent(link, schema, excel, latest);
 
@@ -104,11 +120,7 @@ function Editor({
         setView={setView}
         count={rows.length}
         onAdd={() => setAdding(true)}
-        onImagesFolder={() =>
-          void chooseImagesFolder(link)
-            .then((changed) => changed && onReload())
-            .catch((e: Error) => setError(e.message))
-        }
+        onImagesFolder={() => setImagesOpen(true)}
       />
       {(error || excel.save.status === "error") && (
         <p className="border-b bg-destructive/5 px-4 py-1.5 text-[12px] text-destructive">{error || excel.save.error}</p>
@@ -121,6 +133,7 @@ function Editor({
       ) : (
         <FormLayout schema={schema} rows={rows} selected={selected} onSelect={setSelected} images={images} onChange={change} />
       )}
+      <ImagesDialog link={link} open={imagesOpen} onClose={() => setImagesOpen(false)} onChanged={onReload} />
       <NewRowDialog
         open={adding}
         schema={schema}
@@ -138,7 +151,7 @@ function Editor({
 /** What the agent can see and do on this page. */
 function useAgent(link: FileLink, schema: Schema, excel: ExcelFile, latest: { current: { rows: Row[]; view: View } }) {
   const jsonl = (rows: Row[]) => rows.map((r) => JSON.stringify(r)).join("\n");
-  const page = `File editor: "${link.name}" (local file ${link.fileName}, schema "${schema.name}"${schema.description ? `: ${schema.description}` : ""}).
+  const page = `File editor: "${link.name}" (${link.source.kind === "sharepoint" ? "SharePoint / OneDrive" : "local"} file ${link.source.name}, schema "${schema.name}"${schema.description ? `: ${schema.description}` : ""}).
 ${excel.rows.length} rows in total; the user's current view shows ${latest.current.rows.length} rows (${describeView(latest.current.view)}).
 excel://view holds the rows of the current view, excel://rows all rows (one JSON row per line, with its id).
 You may add, update and delete rows.`;
@@ -217,6 +230,16 @@ You may add, update and delete rows.`;
   );
 }
 
+/** SharePoint / OneDrive: the file in Excel online. Local: the file itself, which the system opens in Excel. */
+async function openFile(link: FileLink) {
+  if (link.source.kind === "sharepoint") return void window.open(link.source.webUrl, "_blank", "noopener");
+  const handle = await handles.file(link.id);
+  if (!handle) return;
+  const url = URL.createObjectURL(await handle.getFile());
+  Object.assign(document.createElement("a"), { href: url, download: link.source.name }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
 function Toolbar({
   link,
   schema,
@@ -292,11 +315,14 @@ function Toolbar({
           { value: "form", label: "Form", icon: <PanelLeftIcon /> },
         ]}
       />
-      <IconButton label={link.imagesFolder ? `Images folder: ${link.imagesFolder} (change)` : "Choose an images folder"} onClick={onImagesFolder}>
+      <IconButton label={link.images ? `Images folder: ${link.images.name} (change)` : "Choose an images folder"} onClick={onImagesFolder}>
         <FolderIcon />
       </IconButton>
       <IconButton label="Add row" onClick={onAdd}>
         <PlusIcon />
+      </IconButton>
+      <IconButton label="Open the Excel file" onClick={() => void openFile(link)}>
+        <ExternalLinkIcon />
       </IconButton>
     </div>
   );
@@ -354,7 +380,7 @@ function Table({
   rows: Row[];
   view: View;
   setView: (patch: Partial<View>) => void;
-  images?: FileSystemDirectoryHandle;
+  images?: ImageStore;
   onChange: (row: Row, field: string, value: unknown) => void;
   onOpen: (row: Row) => void;
   onDelete: (row: Row) => void;
@@ -432,28 +458,39 @@ function FormLayout({
   rows: Row[];
   selected: string | null;
   onSelect: (id: string) => void;
-  images?: FileSystemDirectoryHandle;
+  images?: ImageStore;
   onChange: (row: Row, field: string, value: unknown) => void;
 }) {
   const titleField = schema.fields.find((f) => f.type === "string") ?? schema.fields[0];
   const row = rows.find((r) => r.id === selected) ?? rows[0];
+  const optionFields = schema.fields.filter((f) => f.type === "option");
   return (
     <div className="flex min-h-0 flex-1">
-      <ul className="w-60 shrink-0 overflow-y-auto border-r p-1.5">
-        {rows.map((r) => (
-          <li key={r.id}>
-            <button
-              type="button"
-              onClick={() => onSelect(r.id)}
-              className={cn(
-                "w-full truncate rounded-md px-2 py-1.5 text-left transition-colors hover:bg-muted",
-                r.id === row?.id && "bg-muted font-medium",
-              )}
-            >
-              {String(r[titleField?.name] ?? "") || <span className="text-muted-foreground">Untitled</span>}
-            </button>
-          </li>
-        ))}
+      <ul className="flex w-80 shrink-0 flex-col gap-1.5 overflow-y-auto border-r bg-muted/30 p-2">
+        {rows.map((r) => {
+          const tags = optionFields.filter((f) => [r[f.name]].flat().some((v) => v !== null && v !== undefined && v !== ""));
+          return (
+            <li key={r.id}>
+              <button
+                type="button"
+                onClick={() => onSelect(r.id)}
+                className={cn(
+                  "flex w-full flex-col items-start gap-1.5 rounded-lg border bg-card px-3 py-2 text-left shadow-soft transition-colors hover:border-ring/40",
+                  r.id === row?.id && "border-ring ring-3 ring-ring/15",
+                )}
+              >
+                <span className="w-full truncate font-medium">{String(r[titleField?.name] ?? "") || <span className="font-normal text-muted-foreground">Untitled</span>}</span>
+                {tags.length > 0 && (
+                  <span className="flex flex-wrap gap-1">
+                    {tags.map((f) => (
+                      <OptionBadges key={f.name} field={f} value={r[f.name]} />
+                    ))}
+                  </span>
+                )}
+              </button>
+            </li>
+          );
+        })}
       </ul>
       <div className="min-w-0 flex-1 overflow-y-auto">
         {row ? (
@@ -488,7 +525,7 @@ function NewRowDialog({
 }: {
   open: boolean;
   schema: Schema;
-  images?: FileSystemDirectoryHandle;
+  images?: ImageStore;
   onClose: () => void;
   onCreate: (values: Record<string, unknown>) => void;
 }) {
@@ -533,15 +570,28 @@ function NewRowDialog({
   );
 }
 
-/** Sets (or changes) the folder where image fields store their files. */
-async function chooseImagesFolder(link: FileLink) {
-  try {
-    const folder = await window.showDirectoryPicker({ mode: "readwrite", id: `images-${link.id.slice(0, 8)}` });
-    await handles.setImages(link.id, folder);
-    links.put({ ...link, imagesFolder: folder.name });
-    return true;
-  } catch (e) {
-    if ((e as Error).name === "AbortError") return false;
-    throw e;
-  }
+/** Sets, changes or removes the images folder of a file (local or SharePoint). */
+function ImagesDialog({ link, open, onClose, onChanged }: { link: FileLink; open: boolean; onClose: () => void; onChanged: () => void }) {
+  const save = async (choice?: ImagesChoice) => {
+    if (choice?.kind === "local") await handles.setImages(link.id, choice.handle);
+    links.put({ ...link, images: choice?.kind === "local" ? { kind: "local", name: choice.handle.name } : choice });
+    onClose();
+    onChanged();
+  };
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="grid-cols-[minmax(0,1fr)] gap-3 sm:max-w-md">
+        <DialogTitle className="text-[13px] font-medium">Images folder</DialogTitle>
+        <p className="text-[12px] text-muted-foreground">
+          {link.images ? `Current: ${link.images.name} (${link.images.kind === "sharepoint" ? "SharePoint, cells hold links" : "this computer, cells hold file names"}).` : "No images folder yet."}
+        </p>
+        <ImagesPicker onChange={(choice) => choice && void save(choice)} initialKind={link.source.kind} />
+        {link.images && (
+          <Button variant="ghost" size="sm" className="w-fit text-muted-foreground" onClick={() => void save(undefined)}>
+            Remove the images folder
+          </Button>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
 }

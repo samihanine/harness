@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { MonitorPlayIcon } from "lucide-react";
 import { z } from "zod";
 import { errorResult, textResult, useAgentFeatures, useLatest } from "@/agent/server";
@@ -9,7 +9,7 @@ import type { Selection } from "@/components/guide-panel";
 import { NeedsDb } from "@/components/guards";
 import { EmptyState } from "@/components/page";
 import { useSideTab } from "@/components/side-panel";
-import { SimpleSelect } from "@/components/simple-select";
+import { SearchSelect } from "@/components/search-select";
 import { db, useDb } from "@/db/db";
 import type { Row } from "@/db/schema";
 import { embedReport, pbi, resetEmbed } from "@/pbi/embed";
@@ -36,6 +36,7 @@ const describe = (content?: ReportContent) =>
     .join("\n") ?? "Content not read yet.";
 
 function Viewer() {
+  const navigate = useNavigate();
   const data = useDb();
   const reports = data.rows("reports");
   const [reportId, setReportId] = useState<string | null>(() => localStorage.getItem("pbi-agent:viewer"));
@@ -159,7 +160,7 @@ function Viewer() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-11 shrink-0 items-center gap-2 border-b px-3">
-        <SimpleSelect size="sm" className="w-72" value={reportId} placeholder="Choose a report" onChange={setReportId} options={reports.map((r) => ({ value: r.id, label: String(r.title) }))} />
+        <SearchSelect size="sm" className="w-72" value={reportId} placeholder="Choose a report" onChange={setReportId} onAdd={() => void navigate({ to: "/database" })} addLabel="Add a report" options={reports.map((r) => ({ value: r.id, label: String(r.title), recent: String(r.updated_at ?? "") }))} />
         {error && <span className="truncate text-[12px] text-destructive">{error}</span>}
       </div>
       {row ? (

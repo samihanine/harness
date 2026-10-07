@@ -8,6 +8,7 @@ import { IconButton } from "@/components/icon-button";
 import { ModelTree } from "@/components/model-tree";
 import type { PickedField } from "@/components/model-tree";
 import { formatCell } from "@/components/result-table";
+import { SearchSelect } from "@/components/search-select";
 import { SimpleSelect } from "@/components/simple-select";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -22,7 +23,7 @@ import { cn } from "@/lib/utils";
 import { modelSummary } from "@/pbi/model";
 import type { Source } from "@/query/engine";
 import { runQuery, toCsv } from "@/query/engine";
-import { AGGREGATES, compile, emptyPivot, layout, pivotSchema, runPivot } from "@/query/pivot";
+import { AGGREGATES, compile, emptyPivot, layout, parseField, pivotSchema, runPivot } from "@/query/pivot";
 import type { Pivot, PivotResult } from "@/query/pivot";
 
 export const Route = createFileRoute("/research")({
@@ -94,7 +95,8 @@ function Research() {
   useAgentFeatures(
     `Researcher: the user compares data from several sources with a pivot table. Sources (research://sources) are datasets of the database; remote ones speak DAX, local ones SQL.
 The pivot (research://pivot) has rows/columns (labels bound to one column per source: "bindings": {sourceId: "'Table'[Column]"}), values (per source: a measure "[Name]" or a column with an aggregate, or a native expression${allowMeasures ? "; computed values combine other values by label, e.g. {Sales A} - {Sales B}, DIVIDE({x}, {y}), ABS(…)" : ""}) and filters (per source, list of values).
-To compare two sources, bind each row label to the matching column of both sources and add one value per source${allowMeasures ? " plus a computed gap" : ""}.${allowMeasures ? "" : " New measures (expression / computed) are disabled by the user."}`,
+To compare two sources, bind each row label to the matching column of both sources and add one value per source.
+Values: always prefer the model's existing measures, then a column with an aggregate. ${allowMeasures ? "New measures (expression / computed) are allowed but are a last resort: create one only when the question needs a number that no existing measure or aggregated column gives (e.g. the gap or ratio between two sources the user asked for). Do not add a gap, ratio or share by default; say what you created and why." : "New measures (expression / computed) are disabled by the user: use model measures and aggregated columns only."}`,
     (server) => [
       server.registerResource(
         "sources",
@@ -149,9 +151,14 @@ To compare two sources, bind each row label to the matching column of both sourc
           } catch (e) {
             return errorResult(e);
           }
+          // An aggregate means nothing on a model measure "[Name]".
+          next = { ...next, values: next.values.map((v) => (v.field?.startsWith("[") ? { ...v, aggregate: undefined } : v)) };
           const before = latest.current.pivot;
           setPivot(next);
           const result = await runPivot(next, latest.current.sources);
+          // research://pivot is read right after this call: give it the new pivot and result now (not after the next render).
+          latest.current = { ...latest.current, pivot: next, result };
+          setResult(result);
           const errors = result.queries.filter((q) => q.error).map((q) => `${q.source}: ${q.error}`);
           return textResult(`${result.rows.length} rows.${errors.length ? ` Errors: ${errors.join(" | ")}` : ""} See research://pivot.`, { name: "set_pivot", arguments: { pivot: before } });
         },
@@ -233,11 +240,11 @@ To compare two sources, bind each row label to the matching column of both sourc
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex flex-col gap-1.5 border-b p-2.5">
-          <Zone label="Rows" items={pivot.rows.map((d, i) => ({ key: i, label: d.label, hint: `${Object.keys(d.bindings).length}/${sources.length}`, warn: Object.keys(d.bindings).length < sources.filter((s) => pivot.values.some((v) => v.source === s.id)).length, edit: <DimEditor dim={d} sources={sources} onChange={(dim) => setPivot({ ...pivot, rows: pivot.rows.map((x, j) => (j === i ? dim : x)) })} /> }))} onRemove={(i) => setPivot({ ...pivot, rows: pivot.rows.filter((_, j) => j !== i) })} />
-          <Zone label="Columns" items={pivot.columns.map((d, i) => ({ key: i, label: d.label, hint: `${Object.keys(d.bindings).length}/${sources.length}`, edit: <DimEditor dim={d} sources={sources} onChange={(dim) => setPivot({ ...pivot, columns: pivot.columns.map((x, j) => (j === i ? dim : x)) })} /> }))} onRemove={(i) => setPivot({ ...pivot, columns: pivot.columns.filter((_, j) => j !== i) })} />
+          <Zone label="Rows" items={pivot.rows.map((d, i) => ({ key: i, label: d.label, table: dimTables(d), hint: `${Object.keys(d.bindings).length}/${sources.length}`, warn: Object.keys(d.bindings).length < sources.filter((s) => pivot.values.some((v) => v.source === s.id)).length, edit: <DimEditor dim={d} sources={sources} onChange={(dim) => setPivot({ ...pivot, rows: pivot.rows.map((x, j) => (j === i ? dim : x)) })} /> }))} onRemove={(i) => setPivot({ ...pivot, rows: pivot.rows.filter((_, j) => j !== i) })} />
+          <Zone label="Columns" items={pivot.columns.map((d, i) => ({ key: i, label: d.label, table: dimTables(d), hint: `${Object.keys(d.bindings).length}/${sources.length}`, edit: <DimEditor dim={d} sources={sources} onChange={(dim) => setPivot({ ...pivot, columns: pivot.columns.map((x, j) => (j === i ? dim : x)) })} /> }))} onRemove={(i) => setPivot({ ...pivot, columns: pivot.columns.filter((_, j) => j !== i) })} />
           <Zone
             label="Values"
-            items={pivot.values.map((v, i) => ({ key: i, label: v.label, hint: v.computed ? "ƒ" : v.aggregate, edit: <ValueEditor value={v} onChange={(value) => setPivot({ ...pivot, values: pivot.values.map((x, j) => (j === i ? value : x)) })} /> }))}
+            items={pivot.values.map((v, i) => ({ key: i, label: v.label, table: valueTable(v, sources), hint: v.computed ? "ƒ" : v.aggregate, edit: <ValueEditor value={v} onChange={(value) => setPivot({ ...pivot, values: pivot.values.map((x, j) => (j === i ? value : x)) })} /> }))}
             onRemove={(i) => setPivot({ ...pivot, values: pivot.values.filter((_, j) => j !== i) })}
             extra={
               allowMeasures && (
@@ -247,7 +254,7 @@ To compare two sources, bind each row label to the matching column of both sourc
               )
             }
           />
-          <Zone label="Filters" items={pivot.filters.map((f, i) => ({ key: i, label: `${f.field}${f.values.length ? ` = ${f.values.join(", ")}` : ""}`, edit: <FilterEditor filter={f} onChange={(filter) => setPivot({ ...pivot, filters: pivot.filters.map((x, j) => (j === i ? filter : x)) })} /> }))} onRemove={(i) => setPivot({ ...pivot, filters: pivot.filters.filter((_, j) => j !== i) })} />
+          <Zone label="Filters" items={pivot.filters.map((f, i) => ({ key: i, label: `${parseField(f.field).column}${f.values.length ? ` = ${f.values.join(", ")}` : ""}`, table: parseField(f.field).table, edit: <FilterEditor filter={f} onChange={(filter) => setPivot({ ...pivot, filters: pivot.filters.map((x, j) => (j === i ? filter : x)) })} /> }))} onRemove={(i) => setPivot({ ...pivot, filters: pivot.filters.filter((_, j) => j !== i) })} />
           <div className="flex items-center gap-3 pt-0.5 text-[12px] text-muted-foreground">
             <label className="flex items-center gap-1.5">
               <Switch size="sm" checked={allowMeasures} onCheckedChange={(on) => update({ allowMeasures: on })} /> New measures
@@ -290,14 +297,25 @@ const uniqueLabel = (pivot: Pivot, base: string) => {
   return label;
 };
 
-function Zone({ label, items, onRemove, extra }: { label: string; items: { key: number; label: string; hint?: string; warn?: boolean; edit: React.ReactNode }[]; onRemove: (index: number) => void; extra?: React.ReactNode }) {
+/** Tables a row / column is bound to (one per source, deduplicated). */
+const dimTables = (dim: Pivot["rows"][number]) => [...new Set(Object.values(dim.bindings).map((ref) => parseField(ref).table))].join(", ");
+
+/** Table of a value: the column's table, or the table holding the measure. */
+function valueTable(value: Pivot["values"][number], sources: Source[]) {
+  if (!value.field) return undefined;
+  const { table, column } = parseField(value.field);
+  return table || sources.find((s) => s.id === value.source)?.model.tables.find((t) => t.measures.some((m) => m.name === column))?.name;
+}
+
+function Zone({ label, items, onRemove, extra }: { label: string; items: { key: number; label: string; table?: string; hint?: string; warn?: boolean; edit: React.ReactNode }[]; onRemove: (index: number) => void; extra?: React.ReactNode }) {
   return (
     <div className="flex min-h-7 flex-wrap items-center gap-1">
       <span className="w-16 shrink-0 text-[11px] text-muted-foreground uppercase">{label}</span>
       {items.map((item) => (
         <Popover key={item.key}>
           <span className={cn("inline-flex h-6 items-center rounded-md border bg-card text-[12px] shadow-soft", item.warn && "border-amber-500/50")}>
-            <PopoverTrigger className="flex h-full items-center gap-1 pr-1 pl-2 hover:text-foreground">
+            <PopoverTrigger title={item.table ? `${item.table} › ${item.label}` : item.label} className="flex h-full items-center gap-1 pr-1 pl-2 hover:text-foreground">
+              {item.table && <span className="max-w-32 truncate text-muted-foreground">{item.table} ›</span>}
               {item.label}
               {item.hint && <span className="text-[10px] text-muted-foreground">{item.hint}</span>}
             </PopoverTrigger>
@@ -323,8 +341,9 @@ function DimEditor({ dim, sources, onChange }: { dim: Pivot["rows"][number]; sou
       {sources.map((s) => (
         <label key={s.id} className="flex flex-col gap-1">
           <span className="text-[11px] text-muted-foreground">{s.title}</span>
-          <SimpleSelect
+          <SearchSelect
             size="sm"
+            autoSelect={false}
             value={dim.bindings[s.id] ?? null}
             placeholder="Not mapped"
             onChange={(ref) => onChange({ ...dim, bindings: { ...dim.bindings, [s.id]: ref } })}

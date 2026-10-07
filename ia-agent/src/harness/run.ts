@@ -133,7 +133,10 @@ export async function runAgent(ctx: RunContext, trace: Step, request: Request): 
       }
 
       const final = calls.find((c) => FINAL.has(c.name));
-      if (final && calls.length === 1) {
+      // A final call next to checklist updates only: apply the checklist, then accept it (no extra turn).
+      const extras = calls.filter((c) => c !== final);
+      if (final && extras.length && extras.every((c) => c.name === "plan")) await execute(extras);
+      if (final && extras.every((c) => c.name === "plan")) {
         const step = child("tool", final.name, { input: final.args });
         end(step, { output: "" });
         if (final.name === "ask_user")

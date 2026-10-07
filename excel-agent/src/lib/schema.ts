@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { normalizeRich } from "./rich";
 
 export const FIELD_TYPES = ["string", "text", "number", "integer", "boolean", "date", "option", "image"] as const;
 export type FieldType = (typeof FIELD_TYPES)[number];
@@ -78,6 +79,8 @@ export function coerce(field: Field, value: unknown): unknown {
       if (unknown.length) throw new Error(`${field.name}: unknown option(s) ${unknown.join(", ")} (allowed: ${[...allowed].join(", ")})`);
       return field.multiple ? values : (values[0] ?? null);
     }
+    case "text":
+      return normalizeRich(value);
     default:
       return String(value);
   }

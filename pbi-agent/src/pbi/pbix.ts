@@ -173,9 +173,13 @@ const utf16Bytes = (text: string) => {
   return out;
 };
 
-const CONTENT_TYPES = `<?xml version="1.0" encoding="utf-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="json" ContentType="" /><Override PartName="/Version" ContentType="" /><Override PartName="/DiagramLayout" ContentType="" /><Override PartName="/Report/Layout" ContentType="" /><Override PartName="/Settings" ContentType="" /><Override PartName="/Metadata" ContentType="" /><Override PartName="/Connections" ContentType="" /></Types>`;
+const CONTENT_TYPES = `<?xml version="1.0" encoding="utf-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="json" ContentType="" /><Override PartName="/Version" ContentType="" /><Override PartName="/Report/Layout" ContentType="" /><Override PartName="/Settings" ContentType="" /><Override PartName="/Metadata" ContentType="" /><Override PartName="/Connections" ContentType="" /></Types>`;
 
-/** Thin .pbix connected live to a published semantic model (no data inside). */
+/**
+ * Thin .pbix connected live to a published semantic model (no data inside). No RemoteArtifacts
+ * and no model id: they would tie the file to a report / model that does not exist, and the
+ * service then never finishes loading it.
+ */
 export function writePbix(layout: unknown, datasetId: string) {
   const connections = {
     Version: 1,
@@ -184,12 +188,11 @@ export function writePbix(layout: unknown, datasetId: string) {
         Name: "EntityDataSource",
         ConnectionString: `Data Source=pbiazure://api.powerbi.com;Initial Catalog=${datasetId};Identity Provider="https://login.microsoftonline.com/common, https://analysis.windows.net/powerbi/api, 929d0ec0-7a41-4b1e-bc7c-b754a28bddcc";Integrated Security=ClaimsToken`,
         ConnectionType: "pbiServiceLive",
-        PbiServiceModelId: 0,
+        PbiServiceModelId: null,
         PbiModelVirtualServerName: "sobe_wowvirtualserver",
         PbiModelDatabaseName: datasetId,
       },
     ],
-    RemoteArtifacts: [{ DatasetId: datasetId, ReportId: crypto.randomUUID() }],
   };
   return zipSync({
     "[Content_Types].xml": strToU8(CONTENT_TYPES),
@@ -198,7 +201,6 @@ export function writePbix(layout: unknown, datasetId: string) {
     "Report/Layout": utf16Bytes(JSON.stringify(layout)),
     Settings: utf16Bytes(JSON.stringify({ Version: 4, ReportSettings: {}, QueriesSettings: { TypeDetectionEnabled: true, RelationshipImportEnabled: true } })),
     Metadata: utf16Bytes(JSON.stringify({ Version: 5, AutoCreatedRelationships: [], FileDescription: "", CreatedFrom: "Cloud", CreatedFromRelease: "2024.01" })),
-    DiagramLayout: utf16Bytes(JSON.stringify({ version: "1.1.0", diagrams: [] })),
   });
 }
 

@@ -9,10 +9,12 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "export-html": "SINGLE_FILE=1 vite build --outDir exports/html && bun scripts/rename-html.ts",
-    "export-src": "bun scripts/export-src.ts"
+    "export-src": "bun scripts/export-src.ts",
+    "start": "vite build && bun server/start.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
+    "@hono/node-server": "^2.1.3",
     "@modelcontextprotocol/client": "^2.3.1",
     "@modelcontextprotocol/core": "^2.3.1",
     "@modelcontextprotocol/ext-apps": "^2.0.3",
@@ -22,6 +24,7 @@
     "clsx": "^2.1.1",
     "exceljs": "^4.4.0",
     "fast-json-patch": "^3.1.1",
+    "hono": "^4.13.13",
     "idb-keyval": "^6.3.0",
     "lucide-react": "^1.52.0",
     "react": "^19.3.0",

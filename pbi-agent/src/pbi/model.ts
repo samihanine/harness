@@ -102,7 +102,11 @@ function inferType(min: unknown, max: unknown) {
 
 /** Compact text of a model for the agent (one line per table). */
 export function modelSummary(model: ModelContent, { expressions = true } = {}) {
-  const lines = model.tables.map((t) => {
+  // Power BI auto date tables and tables with nothing visible are noise for the agent.
+  const tables = model.tables.filter(
+    (t) => !/^(LocalDateTable|DateTableTemplate)_/.test(t.name) && (t.measures.length || t.columns.some((c) => !c.hidden)),
+  );
+  const lines = tables.map((t) => {
     const cols = t.columns.filter((c) => !c.hidden).map((c) => `${c.name}${c.dataType ? `:${c.dataType}` : ""}`);
     const ms = t.measures.map((m) => (expressions && m.expression ? `[${m.name}] = ${m.expression.replace(/\s+/g, " ").slice(0, 300)}` : `[${m.name}]`));
     return `'${t.name}'${t.description ? ` (${t.description})` : ""}\n  columns: ${cols.join(", ") || "-"}${ms.length ? `\n  measures: ${ms.join(" | ")}` : ""}`;
