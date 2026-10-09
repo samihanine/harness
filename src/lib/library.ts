@@ -55,8 +55,8 @@ export async function addReport(link: string): Promise<ReportEntry> {
   await put("reports", entry);
   if (!(await find("datasets", r.datasetId))) {
     // The report is kept even when its model cannot be read; the reason is shown in the library.
-    const error = await addReportDataset(r.datasetId, entry.datasetGroupId, r.name).then(
-      (d) => (d.groupId !== entry.datasetGroupId && patch("reports", entry.id, { datasetGroupId: d.groupId }), undefined),
+    const error = await addDataset(r.datasetId, entry.datasetGroupId, {}, `${r.name} (model)`).then(
+      (d) => (d.groupId !== entry.datasetGroupId ? patch("reports", entry.id, { datasetGroupId: d.groupId }) : undefined, undefined),
       (e) => (e instanceof Error ? e.message : String(e)),
     );
     await patch("reports", entry.id, { datasetError: error });
@@ -65,38 +65,27 @@ export async function addReport(link: string): Promise<ReportEntry> {
 }
 
 /**
- * The model of a report whose workspace is unknown (embed or app links): the given workspace, then the
- * workspaces the user can open, then the model alone (read with DAX, which only needs Build rights).
+ * Adds a semantic model. Without access to its workspace (a model shared through an app, Build right
+ * only), it is read with DAX queries, which only need the Build right; `fallbackName` names it then.
  */
-async function addReportDataset(id: string, groupId: string | undefined, reportName: string) {
-  const found = async (g?: string) => pbi(`${scope(g)}/datasets/${id}`).then(() => true, () => false);
-  let workspace = groupId;
-  if (!groupId || !(await found(groupId))) {
-    const groups: { id: string }[] = (await pbi("/groups?$top=1000").catch(() => ({ value: [] }))).value;
-    const hits = await Promise.all(groups.map(async (g) => ((await found(g.id)) ? g.id : undefined)));
-    workspace = hits.find(Boolean) ?? ((await found()) ? undefined : "none");
-  }
-  if (workspace !== "none") return addDataset(id, workspace);
-  // No workspace access (e.g. a model shared through an app): read it with DAX only.
-  const info = await readModel({ id }).catch((e) => {
-    throw new Error(`Semantic model ${id} not readable: no access to its workspace, and DAX queries fail (${e instanceof Error ? e.message : e}). Ask for Build permission on it.`);
-  });
-  const old = await find("datasets", id);
-  return put("datasets", { ...old, id, name: old?.name ?? `${reportName} (model)`, context: old?.context ?? "", info, model: modelSummary(info) });
-}
-
-export async function addDataset(linkOrId: string, groupId?: string, values: Partial<DatasetEntry> = {}): Promise<DatasetEntry> {
+export async function addDataset(linkOrId: string, groupId?: string, values: Partial<DatasetEntry> = {}, fallbackName?: string): Promise<DatasetEntry> {
   const ref = groupId ? { id: linkOrId, groupId } : parseDatasetUrl(linkOrId);
-  if (!ref.groupId) {
-    // A bare id: the model may be in any workspace the user can open.
-    const groups: { id: string }[] = (await pbi("/groups?$top=1000").catch(() => ({ value: [] }))).value;
-    const inMine = await pbi(`/datasets/${ref.id}`).then(() => true, () => false);
-    if (!inMine) ref.groupId = (await Promise.all(groups.map((g) => pbi(`/groups/${g.id}/datasets/${ref.id}`).then(() => g.id, () => undefined)))).find(Boolean);
-  }
-  const d = await pbi(`${scope(ref.groupId)}/datasets/${ref.id}`);
   const old = await find("datasets", ref.id);
-  const info = await readModel(ref);
-  return put("datasets", { ...old, id: ref.id, groupId: ref.groupId, name: d.name, context: old?.context ?? "", ...values, info, model: modelSummary(info) });
+  const d = await pbi(`${scope(ref.groupId)}/datasets/${ref.id}`).catch(() => null);
+  const target: Ref = d ? ref : { id: ref.id };
+  const info = await readModel(target).catch((e) => {
+    throw new Error(`Semantic model not readable: no access to its workspace, and DAX queries fail (${e instanceof Error ? e.message : e}). You need the Build permission on it.`);
+  });
+  return put("datasets", {
+    ...old,
+    id: ref.id,
+    groupId: target.groupId,
+    name: d?.name ?? old?.name ?? fallbackName ?? `Semantic model ${ref.id.slice(0, 8)}`,
+    context: old?.context ?? "",
+    ...values,
+    info,
+    model: modelSummary(info),
+  });
 }
 
 export async function refreshDatasetText(entry: DatasetEntry) {
