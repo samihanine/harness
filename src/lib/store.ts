@@ -12,6 +12,8 @@ export type ReportEntry = {
   url: string;
   datasetId: string;
   datasetGroupId?: string;
+  /** Why its semantic model could not be added to the library. */
+  datasetError?: string;
   /** Free text given to the AI with this report. */
   context: string;
   /** What could be read of the report (pages, visuals, fields, filters), as text for the AI. */

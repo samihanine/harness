@@ -189,6 +189,8 @@ async function fromInfoViews(ref: Ref, warnings: string[]): Promise<ModelInfo> {
       return [] as Rows;
     });
   const [tables, columns, measures, relationships] = await Promise.all(["INFO.VIEW.TABLES", "INFO.VIEW.COLUMNS", "INFO.VIEW.MEASURES", "INFO.VIEW.RELATIONSHIPS"].map(read));
+  // Nothing readable at all (no Build right): an error, not an empty model.
+  if (!tables.length && !columns.length) throw new Error(`The model cannot be queried with DAX: ${warnings.at(-1) ?? "no table returned"}`);
   const byName = new Map<string, TableInfo>();
   const table = (name: string) => {
     if (!byName.has(name)) byName.set(name, { name, columns: [], measures: [], hierarchies: [] });

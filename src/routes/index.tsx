@@ -26,7 +26,7 @@ function LibraryPage() {
           <Item
             key={r.id}
             title={r.name}
-            subtitle={`${r.editable === false ? "view only" : r.editable ? "editable" : ""} · model ${datasets.find((d) => d.id === r.datasetId)?.name ?? r.datasetId}`}
+            subtitle={`${r.editable === false ? "view only" : r.editable ? "editable" : ""} · model ${datasets.find((d) => d.id === r.datasetId)?.name ?? `${r.datasetId}${r.datasetError ? ` — not added: ${r.datasetError}` : ""}`}`}
             href={r.url}
             context={r.context}
             onContext={(context) => patch("reports", r.id, { context })}
