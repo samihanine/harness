@@ -13,6 +13,7 @@ import { find, patch, put, type DatasetEntry, type ExcelEntry, type ReportEntry 
  * pages, visual types, positions, fields, filters only).
  */
 async function snapshot(ref: Ref) {
+  if (ref.appId) return `Report of a Power BI app: its definition is not readable (only the workspace report is). Summary only (no formatting, text or theme):\n${await embedSnapshot(ref)}`;
   try {
     return definitionText(await definition(ref));
   } catch (e) {
@@ -36,17 +37,18 @@ async function embedSnapshot(ref: Ref) {
 
 export async function addReport(link: string): Promise<ReportEntry> {
   const ref = parseReportUrl(link);
-  const r = await pbi(`${scope(ref.groupId)}/reports/${ref.id}`);
+  const r = await pbi(ref.appId ? `/apps/${ref.appId}/reports/${ref.id}` : `${scope(ref.groupId)}/reports/${ref.id}`);
   const old = await find("reports", ref.id);
   const entry: ReportEntry = {
     ...old,
     id: ref.id,
     groupId: ref.groupId,
+    appId: ref.appId,
     name: r.name,
     url: r.webUrl ?? link,
     datasetId: r.datasetId,
     datasetGroupId: r.datasetWorkspaceId ?? ref.groupId,
-    editable: r.isOwnedByMe ?? undefined,
+    editable: ref.appId ? false : (r.isOwnedByMe ?? undefined),
     context: old?.context ?? "",
     snapshot: await snapshot(ref).catch((e) => `Not readable: ${e instanceof Error ? e.message : e}`),
   };

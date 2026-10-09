@@ -6,6 +6,8 @@ import type { ModelInfo } from "./model";
 export type ReportEntry = {
   id: string;
   groupId?: string;
+  /** Report of a Power BI app (read only: no definition, no editing). */
+  appId?: string;
   name: string;
   url: string;
   datasetId: string;

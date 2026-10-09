@@ -2,17 +2,20 @@
 import type * as PbiClient from "powerbi-client";
 import { pbi, powerBiToken } from "./ms";
 
-export type Ref = { id: string; groupId?: string };
+/** appId: a report opened from a Power BI app (app.powerbi.com/groups/me/apps/<appId>/reports/<id>). */
+export type Ref = { id: string; groupId?: string; appId?: string };
 export type Report = PbiClient.Report;
 type Visual = PbiClient.VisualDescriptor;
 
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 export const scope = (groupId?: string) => (groupId ? `/groups/${groupId}` : "");
 
-/** app.powerbi.com/groups/<ws>/reports/<id>/… (or a bare id) → ids. */
+/** app.powerbi.com/groups/<ws>/reports/<id>/…, …/apps/<appId>/reports/<id>/… (or a bare id) → ids. */
 export function parseReportUrl(url: string): Ref {
   const id = url.match(/reports\/([0-9a-f-]{36})/i)?.[1] ?? url.match(/reportId=([0-9a-f-]{36})/i)?.[1] ?? url.match(GUID)?.[0];
   if (!id) throw new Error("No report id in this link");
+  const app = url.match(/apps\/([0-9a-f-]{36})/i)?.[1] ?? url.match(/appId=([0-9a-f-]{36})/i)?.[1];
+  if (app) return { id: id.toLowerCase(), appId: app.toLowerCase() };
   const group = url.match(/groups\/([0-9a-f-]{36})/i)?.[1] ?? url.match(/groupId=([0-9a-f-]{36})/i)?.[1];
   return { id: id.toLowerCase(), groupId: group?.toLowerCase() };
 }
@@ -70,7 +73,7 @@ export async function embedReport(element: HTMLElement, ref: Ref, mode: EmbedMod
   const report = service.embed(element, {
     type: "report",
     id: ref.id,
-    embedUrl: `https://app.powerbi.com/reportEmbed?reportId=${ref.id}${ref.groupId ? `&groupId=${ref.groupId}` : ""}`,
+    embedUrl: `https://app.powerbi.com/reportEmbed?reportId=${ref.id}${ref.appId ? `&appId=${ref.appId}` : ref.groupId ? `&groupId=${ref.groupId}` : ""}`,
     accessToken: await powerBiToken(),
     tokenType: p.models.TokenType.Aad,
     permissions: mode === "edit" ? p.models.Permissions.All : p.models.Permissions.Read,

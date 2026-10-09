@@ -15,7 +15,7 @@ export function ReportActions({ entry, report }: { entry?: ReportEntry; report?:
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   if (!entry) return null;
-  const url = `https://app.powerbi.com/groups/${entry.groupId ?? "me"}/reports/${entry.id}`;
+  const url = entry.appId ? `https://app.powerbi.com/groups/me/apps/${entry.appId}/reports/${entry.id}` : `https://app.powerbi.com/groups/${entry.groupId ?? "me"}/reports/${entry.id}`;
   const pbix = async (close: () => void) => {
     setBusy(true);
     setError(undefined);
@@ -51,10 +51,10 @@ export function ReportActions({ entry, report }: { entry?: ReportEntry; report?:
               PDF of the current page
               <span className="block text-[11px] text-muted-foreground">Print dialog → Save as PDF</span>
             </button>
-            <button type="button" disabled={busy} onClick={() => void pbix(close)} className="rounded-md px-2 py-1.5 text-left hover:bg-muted disabled:opacity-50">
+            {!entry.appId && <button type="button" disabled={busy} onClick={() => void pbix(close)} className="rounded-md px-2 py-1.5 text-left hover:bg-muted disabled:opacity-50">
               {busy ? "Downloading…" : "Power BI file (.pbix)"}
               <span className="block text-[11px] text-muted-foreground">Opens in Power BI Desktop, connected to the online model</span>
-            </button>
+            </button>}
             {error && <p className="px-2 pt-1 text-[11px] text-destructive">{error}</p>}
           </div>
         )}
