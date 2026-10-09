@@ -70,7 +70,7 @@ function MarkdownInput({ value, onChange, variant }: InputProps) {
   const shown = String(value ?? "");
   if (variant === "form") return <RichText value={shown} onChange={onChange} />;
   return (
-    <Popover width={480} trigger={(open) => (
+    <Popover full width={480} trigger={(open) => (
       <button type="button" onClick={open} className="flex min-h-8 w-full items-start px-2 py-1.5 text-left">
         <span className="line-clamp-2 text-[12px]">{shown ? <Markdown>{shown}</Markdown> : ""}</span>
       </button>
@@ -112,7 +112,7 @@ function OptionInput({ field, value, onChange, variant }: InputProps) {
     close();
   };
   return (
-    <Popover width={220} trigger={(open) => (
+    <Popover full width={220} trigger={(open) => (
       <button type="button" onClick={open} className={`flex min-h-8 w-full flex-wrap items-center gap-1 text-left ${variant === "cell" ? "px-2 py-1" : "rounded-md border bg-card px-2 py-1"}`}>
         <OptionBadges field={field} value={value} />
         {selected.length === 0 && variant === "form" && <span className="text-muted-foreground">Select…</span>}
@@ -170,7 +170,7 @@ function ImageInput({ value, onChange, variant, upload }: InputProps) {
     );
   };
   const picker = (
-    <Popover width={320} trigger={(open) => (
+    <Popover full width={320} trigger={(open) => (
       <button type="button" onClick={open} className={`flex min-h-8 w-full items-center gap-2 text-left ${variant === "cell" ? "px-2 py-1" : "rounded-md border bg-card px-2 py-1.5"}`}>
         {variant === "cell" ? <Thumbnail value={value} className="size-7" /> : <ImageIcon className="size-4 shrink-0 text-muted-foreground" />}
         {variant === "form" && <span className="truncate text-[12px] text-muted-foreground">{value ? String(value) : "No image: click to upload or paste a link"}</span>}

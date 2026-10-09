@@ -1,20 +1,29 @@
 /// <reference types="vite/client" />
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { HeadContent, Link, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
 import { LogOutIcon, SettingsIcon } from "lucide-react";
 import { authStatus, signIn, signOut } from "@/server/ms";
 import { AI_MODELS } from "@/agent/llm";
 import { settings } from "@/lib/store";
+import { APP_TITLE, PRIMARY_COLOR, SCREENS } from "@/config";
 import css from "@/styles.css?url";
 
 export const Route = createRootRoute({
   head: () => ({
-    meta: [{ charSet: "utf-8" }, { name: "viewport", content: "width=device-width, initial-scale=1" }, { title: "Power BI workbench" }],
+    meta: [{ charSet: "utf-8" }, { name: "viewport", content: "width=device-width, initial-scale=1" }, { title: APP_TITLE }],
     links: [{ rel: "stylesheet", href: css }],
   }),
   shellComponent: Shell,
   component: Layout,
 });
+
+/** Black or white text, whichever reads best on a color (#rrggbb; anything else: white). */
+function readableOn(color: string) {
+  const m = color.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
+  if (!m) return "#ffffff";
+  const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16) / 255);
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 ? "#18181b" : "#ffffff";
+}
 
 function Shell({ children }: { children: ReactNode }) {
   return (
@@ -22,7 +31,7 @@ function Shell({ children }: { children: ReactNode }) {
       <head>
         <HeadContent />
       </head>
-      <body>
+      <body style={{ "--color-primary": PRIMARY_COLOR, "--color-primary-foreground": readableOn(PRIMARY_COLOR) } as CSSProperties}>
         {children}
         <Scripts />
       </body>
@@ -30,12 +39,14 @@ function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-const NAV = [
-  ["/", "Library"],
-  ["/viewer", "Viewer"],
-  ["/builder", "Report builder"],
-  ["/datasets", "Dataset builder"],
-] as const;
+const NAV = (
+  [
+    ["/viewer", "Report Viewer", SCREENS.viewer],
+    ["/builder", "Report builder", SCREENS.builder],
+    ["/datasets", "Dataset builder", SCREENS.datasets],
+    ["/", "Library", SCREENS.library],
+  ] as const
+).filter(([, , shown]) => shown);
 
 type Status = Awaited<ReturnType<typeof authStatus>>;
 
@@ -56,6 +67,9 @@ function Layout() {
   return (
     <div className="flex h-full flex-col">
       <header className="flex h-11 shrink-0 items-center gap-1 border-b bg-card px-3">
+        <span className="mr-3 font-semibold" style={{ color: PRIMARY_COLOR }}>
+          {APP_TITLE}
+        </span>
         {NAV.map(([to, label]) => (
           <Link key={to} to={to} className="rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground" activeProps={{ className: "bg-muted !text-foreground" }} activeOptions={{ exact: to === "/" }}>
             {label}

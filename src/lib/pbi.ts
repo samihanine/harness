@@ -47,20 +47,6 @@ export function rowsText(rows: Rows, max = 50) {
   return [columns.join(" | "), ...lines, rows.length > max ? `… ${rows.length - max} more rows` : ""].filter(Boolean).join("\n");
 }
 
-/** Model structure from DAX INFO views (works with Build permission). */
-export async function modelText(dataset: Ref) {
-  const safe = (q: string) => dax(dataset, q).catch(() => [] as Rows);
-  const [columns, measures] = await Promise.all([safe("EVALUATE INFO.VIEW.COLUMNS()"), safe("EVALUATE INFO.VIEW.MEASURES()")]);
-  const tables = new Map<string, string[]>();
-  const add = (table: string, item: string) => tables.set(table, [...(tables.get(table) ?? []), item]);
-  for (const c of columns)
-    if (!String(c.Name).startsWith("RowNumber-") && !/^(LocalDateTable|DateTableTemplate)_/.test(String(c.Table)) && !c.IsHidden)
-      add(String(c.Table), `${c.Name}:${c.DataType}`);
-  for (const m of measures) add(String(m.Table), `[${m.Name}]${m.Expression ? ` = ${String(m.Expression).replace(/\s+/g, " ").slice(0, 200)}` : ""}`);
-  if (tables.size === 0) return "(model structure not readable)";
-  return [...tables].map(([t, items]) => `'${t}': ${items.join(", ")}`).join("\n");
-}
-
 /* ------------------------------- Embedding ------------------------------- */
 
 let client: typeof PbiClient | undefined;
@@ -153,7 +139,9 @@ async function visualFields(visual: Visual) {
 /** One visual for the AI: kind, fields, filters, slicer state, and (optionally) its data. */
 export async function visualText(visual: Visual, withData: boolean) {
   const { pbi: p } = await load();
-  const lines = [`- ${visual.type} "${visual.title ?? ""}" name=${visual.name}${visual.layout.displayState?.mode === 1 ? " (hidden)" : ""}`];
+  const { x = 0, y = 0, width = 0, height = 0 } = visual.layout;
+  const box = `x=${Math.round(x)} y=${Math.round(y)} w=${Math.round(width)} h=${Math.round(height)} z=${Math.round(visual.layout.z ?? 0)}`;
+  const lines = [`- ${visual.type} "${visual.title ?? ""}" name=${visual.name} ${box}${visual.layout.displayState?.mode === 1 ? " (hidden)" : ""}`];
   const fields = await visualFields(visual);
   if (fields) lines.push(`  fields: ${fields}`);
   const filters = active(await visual.getFilters().catch(() => []));
@@ -180,9 +168,33 @@ export async function pageText(report: Report, withData = true) {
     `pages: ${pages.map((p) => `${p.displayName} (name=${p.name}${p.isActive ? ", current" : ""}${p.visibility === 1 ? ", hidden" : ""})`).join(", ")}`,
     `report filters: ${reportFilters.map(filterText).join("; ") || "none"}`,
     `current page "${page.displayName}" filters: ${pageFilters.map(filterText).join("; ") || "none"}`,
-    `visuals on the current page:`,
+    `visuals on the current page (page ${page.defaultSize?.width ?? 1280}×${page.defaultSize?.height ?? 720}, z = stacking order, higher is in front):`,
     ...parts,
+    ...layoutIssues(visuals, page.defaultSize),
   ].join("\n");
+}
+
+const BACKGROUNDS = ["shape", "basicShape", "image"];
+
+/** Overlapping visuals and visuals outside the page, so the AI sees layout mistakes. */
+export function layoutIssues(visuals: Visual[], size?: { width?: number; height?: number }) {
+  const W = size?.width ?? 1280, H = size?.height ?? 720;
+  const shown = visuals.filter((v) => v.layout.displayState?.mode !== 1);
+  const box = (v: Visual) => ({ x: v.layout.x ?? 0, y: v.layout.y ?? 0, r: (v.layout.x ?? 0) + (v.layout.width ?? 0), b: (v.layout.y ?? 0) + (v.layout.height ?? 0) });
+  const label = (v: Visual) => `"${v.title ?? v.type}" (${v.name})`;
+  const issues: string[] = [];
+  for (const v of shown) {
+    const a = box(v);
+    if (a.x < 0 || a.y < 0 || a.r > W + 1 || a.b > H + 1) issues.push(`- ${label(v)} goes outside the page (right=${Math.round(a.r)} bottom=${Math.round(a.b)})`);
+  }
+  const front = shown.filter((v) => !BACKGROUNDS.includes(v.type));
+  for (let i = 0; i < front.length; i++)
+    for (let j = i + 1; j < front.length; j++) {
+      const a = box(front[i]), b = box(front[j]);
+      const w = Math.min(a.r, b.r) - Math.max(a.x, b.x), h = Math.min(a.b, b.b) - Math.max(a.y, b.y);
+      if (w > 1 && h > 1) issues.push(`- ${label(front[i])} and ${label(front[j])} overlap (${Math.round(w)}×${Math.round(h)})`);
+    }
+  return issues.length ? ["layout problems (fix them when you change the layout):", ...issues] : ["layout: no overlap, everything inside the page"];
 }
 
 /** Every page without data: the report "snapshot" stored in the library. */

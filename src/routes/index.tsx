@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
-import { createFileRoute } from "@tanstack/react-router";
-import { CopyIcon, ExternalLinkIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
+import { Navigate, createFileRoute } from "@tanstack/react-router";
+import { SCREENS } from "@/config";
+import { downloadText, fullModelText } from "@/lib/model";
+import { CopyIcon, DownloadIcon, ExternalLinkIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { resolveFolder, imagesFolderLabel } from "@/lib/excel";
 import { addDataset, addExcel, addReport, cloneReport, refreshDatasetText } from "@/lib/library";
 import { errorText } from "@/lib/ms";
@@ -9,6 +11,11 @@ import { patch, remove, useCollection, type ExcelEntry } from "@/lib/store";
 export const Route = createFileRoute("/")({ component: Library });
 
 function Library() {
+  if (!SCREENS.library) return <Navigate to={SCREENS.viewer ? "/viewer" : SCREENS.builder ? "/builder" : "/datasets"} search={{} as never} />;
+  return <LibraryPage />;
+}
+
+function LibraryPage() {
   const reports = useCollection("reports");
   const datasets = useCollection("datasets");
   const excels = useCollection("excels");
@@ -48,7 +55,10 @@ function Library() {
           <Item
             key={d.id}
             title={d.name}
-            subtitle={d.excelId ? `from Excel ${excels.find((e) => e.id === d.excelId)?.name ?? ""}` : d.groupId ? "workspace" : "My workspace"}
+            subtitle={[
+              d.excelId ? `from Excel ${excels.find((e) => e.id === d.excelId)?.name ?? ""}` : d.groupId ? "workspace" : "My workspace",
+              d.info ? (d.info.source === "tmdl" ? "full structure" : "partial structure (no write access)") : "structure not read",
+            ].join(" · ")}
             href={`https://app.powerbi.com/${d.groupId ? `groups/${d.groupId}` : "groups/me"}/datasets/${d.id}/details`}
             context={d.context}
             onContext={(context) => patch("datasets", d.id, { context })}
@@ -56,10 +66,22 @@ function Library() {
             onRemove={() => remove("datasets", d.id)}
             extra={
               d.model && (
-                <details>
-                  <summary className="label cursor-pointer">Structure</summary>
-                  <pre className="mt-1 max-h-60 overflow-auto rounded bg-muted p-2 text-[11px] whitespace-pre-wrap">{d.model}</pre>
-                </details>
+                <>
+                  <details>
+                    <summary className="label cursor-pointer">Structure</summary>
+                    <pre className="mt-1 max-h-60 overflow-auto rounded bg-muted p-2 text-[11px] whitespace-pre-wrap">{d.model}</pre>
+                  </details>
+                  {d.info && (
+                    <div className="flex gap-1.5">
+                      <button type="button" className="btn" title="Every table, column (type, format, sample values or range), measure (DAX), relationship" onClick={() => downloadText(`${d.name} structure.md`, fullModelText(d.info!, d.name))}>
+                        <DownloadIcon /> Full structure (.md)
+                      </button>
+                      <button type="button" className="btn" onClick={() => downloadText(`${d.name} structure.json`, JSON.stringify(d.info, null, 2), "application/json")}>
+                        <DownloadIcon /> JSON
+                      </button>
+                    </div>
+                  )}
+                </>
               )
             }
           />

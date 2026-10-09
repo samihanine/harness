@@ -57,6 +57,20 @@ export const TINTS: Record<Color, string> = {
   pink: "bg-pink-500/10 text-pink-700",
 };
 
+/** Solid swatch per color (color pickers). */
+export const SWATCHES: Record<Color, string> = {
+  gray: "bg-zinc-400",
+  red: "bg-red-500",
+  orange: "bg-orange-500",
+  amber: "bg-amber-500",
+  green: "bg-emerald-500",
+  teal: "bg-teal-500",
+  blue: "bg-blue-500",
+  violet: "bg-violet-500",
+  pink: "bg-pink-500",
+};
+export const isColor = (v: unknown): v is Color => (COLORS as readonly unknown[]).includes(v);
+
 /** Values of a cell as a list (options). */
 export const listOf = (value: unknown) => (Array.isArray(value) ? value : value === null || value === undefined || value === "" ? [] : String(value).split(/\s*;\s*/)).map(String).filter(Boolean);
 

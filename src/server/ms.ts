@@ -6,6 +6,9 @@
 import { createServerFn } from "@tanstack/react-start";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 
+// Production server (`bun start`, which loads .env itself): same TLS option as in vite.config.ts.
+if (process.env.IGNORE_TLS_ERRORS === "true") process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 const CLIENT_ID = "d3590ed6-52b3-4102-aeff-aad2292ab01c"; // Microsoft Office (public client)
 const LOGIN = "https://login.microsoftonline.com/organizations/oauth2/v2.0";
 const STORE = ".local/tokens.json";
@@ -115,10 +118,14 @@ export const ms = createServerFn({ method: "POST" })
         headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { "Content-Type": "application/json" } : {}) },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
-    let response = await send(url, data.method ?? "GET", data.body);
-    for (let i = 0; response.status === 429 && i < 3; i++) {
-      await new Promise((r) => setTimeout(r, (Number(response.headers.get("retry-after")) || 2) * 1000));
-      response = await send(url, data.method ?? "GET", data.body);
+    const method = data.method ?? "GET";
+    let response = await send(url, method, data.body);
+    // Throttling, and Excel Online's passing failures ("Sorry… we ran into a problem"): retried when
+    // repeating is harmless (reads and cell writes; never row inserts / deletes).
+    const safe = method === "GET" || method === "PATCH";
+    for (let i = 0; i < 4 && (response.status === 429 || (safe && [409, 500, 502, 503, 504].includes(response.status))); i++) {
+      await new Promise((r) => setTimeout(r, (Number(response.headers.get("retry-after")) || 2 ** i) * 1000));
+      response = await send(url, method, data.body);
     }
     const location = response.headers.get("location");
     if (response.status === 202 && location && data.service === "fabric") {
@@ -201,6 +208,24 @@ export const uploadFile = createServerFn({ method: "POST" })
     const item = await r.json();
     if (!r.ok) throw new Error(item.error?.message ?? `Upload failed (${r.status})`);
     return { id: item.id as string };
+  });
+
+/**
+ * The report as a .pbix (base64). "LiveConnect": the file is connected to the online semantic model —
+ * the only download that works for reports made in the service on a model of another workspace.
+ */
+export const exportPbix = createServerFn({ method: "POST" })
+  .inputValidator((d: { id: string; groupId?: string }) => d)
+  .handler(async ({ data }) => {
+    const { token } = await accessToken("powerbi");
+    const base = `${BASES.powerbi}${data.groupId ? `/groups/${data.groupId}` : ""}/reports/${data.id}/Export`;
+    let r = await fetch(`${base}?downloadType=LiveConnect`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) r = await fetch(base, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) {
+      const body = await r.text();
+      throw new Error(`The report cannot be downloaded (${r.status}${body ? `: ${body.slice(0, 200)}` : ""}). Downloads may be disabled by the admin.`);
+    }
+    return Buffer.from(await r.arrayBuffer()).toString("base64");
   });
 
 /** Content of a SharePoint / OneDrive file from a link, as a data URL (images shown in the app). */

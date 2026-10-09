@@ -2,7 +2,20 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "re
 import { createPortal } from "react-dom";
 
 /** Minimal popover: fixed under its trigger (not clipped by scrolling tables), closed by outside click / Escape. */
-export function Popover({ trigger, children, className = "", width = 240 }: { trigger: (open: () => void) => ReactNode; children: (close: () => void) => ReactNode; className?: string; width?: number }) {
+export function Popover({
+  trigger,
+  children,
+  className = "",
+  width = 240,
+  full = false,
+}: {
+  trigger: (open: () => void) => ReactNode;
+  children: (close: () => void) => ReactNode;
+  className?: string;
+  width?: number;
+  /** The trigger takes the whole width (inputs in cells and forms); otherwise its own size. */
+  full?: boolean;
+}) {
   const anchor = useRef<HTMLSpanElement>(null);
   const panel = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -31,7 +44,7 @@ export function Popover({ trigger, children, className = "", width = 240 }: { tr
   }, [pos]);
   return (
     <>
-      <span ref={anchor} className="block w-full">
+      <span ref={anchor} className={full ? "block w-full" : "inline-flex shrink-0"}>
         {trigger(open)}
       </span>
       {pos &&

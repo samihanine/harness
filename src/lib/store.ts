@@ -1,6 +1,7 @@
 /** Local storage (IndexedDB through idb-keyval): one array per collection, with a React hook. */
 import { useEffect, useState } from "react";
 import { get, set } from "idb-keyval";
+import type { ModelInfo } from "./model";
 
 export type ReportEntry = {
   id: string;
@@ -25,8 +26,9 @@ export type DatasetEntry = {
   groupId?: string;
   name: string;
   context: string;
-  /** Model structure as text for the AI (tables, columns, measures). */
+  /** Model structure: summary always given to the AI, details read by its model tools. */
   model?: string;
+  info?: ModelInfo;
   /** Generated from this Excel file (dataset builder). */
   excelId?: string;
 };
@@ -43,6 +45,8 @@ export type ExcelEntry = {
   context: string;
   /** Folder receiving uploaded images (default: "<file> images" next to the file). */
   imagesFolder?: { link: string; driveId: string; itemId: string; name: string };
+  /** Named views of the dataset builder (layout, search, filters, sort, kanban column). */
+  savedViews?: { name: string; view: Record<string, unknown> }[];
 };
 
 export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number };

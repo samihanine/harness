@@ -29,7 +29,18 @@ export type Agent = {
 export type Step = { id: string; name: string; args: Record<string, unknown>; result?: string; error?: boolean; ms?: number };
 /** One exchange with the model, exactly as sent and received. */
 export type LlmCall = { at: string; prompt: string; reply?: string; error?: string; ms?: number };
-export type Update = { steps: Step[]; llm: LlmCall[]; answer?: string };
+export type Update = { steps: Step[]; llm: LlmCall[]; answer?: string; /** Remote conversation id (stateful APIs). */ remote?: string };
+
+/** Readable error, also for the plain objects the Power BI client rejects with ({ message, detailedMessage }). */
+export function describeError(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") {
+    const e = error as Record<string, unknown>;
+    const text = [e.message, e.detailedMessage, (e.body as Record<string, unknown>)?.message, (e.body as Record<string, unknown>)?.detailedMessage].filter((x) => typeof x === "string" && x);
+    return text.length ? [...new Set(text)].join(": ") : JSON.stringify(error).slice(0, 500);
+  }
+  return String(error);
+}
 
 const LIMITS = { steps: 20, retries: 2, resultChars: 6_000, historyChars: 12_000 };
 
@@ -92,6 +103,7 @@ export async function* runAgent({
     .filter(Boolean)
     .join("\n\n");
   const session = openSession(model, "agent");
+  let remote: string | undefined;
   let retries = 0;
   try {
     for (let turn = 0; turn <= LIMITS.steps; turn++) {
@@ -104,6 +116,7 @@ export async function* runAgent({
         throw error;
       });
       Object.assign(call, { reply, ms: Math.round(performance.now() - started) });
+      remote ??= await session.remote();
       let calls;
       try {
         calls = parseReply(reply);
@@ -111,19 +124,21 @@ export async function* runAgent({
         if (unknown.length) throw new ReplyError(`Unknown tool(s): ${unknown.join(", ")}. Available: ${[...byName.keys()].join(", ")}.`);
         retries = 0;
       } catch (error) {
-        if (!(error instanceof ReplyError) || ++retries > LIMITS.retries) return yield { steps, llm, answer: reply.trim() };
+        // Plain prose (no JSON at all) is the model answering: taken as the final answer, no extra round trip.
+        if (error instanceof ReplyError && !reply.includes("{") && reply.trim()) return yield { steps, llm, remote, answer: reply.trim() };
+        if (!(error instanceof ReplyError) || ++retries > LIMITS.retries) return yield { steps, llm, remote, answer: reply.trim() };
         prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\nSend the corrected JSON only.`)}\n\n${FORMAT}`;
         turn--;
         continue;
       }
       const answer = calls.find((c) => c.name === "answer");
-      if (answer && calls.length === 1) return yield { steps, llm, answer: String(answer.args.text ?? "") };
+      if (answer && calls.length === 1) return yield { steps, llm, remote, answer: String(answer.args.text ?? "") };
 
       const results: string[] = [];
       for (const call of calls.filter((c) => c.name !== "answer")) {
         const step: Step = { id: crypto.randomUUID(), name: call.name, args: call.args };
         steps.push(step);
-        yield { steps, llm };
+        yield { steps, llm, remote };
         const t = byName.get(call.name)!;
         const started = performance.now();
         try {
@@ -132,11 +147,11 @@ export async function* runAgent({
         } catch (error) {
           if (signal.aborted) throw error;
           step.error = true;
-          step.result = error instanceof z.ZodError ? `Invalid arguments: ${z.prettifyError(error)}` : error instanceof Error ? error.message : String(error);
+          step.result = error instanceof z.ZodError ? `Invalid arguments: ${z.prettifyError(error)}` : describeError(error);
         }
         step.ms = Math.round(performance.now() - started);
         results.push(tag("result", step.result || "(done)", `tool="${call.name}" status="${step.error ? "error" : "ok"}"`));
-        yield { steps, llm };
+        yield { steps, llm, remote };
       }
       const now = await agent.context().catch(() => context);
       prompt = [
@@ -150,6 +165,6 @@ export async function* runAgent({
       context = now;
     }
   } finally {
-    await session.close();
+    // Remote conversations are kept: deleted with the app conversation (see Chat).
   }
 }

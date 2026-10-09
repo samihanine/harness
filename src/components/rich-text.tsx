@@ -2,11 +2,11 @@
  * Rich text editor (Tiptap) whose value is markdown: what is stored in the Excel cell stays readable
  * and is shown as is by Power BI. Shortcuts: ⌘B, ⌘I, ⌘⇧X, "# " titles, "- " lists, "> " quotes…
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { EditorContent, useEditor, useEditorState, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import { Markdown } from "@tiptap/markdown";
-import { BoldIcon, CodeIcon, Heading2Icon, Heading3Icon, ItalicIcon, LinkIcon, ListIcon, ListOrderedIcon, QuoteIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react";
+import { BoldIcon, FileCodeIcon, CodeIcon, Heading2Icon, Heading3Icon, ItalicIcon, LinkIcon, ListIcon, ListOrderedIcon, QuoteIcon, StrikethroughIcon, UnderlineIcon } from "lucide-react";
 
 export function RichText({ value, onChange, autoFocus }: { value: string; onChange: (markdown: string) => void; autoFocus?: boolean }) {
   const editor = useEditor({
@@ -21,19 +21,38 @@ export function RichText({ value, onChange, autoFocus }: { value: string; onChan
       if (next !== value) onChange(next);
     },
   });
+  const [raw, setRaw] = useState(false);
+  const [draft, setDraft] = useState(value);
   // Value changed elsewhere (AI, reload): shown unless the user is typing.
   useEffect(() => {
     if (editor && !editor.isFocused && editor.getMarkdown() !== value) editor.commands.setContent(value, { contentType: "markdown" });
+    setDraft(value);
   }, [editor, value]);
+  const toggle = (next: boolean) => {
+    // Leaving the raw text: the editor shows what was typed.
+    if (!next && editor) editor.commands.setContent(draft, { contentType: "markdown" });
+    if (next && editor) setDraft(editor.getMarkdown());
+    setRaw(next);
+  };
   return (
     <div className="rounded-md border bg-card focus-within:border-ring">
-      {editor && <Toolbar editor={editor} />}
-      <EditorContent editor={editor} />
+      {editor && <Toolbar editor={editor} raw={raw} onRaw={() => toggle(!raw)} />}
+      {raw ? (
+        <textarea
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={() => draft !== value && onChange(draft)}
+          className="field-sizing-content block min-h-24 w-full resize-none bg-transparent px-3 py-2 font-mono text-[12px] outline-none"
+        />
+      ) : (
+        <EditorContent editor={editor} />
+      )}
     </div>
   );
 }
 
-function Toolbar({ editor }: { editor: Editor }) {
+function Toolbar({ editor, raw, onRaw }: { editor: Editor; raw: boolean; onRaw: () => void }) {
   const active = useEditorState({
     editor,
     selector: ({ editor: e }) => ({
@@ -73,7 +92,7 @@ function Toolbar({ editor }: { editor: Editor }) {
   ] as const;
   return (
     <div className="flex flex-wrap items-center gap-0.5 border-b px-1.5 py-1" onMouseDown={(e) => e.preventDefault()}>
-      {buttons.map((b, i) =>
+      {!raw && buttons.map((b, i) =>
         b === "|" ? (
           <span key={i} className="mx-1 h-4 w-px bg-border" />
         ) : (
@@ -82,6 +101,9 @@ function Toolbar({ editor }: { editor: Editor }) {
           </button>
         ),
       )}
+      <button type="button" title={raw ? "Back to the editor" : "Edit the raw markdown"} onClick={onRaw} className={`ml-auto inline-flex size-7 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-4 ${raw ? "bg-muted text-foreground" : ""}`}>
+        <FileCodeIcon />
+      </button>
     </div>
   );
 }

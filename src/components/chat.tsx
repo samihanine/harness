@@ -12,18 +12,30 @@ import {
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUpIcon, ChevronRightIcon, DownloadIcon, PlusIcon, SquareIcon, Trash2Icon } from "lucide-react";
+import { ArrowUpIcon, CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DownloadIcon, PlusIcon, SearchIcon, SquareIcon, Trash2Icon } from "lucide-react";
+import { Popover } from "./popover";
 import { runAgent, type Agent, type Update } from "@/agent/loop";
-import { AI_MODELS } from "@/agent/llm";
+import { AI_MODELS, deleteRemoteConversation } from "@/agent/llm";
 import { put, remove, settings, useCollection, type Conversation } from "@/lib/store";
 import { last } from "@/lib/last";
 
 const textOf = (m: ThreadMessage) => m.content.map((p) => (p.type === "text" ? p.text : "")).join("");
 
+/** A past message for the model: its text, and for the assistant a short list of the actions it took. */
+function historyOf(m: ThreadMessage) {
+  const actions = m.content
+    .filter((p) => p.type === "tool-call")
+    .map((p) => {
+      const call = p as { toolName: string; argsText?: string; result?: unknown; isError?: boolean };
+      return `  - ${call.toolName}(${(call.argsText ?? "").slice(0, 120)}) → ${call.isError ? "error: " : ""}${String(call.result ?? "").slice(0, 120)}`;
+    });
+  return `${m.role}: ${textOf(m)}${actions.length ? `\n  actions:\n${actions.join("\n")}` : ""}`;
+}
+
 function adapter(agent: { current: Agent }): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
-      const previous = messages.slice(0, -1).map((m) => `${m.role}: ${textOf(m)}`).join("\n\n");
+      const previous = messages.slice(0, -1).map(historyOf).join("\n\n");
       const { model } = await settings.get();
       const startedAt = new Date().toISOString();
       // Full trace kept with the message (exported with the conversation): raw model exchanges, tool timings.
@@ -32,7 +44,7 @@ function adapter(agent: { current: Agent }): ChatModelAdapter {
           ...u.steps.map((s) => ({ type: "tool-call" as const, toolCallId: s.id, toolName: s.name, args: s.args as never, argsText: JSON.stringify(s.args), result: s.result, isError: s.error })),
           ...(text !== undefined ? [{ type: "text" as const, text }] : []),
         ],
-        metadata: { custom: { trace: { model: model ?? AI_MODELS[0], startedAt, steps: u.steps, llm: u.llm } } },
+        metadata: { custom: { trace: { model: model ?? AI_MODELS[0], startedAt, remote: u.remote, steps: u.steps, llm: u.llm } } },
       });
       let last: Update = { steps: [], llm: [] };
       try {
@@ -58,6 +70,71 @@ function download(c: Conversation) {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+/** Deletes a conversation: its remote conversations on the LLM API first (when the API can), then the local copy. */
+async function deleteConversation(c: Conversation) {
+  const remotes = new Set(
+    (c.messages as { metadata?: { custom?: { trace?: { remote?: string } } } }[]).map((m) => m.metadata?.custom?.trace?.remote).filter((id): id is string => !!id),
+  );
+  for (const id of remotes) await deleteRemoteConversation(id).catch((e) => console.warn("Remote conversation not deleted", id, e));
+  await remove("conversations", c.id);
+}
+
+/** Conversations of this screen (shadcn-style combobox): search, open, download, delete. */
+function ConversationPicker({ conversations, current, onSelect, onNew, onDelete }: {
+  conversations: Conversation[];
+  current?: Conversation;
+  onSelect: (id: string) => void;
+  onNew: () => void;
+  onDelete: (c: Conversation) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const shown = conversations.filter((c) => c.title.toLowerCase().includes(search.toLowerCase()));
+  return (
+    <span className="min-w-0 flex-1">
+      <Popover
+        full
+        width={340}
+        trigger={(open) => (
+          <button type="button" onClick={() => (setSearch(""), open())} className="flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] hover:bg-muted">
+            <span className={`min-w-0 flex-1 truncate ${current ? "" : "text-muted-foreground"}`}>{current?.title ?? "New conversation"}</span>
+            <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          </button>
+        )}
+      >
+        {(close) => (
+          <>
+            <label className="flex items-center gap-2 border-b px-1 pb-1.5">
+              <SearchIcon className="size-3.5 text-muted-foreground" />
+              <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search conversations…" className="h-7 flex-1 bg-transparent outline-none" />
+            </label>
+            <div className="max-h-80 overflow-y-auto">
+              <button type="button" onClick={() => (onNew(), close())} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
+                <PlusIcon className="size-3.5" /> New conversation
+              </button>
+              {shown.map((c) => (
+                <div key={c.id} className="group flex items-center gap-1 rounded-md pr-1 hover:bg-muted">
+                  <button type="button" onClick={() => (onSelect(c.id), close())} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left">
+                    <CheckIcon className={`size-3.5 shrink-0 ${c.id === current?.id ? "" : "invisible"}`} />
+                    <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                    <span className="shrink-0 text-[11px] text-muted-foreground">{new Date(c.updatedAt).toLocaleDateString()}</span>
+                  </button>
+                  <button type="button" title="Download (JSON with tool calls and model exchanges)" className="icon-btn size-6" onClick={() => download(c)}>
+                    <DownloadIcon />
+                  </button>
+                  <button type="button" title="Delete" className="icon-btn size-6 hover:text-destructive" onClick={() => confirm(`Delete "${c.title}"?`) && onDelete(c)}>
+                    <Trash2Icon />
+                  </button>
+                </div>
+              ))}
+              {shown.length === 0 && <p className="px-2 py-2 text-[12px] text-muted-foreground">No conversation.</p>}
+            </div>
+          </>
+        )}
+      </Popover>
+    </span>
+  );
+}
+
 export function Chat({ scope, agent, placeholder = "Ask anything…" }: { scope: string; agent: Agent; placeholder?: string }) {
   const conversations = useCollection("conversations")
     .filter((c) => c.scope === scope)
@@ -75,28 +152,20 @@ export function Chat({ scope, agent, placeholder = "Ask anything…" }: { scope:
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex items-center gap-1 border-b px-2 py-1.5">
-        <select className="h-7 min-w-0 flex-1 truncate rounded-md bg-transparent px-1 text-[12px] outline-none hover:bg-muted" value={current ? currentId : ""} onChange={(e) => setCurrentId(e.target.value || crypto.randomUUID())}>
-          <option value="">New conversation</option>
-          {conversations.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.title}
-            </option>
-          ))}
-        </select>
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
+        <ConversationPicker
+          conversations={conversations}
+          current={current}
+          onSelect={setCurrentId}
+          onNew={() => setCurrentId(crypto.randomUUID())}
+          onDelete={(c) => {
+            void deleteConversation(c);
+            if (c.id === currentId) setCurrentId(crypto.randomUUID());
+          }}
+        />
         <button type="button" title="New conversation" className="icon-btn" onClick={() => setCurrentId(crypto.randomUUID())}>
           <PlusIcon />
         </button>
-        {current && (
-          <button type="button" title="Download the conversation (JSON with tool calls and model exchanges)" className="icon-btn" onClick={() => download(current)}>
-            <DownloadIcon />
-          </button>
-        )}
-        {current && (
-          <button type="button" title="Delete conversation" className="icon-btn" onClick={() => void remove("conversations", current.id).then(() => setCurrentId(crypto.randomUUID()))}>
-            <Trash2Icon />
-          </button>
-        )}
       </div>
       <Runtime key={currentId} id={currentId} scope={scope} initial={current} agent={agentRef} placeholder={placeholder} />
     </div>

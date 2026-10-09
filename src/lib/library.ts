@@ -1,11 +1,28 @@
 /** Library entries: what is read from Power BI / SharePoint when a link is added or refreshed. */
-import { resolveExcel } from "./excel";
-import { pbi } from "./ms";
-import { embedReport, modelText, parseDatasetUrl, parseReportUrl, reportText, resetEmbed, scope, type Ref } from "./pbi";
+import { readTable, resolveExcel, saveFields } from "./excel";
+import { COLORS, type Field } from "./schema";
+import { graph, pbi } from "./ms";
+import { readModel, modelSummary } from "./model";
+import { embedReport, parseDatasetUrl, parseReportUrl, reportText, resetEmbed, scope, type Ref } from "./pbi";
+import { definition, definitionText } from "./report-def";
 import { find, patch, put, type DatasetEntry, type ExcelEntry, type ReportEntry } from "./store";
 
-/** Reads a report through a hidden embed: works with Viewer / Build rights. */
+/**
+ * What is stored to rebuild a report: its full definition (formatting, shapes, text, theme,
+ * interactions…) when it can be read (edit rights), otherwise the embed summary (Viewer rights:
+ * pages, visual types, positions, fields, filters only).
+ */
 async function snapshot(ref: Ref) {
+  try {
+    return definitionText(await definition(ref));
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    return `Full definition not readable (${why}). Summary only (no formatting, text or theme):\n${await embedSnapshot(ref)}`;
+  }
+}
+
+/** Reads a report through a hidden embed: works with Viewer / Build rights. */
+async function embedSnapshot(ref: Ref) {
   const element = document.createElement("div");
   element.style.cssText = "position:fixed;left:-10000px;top:0;width:1280px;height:720px";
   document.body.append(element);
@@ -42,17 +59,28 @@ export async function addDataset(linkOrId: string, groupId?: string, values: Par
   const ref = groupId ? { id: linkOrId, groupId } : parseDatasetUrl(linkOrId);
   const d = await pbi(`${scope(ref.groupId)}/datasets/${ref.id}`);
   const old = await find("datasets", ref.id);
-  return put("datasets", { ...old, id: ref.id, groupId: ref.groupId, name: d.name, context: old?.context ?? "", ...values, model: await modelText(ref) });
+  const info = await readModel(ref);
+  return put("datasets", { ...old, id: ref.id, groupId: ref.groupId, name: d.name, context: old?.context ?? "", ...values, info, model: modelSummary(info) });
 }
 
 export async function refreshDatasetText(entry: DatasetEntry) {
-  await patch("datasets", entry.id, { model: await modelText(entry) });
+  const info = await readModel(entry);
+  await patch("datasets", entry.id, { info, model: modelSummary(info) });
 }
 
-export async function addExcel(link: string, table?: string): Promise<ExcelEntry> {
-  const file = await resolveExcel(link);
+/** Adds an Excel table: its columns are detected, written as its schema and the sheet is styled after them. */
+/**
+ * Adds an Excel table: its columns are detected, written as its schema and the sheet is styled after them.
+ * `required`: fields the file must have (missing columns are added; a file without table gets one).
+ */
+export async function addExcel(link: string, table?: string, required: Field[] = []): Promise<ExcelEntry> {
+  let file = await resolveExcel(link);
+  if (file.tables.length === 0 && required.length) {
+    await createTable(file, required.map((f) => f.name));
+    file = await resolveExcel(link);
+  }
   if (file.tables.length === 0) throw new Error("This file has no Excel table: select the data in Excel and use Insert › Table.");
-  return put("excels", {
+  const entry = await put("excels", {
     id: crypto.randomUUID(),
     name: file.name.replace(/\.xlsx$/i, ""),
     link,
@@ -62,6 +90,49 @@ export async function addExcel(link: string, table?: string): Promise<ExcelEntry
     table: table && file.tables.includes(table) ? table : file.tables[0],
     context: "",
   });
+  const data = await readTable(entry);
+  const missing = required.filter((r) => !data.fields.some((f) => f.name.toLowerCase() === r.name.toLowerCase()));
+  if (!data.hasSchema || missing.length) await saveFields(entry, data, [...data.fields, ...missing]).catch(() => undefined);
+  return entry;
+}
+
+/** A table on the first sheet of an empty workbook, with the given header. */
+async function createTable(file: { driveId: string; itemId: string }, header: string[]) {
+  const book = `/drives/${file.driveId}/items/${file.itemId}/workbook`;
+  const { value } = await graph(`${book}/worksheets?$select=name`);
+  const sheet = `${book}/worksheets('${encodeURIComponent(value[0].name)}')`;
+  const address = `A1:${String.fromCharCode(64 + header.length)}1`;
+  await graph(`${sheet}/range(address='${address}')`, "PATCH", { values: [header] });
+  await graph(`${sheet}/tables/add`, "POST", { address, hasHeaders: true });
+}
+
+/** Fields of the viewer's Excel files. */
+export const INFO_FIELDS: Field[] = [
+  { name: "label", type: "string", required: true },
+  { name: "url", type: "string", required: true },
+  { name: "icon", type: "string", description: "Lucide icon name (e.g. book-open, mail, video)" },
+  { name: "color", type: "option", options: COLORS.map((c) => ({ value: c, color: c })) },
+  { name: "description", type: "string" },
+];
+export const GUIDE_FIELDS: Field[] = [
+  { name: "title", type: "string", required: true },
+  { name: "content", type: "text" },
+  { name: "links", type: "string", description: "pageName or pageName/visualName, separated by ;" },
+];
+
+/** Gives a report its info links or guides Excel file (from a link, or one of the library). */
+export async function connectReportExcel(reportId: string, kind: "info" | "guides", linkOrId: string) {
+  const known = await find("excels", linkOrId);
+  const fields = kind === "info" ? INFO_FIELDS : GUIDE_FIELDS;
+  const excel = known ? await ensureFields(known, fields) : await addExcel(linkOrId, undefined, fields);
+  await patch("reports", reportId, kind === "info" ? { infoExcelId: excel.id } : { guidesExcelId: excel.id });
+}
+
+async function ensureFields(excel: ExcelEntry, required: Field[]) {
+  const data = await readTable(excel);
+  const missing = required.filter((r) => !data.fields.some((f) => f.name.toLowerCase() === r.name.toLowerCase()));
+  if (missing.length) await saveFields(excel, data, [...data.fields, ...missing]);
+  return excel;
 }
 
 /** Copy of a report in My workspace (needs edit rights on the source). */

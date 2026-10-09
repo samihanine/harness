@@ -25,7 +25,7 @@ export const AI_MODELS: readonly string[] = ["gpt-6-luna", "gpt-5.5", "gpt-5", "
 const AI_CONVERSATION_PATH: string | null = null;
 const AI_CONVERSATION_ID_FIELD = "id";
 
-/** Path that deletes a remote conversation once its session ends (`null` = keep them). */
+/** Path that deletes a remote conversation, called when the user deletes the conversation in the app (`null` = none). */
 const AI_DELETE_PATH: string | null = null;
 
 /** Path of a completion; `{conversationId}` is replaced by the remote conversation id. */
@@ -70,7 +70,8 @@ export class AiAuthError extends Error {
 /** A conversation with the model. `chars` measures what it holds (to restart it before it overflows). */
 export type Session = {
   send(text: string, signal?: AbortSignal): Promise<string>;
-  close(): Promise<void>;
+  /** Id of the remote conversation (stateful APIs), kept with the app conversation to delete it later. */
+  remote(): Promise<string | undefined>;
   readonly chars: number;
 };
 
@@ -93,12 +94,15 @@ export function openSession(model: string, name: string): Session {
       chars += text.length + reply.length;
       return reply;
     },
-    async close() {
-      if (!remoteId || !AI_DELETE_PATH) return;
-      const id = await remoteId.catch(() => "");
-      if (id) await request("DELETE", AI_DELETE_PATH.replace("{conversationId}", id)).catch(() => undefined);
+    async remote() {
+      return remoteId ? remoteId.catch(() => undefined) : undefined;
     },
   };
+}
+
+/** Deletes a remote conversation (when the API has a delete path). */
+export async function deleteRemoteConversation(id: string) {
+  if (AI_DELETE_PATH && id) await request("DELETE", AI_DELETE_PATH.replace("{conversationId}", id));
 }
 
 async function request(method: string, path: string, body?: unknown, signal?: AbortSignal) {
