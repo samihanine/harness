@@ -74,7 +74,9 @@ export async function upsertReportMeasure(
   ];
   const measure: ExtensionMeasure = {
     name: m.name,
-    dataType: DATA_TYPE(row?.value),
+    // Links are text; a measure blank on the whole model (e.g. SELECTEDVALUE of an item) is text too:
+    // "Variant" breaks the visuals using it.
+    dataType: m.category ? "Text" : row?.value === null || row?.value === undefined ? "Text" : DATA_TYPE(row.value),
     expression: m.expression,
     ...(m.format && { formatString: m.format }),
     ...(m.folder && { displayFolder: m.folder }),
