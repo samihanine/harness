@@ -105,6 +105,7 @@ export async function* runAgent({
   const session = openSession(model, "agent");
   let remote: string | undefined;
   let retries = 0;
+  let reminded = false;
   try {
     for (let turn = 0; turn <= LIMITS.steps; turn++) {
       signal.throwIfAborted();
@@ -132,7 +133,23 @@ export async function* runAgent({
         continue;
       }
       const answer = calls.find((c) => c.name === "answer");
-      if (answer && calls.length === 1) return yield { steps, llm, remote, answer: String(answer.args.text ?? "") };
+      if (answer && calls.length === 1) {
+        // Failed steps never redone successfully: one reminder before the answer, so the model retries
+        // them or says what failed instead of claiming them done.
+        const failed = steps.filter((s, i) => s.error && !steps.slice(i + 1).some((t) => t.name === s.name && !t.error));
+        if (failed.length && !reminded) {
+          reminded = true;
+          prompt = [
+            tag(
+              "note",
+              `Before answering: these steps FAILED and were not redone successfully:\n${failed.map((s) => `- ${s.name} ${JSON.stringify(s.args).slice(0, 200)} → ${String(s.result).slice(0, 300)}`).join("\n")}\nFix the arguments and retry them now, or say clearly in your answer what is not done. Never present them as done.`,
+            ),
+            FORMAT,
+          ].join("\n\n");
+          continue;
+        }
+        return yield { steps, llm, remote, answer: String(answer.args.text ?? "") };
+      }
 
       const results: string[] = [];
       for (const call of calls.filter((c) => c.name !== "answer")) {

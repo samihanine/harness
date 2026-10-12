@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ViewerRouteImport } from './routes/viewer'
+import { Route as DaxRouteImport } from './routes/dax'
 import { Route as DatasetsRouteImport } from './routes/datasets'
 import { Route as BuilderRouteImport } from './routes/builder'
 import { Route as IndexRouteImport } from './routes/index'
@@ -17,6 +18,11 @@ import { Route as IndexRouteImport } from './routes/index'
 const ViewerRoute = ViewerRouteImport.update({
   id: '/viewer',
   path: '/viewer',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DaxRoute = DaxRouteImport.update({
+  id: '/dax',
+  path: '/dax',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DatasetsRoute = DatasetsRouteImport.update({
@@ -39,12 +45,14 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/builder': typeof BuilderRoute
   '/datasets': typeof DatasetsRoute
+  '/dax': typeof DaxRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/builder': typeof BuilderRoute
   '/datasets': typeof DatasetsRoute
+  '/dax': typeof DaxRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRoutesById {
@@ -52,20 +60,22 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/builder': typeof BuilderRoute
   '/datasets': typeof DatasetsRoute
+  '/dax': typeof DaxRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/builder' | '/datasets' | '/viewer'
+  fullPaths: '/' | '/builder' | '/datasets' | '/dax' | '/viewer'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/builder' | '/datasets' | '/viewer'
-  id: '__root__' | '/' | '/builder' | '/datasets' | '/viewer'
+  to: '/' | '/builder' | '/datasets' | '/dax' | '/viewer'
+  id: '__root__' | '/' | '/builder' | '/datasets' | '/dax' | '/viewer'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BuilderRoute: typeof BuilderRoute
   DatasetsRoute: typeof DatasetsRoute
+  DaxRoute: typeof DaxRoute
   ViewerRoute: typeof ViewerRoute
 }
 
@@ -76,6 +86,13 @@ declare module '@tanstack/react-router' {
       path: '/viewer'
       fullPath: '/viewer'
       preLoaderRoute: typeof ViewerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dax': {
+      id: '/dax'
+      path: '/dax'
+      fullPath: '/dax'
+      preLoaderRoute: typeof DaxRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/datasets': {
@@ -106,6 +123,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BuilderRoute: BuilderRoute,
   DatasetsRoute: DatasetsRoute,
+  DaxRoute: DaxRoute,
   ViewerRoute: ViewerRoute,
 }
 export const routeTree = rootRouteImport

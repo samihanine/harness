@@ -1,11 +1,11 @@
 /// <reference types="vite/client" />
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { HeadContent, Link, Outlet, Scripts, createRootRoute } from "@tanstack/react-router";
+import { HeadContent, Link, Navigate, Outlet, Scripts, createRootRoute, useLocation } from "@tanstack/react-router";
 import { LogOutIcon, SettingsIcon } from "lucide-react";
 import { authStatus, signIn, signOut } from "@/server/ms";
 import { AI_MODELS } from "@/agent/llm";
 import { settings } from "@/lib/store";
-import { APP_TITLE, PRIMARY_COLOR, SCREENS } from "@/config";
+import { AI_PANEL, APP_TITLE, PRIMARY_COLOR, SCREENS, SCREEN_PATHS, SHOW_HEADER, firstScreen } from "@/config";
 import css from "@/styles.css?url";
 
 export const Route = createRootRoute({
@@ -41,12 +41,14 @@ function Shell({ children }: { children: ReactNode }) {
 
 const NAV = (
   [
-    ["/viewer", "Report Viewer", SCREENS.viewer],
-    ["/builder", "Report builder", SCREENS.builder],
-    ["/datasets", "Dataset builder", SCREENS.datasets],
-    ["/", "Library", SCREENS.library],
+    [SCREEN_PATHS.viewer, "Report Viewer", SCREENS.viewer],
+    [SCREEN_PATHS.builder, "Report builder", SCREENS.builder],
+    [SCREEN_PATHS.datasets, "Dataset builder", SCREENS.datasets],
+    [SCREEN_PATHS.dax, "DAX builder", SCREENS.dax],
+    [SCREEN_PATHS.library, "Library", SCREENS.library],
   ] as const
 ).filter(([, , shown]) => shown);
+const HIDDEN_PATHS = (Object.keys(SCREENS) as (keyof typeof SCREENS)[]).filter((k) => !SCREENS[k]).map((k) => SCREEN_PATHS[k]);
 
 type Status = Awaited<ReturnType<typeof authStatus>>;
 
@@ -63,10 +65,15 @@ function Layout() {
     void poll();
     return () => void (stop = true);
   }, [status?.pending?.userCode]);
+  const path = useLocation({ select: (l) => l.pathname });
+  // A hidden screen is closed to direct links too.
+  if (HIDDEN_PATHS.includes(path)) return <Navigate to={firstScreen()} search={{} as never} replace />;
+  // Hidden header: still shown while the user has to sign in.
+  const header = SHOW_HEADER || (status !== undefined && !status.signedIn);
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-11 shrink-0 items-center gap-1 border-b bg-card px-3">
+      {header && <header className="flex h-11 shrink-0 items-center gap-1 border-b bg-card px-3">
         <span className="mr-3 font-semibold" style={{ color: PRIMARY_COLOR }}>
           {APP_TITLE}
         </span>
@@ -93,12 +100,14 @@ function Layout() {
               Sign in with Microsoft
             </button>
           )}
-          <button type="button" className="icon-btn" title="AI settings" onClick={() => setOpen(!open)}>
-            <SettingsIcon />
-          </button>
+          {AI_PANEL && (
+            <button type="button" className="icon-btn" title="AI settings" onClick={() => setOpen(!open)}>
+              <SettingsIcon />
+            </button>
+          )}
         </div>
-      </header>
-      {open && <AiSettings onClose={() => setOpen(false)} />}
+      </header>}
+      {header && open && <AiSettings onClose={() => setOpen(false)} />}
       <main className="min-h-0 flex-1">
         <Outlet />
       </main>

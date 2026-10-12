@@ -1,6 +1,7 @@
 /** Local storage (IndexedDB through idb-keyval): one array per collection, with a React hook. */
 import { useEffect, useState } from "react";
 import { get, set } from "idb-keyval";
+import type { FormSchema } from "./forms";
 import type { ModelInfo } from "./model";
 
 export type ReportEntry = {
@@ -33,8 +34,6 @@ export type DatasetEntry = {
   /** Model structure: summary always given to the AI, details read by its model tools. */
   model?: string;
   info?: ModelInfo;
-  /** Generated from this Excel file (dataset builder). */
-  excelId?: string;
 };
 
 export type ExcelEntry = {
@@ -49,6 +48,8 @@ export type ExcelEntry = {
   context: string;
   /** Folder receiving uploaded images (chosen by the user; required to upload). */
   imagesFolder?: { link: string; driveId: string; itemId: string; name: string };
+  /** Microsoft Form filling this table (optional): its questions, read from its link. */
+  form?: FormSchema;
   /** Named views of the dataset builder (layout, search, filters, sort, kanban column). */
   savedViews?: { name: string; view: Record<string, unknown> }[];
 };

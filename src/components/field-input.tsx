@@ -18,6 +18,8 @@ export type InputProps = {
   variant: "cell" | "form";
   /** Where image fields upload their files. */
   upload?: Uploader;
+  /** Id fields: why a new value is refused (e.g. already used); undefined = accepted. */
+  validate?: (value: string) => string | undefined;
 };
 
 const base = {
@@ -26,9 +28,8 @@ const base = {
 };
 
 export function FieldInput(props: InputProps) {
-  // Ids are given by the app: read only.
-  if (isIdField(props.field))
-    return <span className={`flex h-8 items-center text-[12px] text-muted-foreground tabular-nums ${props.variant === "cell" ? "px-2" : ""}`}>{String(props.value ?? "")}</span>;
+  // Ids are given by the app; the user may rename one (checked by `validate`).
+  if (isIdField(props.field)) return <IdInput {...props} />;
   switch (props.field.type) {
     case "boolean":
       return (
@@ -67,6 +68,39 @@ function TextInput({ field, value, onChange, variant, placeholder }: InputProps 
       }}
       className={`${base[variant]} ${numeric ? "text-right tabular-nums" : ""}`}
     />
+  );
+}
+
+/** Row id: committed on blur / Enter only when `validate` accepts it, else the reason is shown (Escape restores). */
+function IdInput({ value, onChange, variant, validate }: InputProps) {
+  const shown = String(value ?? "");
+  const [draft, setDraft] = useState(shown);
+  const [error, setError] = useState<string>();
+  useEffect(() => (setDraft(shown), setError(undefined)), [shown]);
+  const commit = () => {
+    const next = draft.trim();
+    if (next === shown) return setError(undefined);
+    const reason = validate?.(next);
+    if (reason) return setError(reason);
+    setError(undefined);
+    onChange(next);
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <input
+        value={draft}
+        title={error}
+        aria-invalid={!!error}
+        onChange={(e) => (setDraft(e.target.value), setError(undefined))}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") (setDraft(shown), setError(undefined));
+        }}
+        className={`${base[variant]} text-[12px] text-muted-foreground tabular-nums focus:text-foreground ${error ? "text-destructive ring-1 ring-destructive" : ""}`}
+      />
+      {error && <span className={`text-[11px] text-destructive ${variant === "cell" ? "px-2 pb-1" : ""}`}>{error}</span>}
+    </div>
   );
 }
 

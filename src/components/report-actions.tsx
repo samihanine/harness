@@ -1,6 +1,7 @@
 /** Open the report in Power BI, and export it (PDF through the print dialog, or .pbix). */
 import { useState } from "react";
 import { DownloadIcon, ExternalLinkIcon } from "lucide-react";
+import { EXPORT } from "@/config";
 import { errorText } from "@/lib/ms";
 import type { Report } from "@/lib/pbi";
 import type { ReportEntry } from "@/lib/store";
@@ -37,7 +38,7 @@ export function ReportActions({ entry, report }: { entry?: ReportEntry; report?:
       <a href={url} target="_blank" rel="noreferrer" className="btn h-8" title="Open this report on the Power BI site">
         <ExternalLinkIcon className="size-3.5" /> Power BI
       </a>
-      <Popover
+      {EXPORT.report && <Popover
         width={260}
         trigger={(open) => (
           <button type="button" className="btn h-8" onClick={() => (setError(undefined), open())}>
@@ -58,7 +59,7 @@ export function ReportActions({ entry, report }: { entry?: ReportEntry; report?:
             {error && <p className="px-2 pt-1 text-[11px] text-destructive">{error}</p>}
           </div>
         )}
-      </Popover>
+      </Popover>}
     </>
   );
 }

@@ -19,8 +19,15 @@ export const daxTool = (dataset: () => Ref | undefined): Tool =>
 
 /** "Table[Column]" / "Table[Measure]" / "Sum(Table[Column])" → Power BI target. `measures` = "Table[Measure]" names. */
 function target(spec: string, measures: Set<string>) {
+  // "[Measure]" alone: its table is found among the known measures (model or report).
+  const bare = spec.trim().match(/^\[([^\]]+)\]$/)?.[1];
+  if (bare) {
+    const owner = [...measures].find((m) => m.endsWith(`[${bare}]`));
+    if (!owner) throw new Error(`Measure [${bare}] not found: write it Table[${bare}] (its home table).`);
+    spec = owner;
+  }
   const m = spec.trim().match(/^(?:(\w+)\()?'?([^'[]+)'?\[([^\]]+)\]\)?$/);
-  if (!m) throw new Error(`Field "${spec}" must look like Table[Column], Table[Measure] or Sum(Table[Column])`);
+  if (!m) throw new Error(`Field "${spec}" must look like Table[Column], Table[Measure] or Sum(Table[Column]), e.g. Tasks[title] or Tasks[Selected image].`);
   const [, aggregation, table, name] = m;
   if (measures.has(`${table}[${name}]`)) return { $schema: "http://powerbi.com/product/schema#measure", table, measure: name };
   if (aggregation) return { $schema: "http://powerbi.com/product/schema#columnAggr", table, column: name, aggregationFunction: aggregation[0].toUpperCase() + aggregation.slice(1).toLowerCase() };

@@ -18,19 +18,19 @@ export function Picker({
   value?: string;
   onChange: (id: string) => void;
   placeholder: string;
-  /** Adds an item from a link and returns its id. */
-  add?: { label: string; placeholder: string; run: (link: string) => Promise<string> };
+  /** Adds an item from a link (and an optional second value, `extra`) and returns its id. */
+  add?: { label: string; placeholder: string; extra?: { label: string; placeholder: string }; run: (link: string, extra?: string) => Promise<string> };
   className?: string;
 }) {
   const [search, setSearch] = useState("");
-  const [adding, setAdding] = useState<{ link: string; busy?: boolean; error?: string }>();
+  const [adding, setAdding] = useState<{ link: string; extra?: string; busy?: boolean; error?: string }>();
   const current = items.find((i) => i.id === value);
   const shown = items.filter((i) => `${i.label} ${i.hint ?? ""}`.toLowerCase().includes(search.toLowerCase()));
   const submit = async (close: () => void) => {
     if (!add || !adding?.link.trim()) return;
     setAdding({ ...adding, busy: true, error: undefined });
     try {
-      onChange(await add.run(adding.link.trim()));
+      onChange(await add.run(adding.link.trim(), adding.extra?.trim() || undefined));
       setAdding(undefined);
       close();
     } catch (e) {
@@ -54,7 +54,13 @@ export function Picker({
             <div className="flex flex-col gap-2 p-1">
               <span className="label">{add!.label}</span>
               <input autoFocus className="input" placeholder={add!.placeholder} value={adding.link} onChange={(e) => setAdding({ ...adding, link: e.target.value })} onKeyDown={(e) => e.key === "Enter" && void submit(close)} />
-              {adding.error && <p className="text-[11px] text-destructive">{adding.error}</p>}
+              {add!.extra && (
+                <>
+                  <span className="label">{add!.extra.label}</span>
+                  <input className="input" placeholder={add!.extra.placeholder} value={adding.extra ?? ""} onChange={(e) => setAdding({ ...adding, extra: e.target.value })} onKeyDown={(e) => e.key === "Enter" && void submit(close)} />
+                </>
+              )}
+              {adding.error && <p className="text-[11px] break-words text-destructive">{adding.error}</p>}
               <div className="flex justify-end gap-1.5">
                 <button type="button" className="btn h-7" onClick={() => setAdding(undefined)}>
                   Back

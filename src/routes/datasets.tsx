@@ -5,7 +5,7 @@ import { z } from "zod";
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  DatabaseIcon,
+  DownloadIcon,
   ExternalLinkIcon,
   EyeIcon,
   FilterIcon,
@@ -19,7 +19,6 @@ import {
   SlidersHorizontalIcon,
   TableIcon,
   Trash2Icon,
-  UploadIcon,
   XIcon,
 } from "lucide-react";
 import { Chat } from "@/components/chat";
@@ -29,16 +28,13 @@ import { FieldInput, OptionBadges, Thumbnail, type Uploader } from "@/components
 import { Popover } from "@/components/popover";
 import { Empty, SidePanel } from "@/components/side-panel";
 import { tool, type Agent } from "@/agent/loop";
-import { daxTool } from "@/agent/pbi-tools";
-import { modelTools } from "@/agent/model-tools";
-import { addRows, deleteRows, readTable, resolveFolder, saveFields, updateRows, uploadImage, withRows, withUpdates, withoutRows, type Table } from "@/lib/excel";
-import { API_REFRESHES_PER_DAY, addDataset, addExcel, apiRefreshesToday, modelPage, refreshDatasetText } from "@/lib/library";
+import { addRows, deleteRows, idError, resolveFolder, saveFields, updateRows, uploadImage, withRows, withUpdates, withoutRows, type Table } from "@/lib/excel";
+import { readFormSchema } from "@/lib/forms";
+import { addExcel } from "@/lib/library";
 import { errorText } from "@/lib/ms";
 import { rowsText } from "@/lib/pbi";
 import { COLORS, FIELD_TYPES, TINTS, TYPE_LABELS, idPrefix, isIdField, labelOf, listOf, titleField, type Field, type Row } from "@/lib/schema";
-import { patch, useCollection, type DatasetEntry, type ExcelEntry } from "@/lib/store";
-import { createModel, readModelFiles, tableTmdl, writeModelFiles } from "@/lib/tmdl";
-import { refreshModel } from "@/server/ms";
+import { patch, useCollection, type ExcelEntry } from "@/lib/store";
 import { useLast } from "@/lib/last";
 import { useTable } from "@/lib/use-table";
 
@@ -123,7 +119,6 @@ function Datasets() {
   useLast("datasets:excel", excelId, (excel) => navigate({ search: { excel }, replace: true }));
   const excels = useCollection("excels");
   const excel = excels.find((e) => e.id === excelId);
-  const dataset = useCollection("datasets").find((d) => d.excelId === excelId);
   const { table, error, reload, write } = useTable(excel);
   /** Column order = order of the fields in the "_schema" sheet (the Excel columns do not move). */
   const moveField = (from: string, to: string) => {
@@ -183,14 +178,14 @@ function Datasets() {
     chooseFolder: async (link) => patch("excels", excel.id, { imagesFolder: await resolveFolder(link) }),
   };
 
-  const agent = useMemo(() => (excel && table ? datasetAgent({ excel, table, dataset, rows: () => grid.getRowModel().rows, checked, view, setView, write }) : undefined), [excel, table, dataset, view, grid, setView, write, checked]);
+  const agent = useMemo(() => (excel && table ? datasetAgent({ excel, table, rows: () => grid.getRowModel().rows, checked, view, setView, write }) : undefined), [excel, table, view, grid, setView, write, checked]);
 
   return (
     <div className="flex h-full">
       <SidePanel
         tabs={visible([
-          { id: "ai", label: "AI", content: agent ? <Chat scope={`dataset:${excelId}`} agent={agent} placeholder="Ask to filter, fix or add rows, change fields, add measures…" /> : <Empty>Choose an Excel file.</Empty> },
-          { id: "model", label: "Semantic model", content: excel && table ? <ModelTab excel={excel} table={table} dataset={dataset} /> : <Empty>Choose an Excel file.</Empty> },
+          { id: "ai", label: "AI", content: agent ? <Chat scope={`dataset:${excelId}`} agent={agent} placeholder="Ask to filter, fix or add rows, change fields…" /> : <Empty>Choose an Excel file.</Empty> },
+          { id: "schema", label: "Schema", content: excel && table ? <SchemaTab excel={excel} table={table} /> : <Empty>Choose an Excel file.</Empty> },
         ], DATASET_TABS)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -201,7 +196,12 @@ function Datasets() {
             value={excelId}
             onChange={(excel) => navigate({ search: { excel } })}
             placeholder="Choose an Excel file…"
-            add={{ label: "Add an Excel file", placeholder: "Sharing link of an .xlsx (SharePoint / OneDrive)", run: async (link) => (await addExcel(link)).id }}
+            add={{
+              label: "Add an Excel file",
+              placeholder: "Sharing link of an .xlsx (SharePoint / OneDrive)",
+              extra: { label: "Microsoft Form filling it (optional)", placeholder: "Link of the form" },
+              run: async (link, form) => (await addExcel(link, undefined, [], form)).id,
+            }}
           />
           {excel && table && (
             <>
@@ -676,7 +676,7 @@ function TableLayout({ table, rows, grid, upload, onChange, view, setView, onEdi
                 const f = table.fields.find((x) => x.name === cell.column.id)!;
                 return (
                   <td key={cell.id} className={`border-r border-b p-0 align-top ${width(f)}`}>
-                    <FieldInput variant="cell" field={f} value={row.original[f.name]} upload={upload} onChange={(v) => onChange(row.index, f.name, v)} />
+                    <FieldInput variant="cell" field={f} value={row.original[f.name]} upload={upload} validate={(v) => idError(table, row.index, v)} onChange={(v) => onChange(row.index, f.name, v)} />
                   </td>
                 );
               })}
@@ -732,7 +732,7 @@ function DetailLayout({ table, rows, selected, onSelect, shown, upload, onChange
             </div>
             {table.fields.map((f) => (
               <FormField key={f.name} field={f}>
-                <FieldInput variant="form" field={f} value={current.original[f.name]} upload={upload} onChange={(v) => onChange(current.index, f.name, v)} />
+                <FieldInput variant="form" field={f} value={current.original[f.name]} upload={upload} validate={(v) => idError(table, current.index, v)} onChange={(v) => onChange(current.index, f.name, v)} />
               </FormField>
             ))}
             <p className="text-[11px] text-muted-foreground/70">Row {current.index + 1} of the Excel table</p>
@@ -889,93 +889,76 @@ function FieldsEditor({ table, only, onClose, onSave }: { table: Table; only?: s
   );
 }
 
-/* --------------------------------- Model tab -------------------------------- */
+/* -------------------------------- Schema tab -------------------------------- */
 
-/** Generates the semantic model from the Excel table, or refreshes / updates it. */
-function ModelTab({ excel, table, dataset }: { excel: ExcelEntry; table: Table; dataset?: DatasetEntry }) {
-  const [state, setState] = useState<{ busy?: string; error?: string; done?: string }>({});
-  const [name, setName] = useState(excel.name);
-  const [used, setUsed] = useState<number>();
-  const count = () => dataset && void apiRefreshesToday(dataset).then(setUsed, () => setUsed(undefined));
-  useEffect(count, [dataset?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const left = used === undefined ? undefined : API_REFRESHES_PER_DAY - used;
-  const run = (label: string, task: () => Promise<string>) => {
-    setState({ busy: label });
-    task()
-      .then((done) => setState({ done }), (e) => setState({ error: errorText(e) }))
-      .finally(count);
-  };
-  const refresh = async (d: { id: string; groupId?: string }) => {
-    const r = await refreshModel({ data: { datasetId: d.id, groupId: d.groupId } });
-    if (r.status !== "Completed") throw new Error(`Refresh ${r.status}: ${r.error ?? ""}`);
+/** The table's schema as JSON (fields, and the questions of its Microsoft Form when one is linked). */
+export const schemaOf = (excel: ExcelEntry, table: Table) => ({
+  name: excel.name,
+  table: excel.table,
+  link: excel.link,
+  fields: table.fields,
+  form: excel.form ?? null,
+});
+
+function SchemaTab({ excel, table }: { excel: ExcelEntry; table: Table }) {
+  const json = JSON.stringify(schemaOf(excel, table), null, 2);
+  const download = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+    a.download = `${excel.table}.schema.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
   return (
-    <div className="flex flex-col gap-3 p-3">
-      <ul className="flex flex-col gap-0.5 text-[12px]">
-        {table.fields.map((f) => (
-          <li key={f.name} className="flex justify-between gap-2">
-            <span className="truncate">{labelOf(f)}</span>
-            <span className="text-muted-foreground">{TYPE_LABELS[f.type]}</span>
-          </li>
-        ))}
-      </ul>
-      {dataset ? (
-        <>
-          <a className="flex items-center gap-2 font-medium underline" href={modelPage(dataset)} target="_blank" rel="noreferrer">
-            <DatabaseIcon className="size-4" /> {dataset.name}
+    <div className="flex min-h-0 flex-1 flex-col gap-3 p-3">
+      <FormLink excel={excel} />
+      <div className="flex items-center gap-2">
+        <span className="label">Schema (JSON)</span>
+        <button type="button" className="btn ml-auto h-7" onClick={download}>
+          <DownloadIcon /> Download
+        </button>
+      </div>
+      <pre className="min-h-40 flex-1 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">{json}</pre>
+    </div>
+  );
+}
+
+/** The Microsoft Form filling the table (optional): link, read again, remove. */
+function FormLink({ excel }: { excel: ExcelEntry }) {
+  const [link, setLink] = useState("");
+  const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
+  const read = (url: string) => {
+    setState({ busy: true });
+    readFormSchema(url).then(
+      (form) => patch("excels", excel.id, { form }).then(() => (setState({}), setLink(""))),
+      (e) => setState({ error: errorText(e) }),
+    );
+  };
+  return (
+    <div className="flex flex-col gap-1.5 rounded-lg border p-2.5">
+      <span className="label">Microsoft Form</span>
+      {excel.form ? (
+        <div className="flex items-center gap-1">
+          <a className="min-w-0 flex-1 truncate font-medium underline" href={excel.form.url} target="_blank" rel="noreferrer">
+            {excel.form.title || "Untitled form"}
           </a>
-          <button type="button" className="btn-primary w-fit" disabled={!!state.busy || left === 0} onClick={() => run("Refreshing…", () => refresh(dataset).then(() => "Data published to Power BI."))}>
-            <UploadIcon /> Publish the data (refresh)
+          <span className="shrink-0 text-[11px] text-muted-foreground">{excel.form.questions.length} questions</span>
+          <button type="button" className="icon-btn" title="Read the form again" disabled={state.busy} onClick={() => read(excel.form!.url)}>
+            <RefreshCwIcon />
           </button>
-          <button
-            type="button"
-            className="btn w-fit"
-            disabled={!!state.busy || left === 0}
-            onClick={() =>
-              run("Updating the columns…", async () => {
-                const files = await readModelFiles(dataset.id, dataset.groupId);
-                const path = `definition/tables/${excel.table}.tmdl`;
-                await writeModelFiles(dataset.id, files.map((f) => (f.path === path ? { ...f, text: tableTmdl(excel, table, f.text) } : f)), dataset.groupId);
-                await refresh(dataset);
-                await refreshDatasetText(dataset);
-                return "Model updated from the fields (measures kept).";
-              })
-            }
-          >
-            <RefreshCwIcon /> Update the model from the fields
+          <button type="button" className="icon-btn" title="Unlink the form" onClick={() => void patch("excels", excel.id, { form: undefined })}>
+            <XIcon />
           </button>
-          <p className={`text-[12px] ${left === 0 ? "text-destructive" : "text-muted-foreground"}`}>
-            {used === undefined ? "Refreshes today: unknown." : `${used} / ${API_REFRESHES_PER_DAY} refreshes by the app today (UTC day, Power BI Pro).`}
-            {left === 0 && " Limit reached:"}
-          </p>
-          <a className="btn w-fit" href={modelPage(dataset)} target="_blank" rel="noreferrer">
-            <ExternalLinkIcon /> Refresh now in Power BI (not limited)
-          </a>
-        </>
+        </div>
       ) : (
-        <>
-          <label className="label">Semantic model name</label>
-          <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-          <button
-            type="button"
-            className="btn-primary w-fit"
-            disabled={!!state.busy || !name}
-            onClick={() =>
-              run("Creating the model…", async () => {
-                const id = await createModel(excel, table, name);
-                await refresh({ id });
-                await addDataset(id, undefined, { excelId: excel.id, context: excel.context });
-                return "Model created in My workspace and added to the library.";
-              })
-            }
-          >
-            <DatabaseIcon /> Generate the semantic model
+        <div className="flex gap-1.5">
+          <input className="input h-7" placeholder="Link of the form (optional)" value={link} onChange={(e) => setLink(e.target.value)} onKeyDown={(e) => e.key === "Enter" && link.trim() && read(link)} />
+          <button type="button" className="btn-primary h-7" disabled={state.busy || !link.trim()} onClick={() => read(link)}>
+            {state.busy ? "Reading…" : "Link"}
           </button>
-        </>
+        </div>
       )}
-      {state.busy && <p className="text-[12px] text-muted-foreground">{state.busy}</p>}
-      {state.done && <p className="text-[12px] text-green-700">{state.done}</p>}
-      {state.error && <p className="text-[12px] text-destructive">{state.error}</p>}
+      {state.error && <p className="text-[11px] break-words text-destructive">{state.error}</p>}
     </div>
   );
 }
@@ -984,17 +967,15 @@ function ModelTab({ excel, table, dataset }: { excel: ExcelEntry; table: Table; 
 
 const cell = z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]);
 
-function datasetAgent({ excel, table, dataset, rows, checked, view, setView, write }: {
+function datasetAgent({ excel, table, rows, checked, view, setView, write }: {
   excel: ExcelEntry;
   table: Table;
-  dataset?: DatasetEntry;
   rows: () => TRow<Row>[];
   checked: number[];
   view: View;
   setView: (p: Partial<View>) => void;
   write: (task: (t: Table) => Promise<unknown>, o?: { refetch?: boolean; optimistic?: (t: Table) => Table }) => Promise<unknown>;
 }): Agent {
-  const tablePath = `definition/tables/${excel.table}.tmdl`;
   const idField = table.fields.find(isIdField);
   /** Row given by its id (TASK_001) or its index. */
   const indexOf = (r: { index?: number; id?: string }) => {
@@ -1010,19 +991,17 @@ function datasetAgent({ excel, table, dataset, rows, checked, view, setView, wri
     .map((f) => `- ${f.name} (${TYPE_LABELS[f.type]}${f.required ? ", required" : ""}${f.multiple ? ", multiple" : ""})${f.label ? ` label "${f.label}"` : ""}${f.options?.length ? ` options: ${f.options.map((o) => `${o.value} [${o.color}]`).join(", ")}` : ""}${f.description ? ` — ${f.description}` : ""}`)
     .join("\n");
   return {
-    instructions: `You manage the content of an Excel table on SharePoint ("${excel.name}"), shown as a table or as detail cards, and the Power BI semantic model generated from it. Rows have ${idField ? `an id (column "${idField.name}", e.g. ${idPrefix(excel.table)}_001, given by the app: never set or change it; use it to name rows to the user and in tool calls) and ` : ""}an "index" (position in the Excel table). Text fields hold markdown; option fields only accept their listed values (multiple: a list); image fields hold image links; dates are YYYY-MM-DD. Data changes reach Power BI after refresh_model.`,
+    instructions: `You manage the content of an Excel table on SharePoint ("${excel.name}"), shown as a table or as detail cards. Rows have ${idField ? `an id (column "${idField.name}", e.g. ${idPrefix(excel.table)}_001, given by the app; use it to name rows to the user and in tool calls; change one with change_row_id ONLY when the user explicitly asks to change that id) and ` : ""}an "index" (position in the Excel table). Text fields hold markdown; option fields only accept their listed values (multiple: a list); image fields hold image links; dates are YYYY-MM-DD.`,
     context: async () =>
       [
         `Excel "${excel.name}" (table ${excel.table})${excel.context ? `\nNotes: ${excel.context}` : ""}`,
         `Fields:\n${fieldsText}`,
+        excel.form ? `Microsoft Form "${excel.form.title}" fills this table; its questions: ${excel.form.questions.map((q) => `${q.title} (${q.type}${q.multiple ? ", multiple" : ""}${q.required ? ", required" : ""})`).join("; ")}` : "",
         checked.length
           ? `THE USER SELECTED ${checked.length} ROW(S): indexes ${checked.join(", ")}. Act on these rows only (read them with read_rows), unless the user clearly asks otherwise.`
           : "No row selected: the request concerns all the rows.",
         `${table.rows.length} rows; the user's view (${view.layout}) shows ${rows().length}${view.search ? `, search "${view.search}"` : ""}${Object.entries(view.filters).filter(([, v]) => v.length).map(([k, v]) => `, ${k} in (${v.join(", ")})`).join("")}${Object.entries(view.where ?? {}).filter(([, c]) => isActive(c)).map(([k, c]) => `, ${k} ${JSON.stringify(c)}`).join("")}`,
-        dataset
-          ? `Semantic model "${dataset.name}" generated from it:\n${dataset.model ?? ""}\nRefreshes by the app today: ${await apiRefreshesToday(dataset).catch(() => "?")} / ${API_REFRESHES_PER_DAY}. Group the changes, then refresh once.`
-          : "No semantic model generated yet (the user can generate it in the Semantic model tab).",
-      ].join("\n\n"),
+      ].filter(Boolean).join("\n\n"),
     tools: [
       tool({
         name: "read_rows",
@@ -1042,10 +1021,10 @@ function datasetAgent({ excel, table, dataset, rows, checked, view, setView, wri
       }),
       tool({
         name: "update_rows",
-        description: "Changes values of rows (only the given fields). Each row by its id (or index).",
+        description: "Changes values of rows (only the given fields; never the id: see change_row_id). Each row by its id (or index).",
         args: z.object({ rows: z.array(z.object({ id: z.string().optional(), index: z.number().optional(), values: z.record(z.string(), cell) })) }),
         run: async ({ rows: given }) => {
-          const changes = given.map((r) => ({ index: indexOf(r), values: r.values }));
+          const changes = given.map((r) => ({ index: indexOf(r), values: Object.fromEntries(Object.entries(r.values).filter(([k]) => k !== idField?.name)) }));
           await write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) });
           return `${changes.length} row(s) updated.`;
         },
@@ -1118,37 +1097,19 @@ function datasetAgent({ excel, table, dataset, rows, checked, view, setView, wri
           return "Fields saved.";
         },
       }),
-      ...(dataset
+      ...(idField
         ? [
-            daxTool(() => dataset),
-            ...modelTools(() => dataset),
             tool({
-              name: "read_model",
-              description: "Reads the TMDL of the model table (columns, measures, source).",
-              args: z.object({}),
-              readOnly: true,
-              run: async () => (await readModelFiles(dataset.id, dataset.groupId)).find((f) => f.path === tablePath)?.text ?? "Table file not found.",
-            }),
-            tool({
-              name: "write_model",
-              description: "Replaces the TMDL of the model table (read it first, send it whole, tabs for indentation), then refreshes the model.",
-              args: z.object({ tmdl: z.string() }),
-              run: async ({ tmdl }) => {
-                const files = await readModelFiles(dataset.id, dataset.groupId);
-                await writeModelFiles(dataset.id, files.map((f) => (f.path === tablePath ? { ...f, text: tmdl } : f)), dataset.groupId);
-                const r = await refreshModel({ data: { datasetId: dataset.id, groupId: dataset.groupId } });
-                await refreshDatasetText(dataset);
-                return `Model updated; refresh ${r.status}${r.error ? `: ${r.error}` : ""}.`;
-              },
-            }),
-            tool({
-              name: "refresh_model",
-              description: `Publishes the Excel data to Power BI (model refresh, ${API_REFRESHES_PER_DAY} per day): only once all the requested changes are done.`,
-              args: z.object({}),
-              run: async () => {
-                if ((await apiRefreshesToday(dataset)) >= API_REFRESHES_PER_DAY) return `Daily limit reached: tell the user to click "Refresh now" on ${modelPage(dataset)} (not limited).`;
-                const r = await refreshModel({ data: { datasetId: dataset.id, groupId: dataset.groupId } });
-                return `Refresh ${r.status}${r.error ? `: ${r.error}` : ""}.`;
+              name: "change_row_id",
+              description: "Changes the id of a row. ONLY when the user explicitly asks to change / rename that id. The new id must be unique (case ignored) and not empty.",
+              args: z.object({ id: z.string().describe("Current id"), new_id: z.string() }),
+              run: async ({ id, new_id }) => {
+                const index = indexOf({ id });
+                const error = idError(table, index, new_id);
+                if (error) throw new Error(error);
+                const changes = [{ index, values: { [idField.name]: new_id.trim() } }];
+                await write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) });
+                return `Id ${id} changed to ${new_id.trim()}.`;
               },
             }),
           ]

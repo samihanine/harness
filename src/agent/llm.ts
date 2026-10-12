@@ -7,14 +7,13 @@
  * a local message list replayed with every call (stateless API).
  */
 import { settings } from "@/lib/store";
-import { aiProxy } from "@/server/ai";
-import { AI_BASE_URL } from "./ai-base";
 
 /* -------------------------------------------------------------------------- */
 /* Provider settings — change these to target another compatible chat API.    */
 /* -------------------------------------------------------------------------- */
 
-/** Base URL of the API: in ai-base.ts (shared with the server, which can hold the key: AI_KEY in .env). */
+/** Base URL of the API (called from the browser: it must allow CORS). */
+export const AI_BASE_URL = "https://api.openai.com/v1";
 
 /** Exact model names (the first one is the default). */
 export const AI_MODELS: readonly string[] = ["gpt-6-luna", "gpt-5.5", "gpt-5", "gpt-5-mini"];
@@ -64,7 +63,7 @@ function parseKey(raw: string): AiKey {
 
 export class AiAuthError extends Error {
   constructor(status: number) {
-    super(status ? `The AI key was rejected (HTTP ${status}).` : "Missing AI key: add it in the settings (or AI_KEY in the server's .env).");
+    super(status ? `The AI key was rejected (HTTP ${status}).` : "Missing AI key: add it in the AI settings (⚙ at the top right).");
   }
 }
 
@@ -106,24 +105,16 @@ export async function deleteRemoteConversation(id: string) {
   if (AI_DELETE_PATH && id) await request("DELETE", AI_DELETE_PATH.replace("{conversationId}", id));
 }
 
-/** Without a key in the settings, the server's key (AI_KEY in .env) is used through the server. */
-async function serverRequest(method: string, path: string, body?: unknown) {
-  const fields = new Proxy({}, { get: (_, name) => `{{AI_KEY:${String(name)}}}` }) as Record<string, string>;
-  const r = await aiProxy({ data: { method, path, body, headers: AI_HEADERS({ token: "{{AI_KEY}}", fields }) } });
-  if (r.status === 0) throw new AiAuthError(0);
-  return new Response(r.body, { status: r.status, headers: { "content-type": r.type } });
-}
-
+/** Calls the API from the browser, with the key saved in the AI settings. */
 async function request(method: string, path: string, body?: unknown, signal?: AbortSignal) {
   const { aiKey } = await settings.get();
-  const response = !aiKey
-    ? await serverRequest(method, path, body)
-    : await fetch(`${AI_BASE_URL}${path}`, {
-        method,
-        signal,
-        headers: { "Content-Type": "application/json", ...AI_HEADERS(parseKey(aiKey)) },
-        body: body === undefined ? undefined : JSON.stringify(body),
-      });
+  if (!aiKey) throw new AiAuthError(0);
+  const response = await fetch(`${AI_BASE_URL}${path}`, {
+    method,
+    signal,
+    headers: { "Content-Type": "application/json", ...AI_HEADERS(parseKey(aiKey)) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
   if (response.status === 401 || response.status === 403) throw new AiAuthError(response.status);
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));

@@ -1,5 +1,6 @@
 /** Library entries: what is read from Power BI / SharePoint when a link is added or refreshed. */
 import { readTable, resolveExcel, saveFields, styleSheet } from "./excel";
+import { readFormSchema } from "./forms";
 import { COLORS, type Field } from "./schema";
 import { graph, pbi } from "./ms";
 import { addSamples, readModel, modelSummary } from "./model";
@@ -109,8 +110,11 @@ export async function refreshDatasetText(entry: DatasetEntry) {
 /**
  * Adds an Excel table: its columns are detected, written as its schema and the sheet is styled after them.
  * `required`: fields the file must have (missing columns are added; a file without table gets one).
+ * `formLink`: the Microsoft Form filling it (optional), whose questions are read and kept with it.
  */
-export async function addExcel(link: string, table?: string, required: Field[] = []): Promise<ExcelEntry> {
+export async function addExcel(link: string, table?: string, required: Field[] = [], formLink?: string): Promise<ExcelEntry> {
+  // Read first: a wrong form link fails the add before anything is written.
+  const form = formLink?.trim() ? await readFormSchema(formLink) : undefined;
   let file = await resolveExcel(link);
   if (file.tables.length === 0 && required.length) {
     await createTable(file, required.map((f) => f.name));
@@ -130,6 +134,7 @@ export async function addExcel(link: string, table?: string, required: Field[] =
     fileUrl: file.fileUrl,
     table: name,
     context: old?.context ?? "",
+    form: form ?? old?.form,
   });
   await ensureFields(entry, required).catch(() => undefined);
   return entry;
@@ -190,15 +195,3 @@ export async function cloneReport(entry: ReportEntry) {
   });
   return addReport(copy.webUrl ?? copy.id);
 }
-
-/** Power BI Pro: 8 scheduled + API refreshes per model and per UTC day; "Refresh now" clicks in Power BI are not counted. */
-export const API_REFRESHES_PER_DAY = 8;
-
-export async function apiRefreshesToday(d: Ref) {
-  const today = new Date().toISOString().slice(0, 10);
-  const { value } = await pbi(`${scope(d.groupId)}/datasets/${d.id}/refreshes?$top=60`);
-  return (value as { refreshType: string; startTime: string }[]).filter((r) => r.refreshType !== "OnDemand" && r.startTime.startsWith(today)).length;
-}
-
-/** Semantic model page in Power BI (its "Refresh now" button is not limited). */
-export const modelPage = (d: Ref) => `https://app.powerbi.com/groups/${d.groupId ?? "me"}/datasets/${d.id}/details`;

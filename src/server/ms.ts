@@ -18,7 +18,7 @@ const BASES = {
   fabric: "https://api.fabric.microsoft.com/v1",
   graph: "https://graph.microsoft.com/v1.0",
 } as const;
-export type Service = keyof typeof BASES | "sharepoint";
+export type Service = keyof typeof BASES | "sharepoint" | "forms";
 
 const scopeOf = (service: Service, host?: string) =>
   ({
@@ -26,6 +26,7 @@ const scopeOf = (service: Service, host?: string) =>
     fabric: "https://api.fabric.microsoft.com/.default",
     graph: "https://graph.microsoft.com/.default",
     sharepoint: `https://${host}/.default`,
+    forms: "https://forms.office.com/.default",
   })[service] + " offline_access openid profile";
 
 type Pending = { userCode: string; verificationUri: string; expiresAt: number; error?: string };
@@ -238,4 +239,33 @@ export const downloadFile = createServerFn({ method: "POST" })
     if (!r.ok) throw new Error(`Cannot read the file (${r.status})`);
     const type = r.headers.get("content-type") ?? "application/octet-stream";
     return `data:${type};base64,${Buffer.from(await r.arrayBuffer()).toString("base64")}`;
+  });
+
+/**
+ * Structure of a Microsoft Form (questions, types, options) from its link. Forms has no public API:
+ * this is the endpoint its own pages use, with a token of the same sign-in (may change without notice).
+ */
+export const readForm = createServerFn({ method: "POST" })
+  .inputValidator((d: { url: string }) => d)
+  .handler(async ({ data }) => {
+    const id = data.url.trim().match(/[?&]id=([\w-]+(?:\.|%2E)*)/i)?.[1]?.replace(/%2E/gi, ".") ?? (/^[\w-]+\.*$/.test(data.url.trim()) ? data.url.trim() : undefined);
+    if (!id) throw new Error("No form id in this link (expected …ResponsePage.aspx?id=… or …DesignPageV2.aspx?…id=…).");
+    // The id holds the tenant and the owner (two GUIDs, little-endian, base64url).
+    const bytes = Buffer.from(id.replace(/\.+$/, ""), "base64url");
+    if (bytes.length < 32) throw new Error("This form id cannot be read.");
+    const guid = (b: Buffer) => {
+      const h = b.toString("hex");
+      const le = (x: string) => x.match(/../g)!.reverse().join("");
+      return `${le(h.slice(0, 8))}-${le(h.slice(8, 12))}-${le(h.slice(12, 16))}-${h.slice(16, 20)}-${h.slice(20)}`;
+    };
+    const tenant = guid(bytes.subarray(0, 16));
+    const owner = guid(bytes.subarray(16, 32));
+    const { token } = await accessToken("forms");
+    const r = await fetch(`https://forms.cloud.microsoft/formapi/api/${tenant}/users/${owner}/light/runtimeForms('${id}')?$expand=questions($expand=choices)`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`Form not readable (${r.status}): ${text.slice(0, 200)}`);
+    const form = JSON.parse(text);
+    return { id, tenant, owner, title: form.title as string, questions: form.questions as Record<string, any>[] };
   });

@@ -1,6 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Navigate, createFileRoute } from "@tanstack/react-router";
-import { SCREENS } from "@/config";
+import { createFileRoute } from "@tanstack/react-router";
 import { downloadText, fullModelText } from "@/lib/model";
 import { CopyIcon, DownloadIcon, ExternalLinkIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { resolveFolder } from "@/lib/excel";
@@ -8,12 +7,8 @@ import { addDataset, addExcel, addReport, cloneReport, refreshDatasetText } from
 import { errorText } from "@/lib/ms";
 import { patch, remove, useCollection, type ExcelEntry } from "@/lib/store";
 
-export const Route = createFileRoute("/")({ component: Library });
-
-function Library() {
-  if (!SCREENS.library) return <Navigate to={SCREENS.viewer ? "/viewer" : SCREENS.builder ? "/builder" : "/datasets"} search={{} as never} />;
-  return <LibraryPage />;
-}
+// Hidden (SCREENS.library = false): the root layout opens the first screen shown instead.
+export const Route = createFileRoute("/")({ component: LibraryPage });
 
 function LibraryPage() {
   const reports = useCollection("reports");
@@ -56,7 +51,7 @@ function LibraryPage() {
             key={d.id}
             title={d.name}
             subtitle={[
-              d.excelId ? `from Excel ${excels.find((e) => e.id === d.excelId)?.name ?? ""}` : d.groupId ? "workspace" : "My workspace",
+              d.groupId ? "workspace" : "My workspace",
               d.info ? (d.info.source === "tmdl" ? "full structure" : "partial structure (no write access)") : "structure not read",
             ].join(" · ")}
             href={`https://app.powerbi.com/${d.groupId ? `groups/${d.groupId}` : "groups/me"}/datasets/${d.id}/details`}

@@ -1,10 +1,10 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { icons, CheckIcon, ChevronRightIcon, FileTextIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, Settings2Icon, Trash2Icon, XIcon } from "lucide-react";
+import { icons, ChartColumnIcon, CheckIcon, DownloadIcon, ChevronRightIcon, FileTextIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, Settings2Icon, Trash2Icon, XIcon } from "lucide-react";
 import { Drawer } from "@/components/drawer";
 import { Markdown } from "@/components/markdown";
 import { Chat } from "@/components/chat";
-import { REPORT_VIEWER_EDITOR, VIEWER_TABS, visible } from "@/config";
+import { EXPORT, REPORT_VIEWER_EDITOR, VIEWER_TABS, visible } from "@/config";
 import { RichText } from "@/components/rich-text";
 import { COLORS, SWATCHES, isColor } from "@/lib/schema";
 import { Picker } from "@/components/picker";
@@ -19,7 +19,9 @@ import { useTable } from "@/lib/use-table";
 
 type Write = ReturnType<typeof useTable>["write"];
 import { errorText } from "@/lib/ms";
+import { describeError } from "@/agent/loop";
 import { pageText, type Report } from "@/lib/pbi";
+import { captureVisualPng, printVisual } from "@/lib/visual-image";
 import { useCollection, type DatasetEntry, type ExcelEntry, type ReportEntry } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
 import { useLast } from "@/lib/last";
@@ -440,6 +442,9 @@ function GuideTab({ excel, reportId, report, selection }: { excel?: ExcelEntry; 
   return (
     <div className="flex flex-col">
       {crumbs}
+      {(EXPORT.visualPdf || EXPORT.visualPng) && here && report && selection.page && selection.visual && (
+        <VisualDownload key={here} report={report} page={selection.page} visual={selection.visual} title={visualTitle(here)} />
+      )}
       {body}
       {error && table && <p className="px-3 py-2 text-[12px] text-destructive">{error}</p>}
       {editor && (
@@ -461,6 +466,34 @@ function GuideTab({ excel, reportId, report, selection }: { excel?: ExcelEntry; 
           )}
         </TabDrawer>
       )}
+    </div>
+  );
+}
+
+/** The visual clicked in the report, with buttons to save it alone as a PDF or a PNG (guide or not). */
+function VisualDownload({ report, page, visual, title }: { report: Report; page: string; visual: string; title: string }) {
+  const [state, setState] = useState<{ busy?: "pdf" | "png"; error?: string }>({});
+  const run = (kind: "pdf" | "png") => {
+    setState({ busy: kind });
+    (kind === "pdf" ? printVisual(report, page, visual) : captureVisualPng(report, page, visual, title)).then(() => setState({}), (e) => setState({ error: describeError(e) }));
+  };
+  return (
+    <div className="flex flex-col gap-1 border-b px-3 py-2">
+      <div className="flex items-center gap-1.5">
+        <ChartColumnIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate text-[12px]">{title}</span>
+        {EXPORT.visualPdf && (
+          <button type="button" className="btn h-7 shrink-0" disabled={!!state.busy} onClick={() => run("pdf")}>
+            <DownloadIcon /> {state.busy === "pdf" ? "Preparing…" : "PDF"}
+          </button>
+        )}
+        {EXPORT.visualPng && (
+          <button type="button" className="btn h-7 shrink-0" title="Captured from this tab: the browser asks once to share it" disabled={!!state.busy} onClick={() => run("png")}>
+            <DownloadIcon /> {state.busy === "png" ? "Capturing…" : "PNG"}
+          </button>
+        )}
+      </div>
+      {state.error && <p className="text-[11px] break-words text-destructive">{state.error}</p>}
     </div>
   );
 }

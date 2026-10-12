@@ -67,21 +67,39 @@ async function fillIds(e: ExcelEntry, fields: Field[], rows: Row[]) {
   );
 }
 
-const check = (t: Table, values: Row) => {
+/** Why a row (by index) cannot take this id: empty, or already used by another row (case ignored). */
+export function idError(t: Pick<Table, "fields" | "rows">, index: number, value: unknown) {
+  const id = t.fields.find(isIdField);
+  if (!id) return undefined;
+  const v = String(value ?? "").trim();
+  if (!v) return "The id cannot be empty.";
+  const other = t.rows.findIndex((r, i) => i !== index && String(r[id.name] ?? "").trim().toLowerCase() === v.toLowerCase());
+  return other >= 0 ? `The id "${v}" is already used by row ${other + 1}.` : undefined;
+}
+
+/** Typed values of a write. Ids are given by the app (addRows); they change only on an explicit edit (`index` given). */
+const check = (t: Table, values: Row, index?: number) => {
   const out: Row = {};
   for (const [name, value] of Object.entries(values)) {
     const field = t.fields.find((f) => f.name === name);
     if (!field) throw new Error(`Unknown field "${name}" (fields: ${t.fields.map((f) => f.name).join(", ")})`);
-    if (isIdField(field)) continue; // ids are given by the app only (addRows)
+    if (isIdField(field)) {
+      if (index === undefined) continue;
+      const error = idError(t, index, value);
+      if (error) throw new Error(error);
+      out[name] = String(value).trim();
+      continue;
+    }
     out[name] = coerce(field, value);
   }
   return out;
 };
 /* Local versions of the writes, applied before the request (optimistic updates). */
 export const withUpdates = (t: Table, changes: { index: number; values: Row }[]): Table => {
-  const rows = [...t.rows];
-  for (const { index, values } of changes) rows[index] = { ...rows[index], ...check(t, values) };
-  return { ...t, rows };
+  const next = { ...t, rows: [...t.rows] };
+  // One after the other: two ids changed together are checked against each other.
+  for (const { index, values } of changes) next.rows[index] = { ...next.rows[index], ...check(next, values, index) };
+  return next;
 };
 export const withoutRows = (t: Table, indexes: number[]): Table => ({ ...t, rows: t.rows.filter((_, i) => !indexes.includes(i)) });
 export const withRows = (t: Table, added: Row[]): Table => ({ ...t, rows: [...t.rows, ...added.map((r) => check(t, r))] });
@@ -115,7 +133,7 @@ export async function updateRows(e: ExcelEntry, t: Table, changes: { index: numb
   const ws = `${book(e)}/worksheets('${encodeURIComponent(sheet.replace(/'/g, "''"))}')`;
   for (const { index, values } of changes) {
     if (!t.rows[index]) throw new Error(`No row at index ${index}`);
-    const checked = check(t, values);
+    const checked = check(t, values, index);
     const unknown = Object.keys(checked).filter((name) => !t.header.includes(name));
     if (unknown.length) throw new Error(`Column(s) not in the Excel table: ${unknown.join(", ")}`);
     const line = top + 1 + index;
