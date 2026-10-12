@@ -1,14 +1,15 @@
 /** Editing one value by field type, in a table cell or in a form. */
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, ImageIcon, SearchIcon, UploadIcon, XIcon } from "lucide-react";
+import { CheckIcon, ExternalLinkIcon, FolderIcon, ImageIcon, SearchIcon, UploadIcon } from "lucide-react";
 import { imageUrl } from "@/lib/excel";
 import { errorText } from "@/lib/ms";
-import { TINTS, listOf, type Field } from "@/lib/schema";
+import { TINTS, isIdField, listOf, type Field } from "@/lib/schema";
 import { Markdown } from "./markdown";
 import { Popover } from "./popover";
 import { RichText } from "./rich-text";
 
-export type Uploader = { save: (file: File) => Promise<string>; label: string };
+/** Image uploads: only into a SharePoint folder the user chose (`folder` = its name). */
+export type Uploader = { save: (file: File) => Promise<string>; folder?: string; chooseFolder: (link: string) => Promise<unknown> };
 
 export type InputProps = {
   field: Field;
@@ -25,6 +26,9 @@ const base = {
 };
 
 export function FieldInput(props: InputProps) {
+  // Ids are given by the app: read only.
+  if (isIdField(props.field))
+    return <span className={`flex h-8 items-center text-[12px] text-muted-foreground tabular-nums ${props.variant === "cell" ? "px-2" : ""}`}>{String(props.value ?? "")}</span>;
   switch (props.field.type) {
     case "boolean":
       return (
@@ -44,7 +48,7 @@ export function FieldInput(props: InputProps) {
 }
 
 /** Committed on blur / Enter, so each keystroke does not write the file. */
-function TextInput({ field, value, onChange, variant }: InputProps) {
+function TextInput({ field, value, onChange, variant, placeholder }: InputProps & { placeholder?: string }) {
   const shown = value === null || value === undefined ? "" : String(value);
   const [draft, setDraft] = useState(shown);
   useEffect(() => setDraft(shown), [shown]);
@@ -54,6 +58,7 @@ function TextInput({ field, value, onChange, variant }: InputProps) {
       type={field.type === "date" ? "date" : "text"}
       inputMode={numeric ? "decimal" : undefined}
       value={draft}
+      placeholder={placeholder}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => draft !== shown && onChange(draft)}
       onKeyDown={(e) => {
@@ -154,63 +159,86 @@ export function Thumbnail({ value, className = "" }: { value: unknown; className
   );
 }
 
-function ImageInput({ value, onChange, variant, upload }: InputProps) {
+/** Image field = a link column: paste a URL, or upload a file to the chosen SharePoint folder (its link is stored). */
+function ImageInput(props: InputProps) {
+  const { value, variant } = props;
+  const url = String(value ?? "");
+  return (
+    <div className={`flex items-center ${variant === "form" ? "gap-1" : "pr-1"}`}>
+      <span className="min-w-0 flex-1">
+        <TextInput {...props} placeholder={variant === "form" ? "https://… (image link)" : undefined} />
+      </span>
+      <span className={`flex shrink-0 ${variant === "cell" ? "opacity-0 group-hover:opacity-100 focus-within:opacity-100" : ""}`}>
+        {/^https?:\/\//i.test(url) && (
+          <a className="icon-btn" href={url} target="_blank" rel="noreferrer" title="Open the link">
+            <ExternalLinkIcon />
+          </a>
+        )}
+        <UploadButton {...props} />
+      </span>
+    </div>
+  );
+}
+
+function UploadButton({ onChange, upload }: InputProps) {
   const file = useRef<HTMLInputElement>(null);
-  const [link, setLink] = useState("");
-  const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
-  const send = (f: File, close: () => void) => {
-    setState({ busy: true });
-    upload!.save(f).then(
-      (url) => {
-        onChange(url);
-        setState({});
-        close();
-      },
-      (e) => setState({ error: errorText(e) }),
-    );
+  const [folder, setFolder] = useState<string>();
+  const [state, setState] = useState<{ busy?: string; error?: string }>({});
+  if (!upload) return null;
+  const run = (busy: string, task: Promise<unknown>, done?: () => void) => {
+    setState({ busy });
+    task.then(() => (setState({}), done?.()), (e) => setState({ error: errorText(e) }));
   };
-  const picker = (
-    <Popover full width={320} trigger={(open) => (
-      <button type="button" onClick={open} className={`flex min-h-8 w-full items-center gap-2 text-left ${variant === "cell" ? "px-2 py-1" : "rounded-md border bg-card px-2 py-1.5"}`}>
-        {variant === "cell" ? <Thumbnail value={value} className="size-7" /> : <ImageIcon className="size-4 shrink-0 text-muted-foreground" />}
-        {variant === "form" && <span className="truncate text-[12px] text-muted-foreground">{value ? String(value) : "No image: click to upload or paste a link"}</span>}
+  const choosing = !upload.folder || folder !== undefined;
+  return (
+    <Popover width={300} trigger={(open) => (
+      <button type="button" className="icon-btn" title="Upload an image" onClick={() => (setFolder(undefined), setState({}), open())}>
+        <UploadIcon />
       </button>
     )}>
-      {(close) => (
-        <>
-          <div className="flex gap-1.5">
-            {upload && (
-              <>
-                <input ref={file} type="file" accept="image/*" hidden onChange={(e) => e.target.files?.[0] && send(e.target.files[0], close)} />
-                <button type="button" className="btn h-7 flex-1" disabled={state.busy} onClick={() => file.current?.click()}>
-                  <UploadIcon /> {state.busy ? "Uploading…" : "Upload"}
+      {(close) =>
+        choosing ? (
+          <div className="flex flex-col gap-2 p-1">
+            <span className="text-[12px]">{upload.folder ? "Other folder for the uploads" : "First choose the SharePoint folder that receives the images"}: paste its link.</span>
+            <input autoFocus className="input h-7 text-[12px]" placeholder="https://…sharepoint.com/:f:/…" value={folder ?? ""} onChange={(e) => setFolder(e.target.value)} />
+            <div className="flex justify-end gap-1.5">
+              {upload.folder && (
+                <button type="button" className="btn h-7" onClick={() => setFolder(undefined)}>
+                  Back
                 </button>
-              </>
-            )}
-            {!!value && (
-              <button type="button" className="btn h-7" onClick={() => (onChange(null), close())}>
-                <XIcon /> Clear
+              )}
+              <button type="button" className="btn-primary h-7" disabled={!folder?.trim() || !!state.busy} onClick={() => run("Checking…", upload.chooseFolder(folder!.trim()), () => setFolder(undefined))}>
+                <FolderIcon /> {state.busy ?? "Use this folder"}
               </button>
-            )}
+            </div>
+            {state.error && <p className="text-[11px] text-destructive">{state.error}</p>}
           </div>
-          {upload && <p className="text-[11px] text-muted-foreground">Uploaded to {upload.label}</p>}
-          <input
-            value={link}
-            onChange={(e) => setLink(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && /^https?:\/\//i.test(link.trim()) && (onChange(link.trim()), setLink(""), close())}
-            placeholder="Or paste an image link (Enter)"
-            className="input h-7 text-[12px]"
-          />
-          {state.error && <p className="text-[11px] text-destructive">{state.error}</p>}
-        </>
-      )}
+        ) : (
+          <div className="flex flex-col gap-2 p-1">
+            <input
+              ref={file}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                e.target.value = "";
+                if (f) run("Uploading…", upload.save(f).then(onChange), close);
+              }}
+            />
+            <button type="button" className="btn-primary h-7" disabled={!!state.busy} onClick={() => file.current?.click()}>
+              <UploadIcon /> {state.busy ?? "Choose an image"}
+            </button>
+            <p className="text-[11px] text-muted-foreground">
+              Goes to the folder "{upload.folder}"; its link is stored in the cell.{" "}
+              <button type="button" className="underline" onClick={() => setFolder("")}>
+                Change the folder
+              </button>
+            </p>
+            {state.error && <p className="text-[11px] text-destructive">{state.error}</p>}
+          </div>
+        )
+      }
     </Popover>
-  );
-  if (variant === "cell") return picker;
-  return (
-    <div className="flex flex-col gap-2">
-      {picker}
-      {!!value && <Thumbnail value={value} className="max-h-96 w-full object-contain bg-muted" />}
-    </div>
   );
 }

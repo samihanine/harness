@@ -3,7 +3,7 @@ import { z } from "zod";
 import { refreshDatasetText } from "@/lib/library";
 import { addFieldParameter, addNumericParameter } from "@/lib/parameters";
 import { layoutIssues, type Report } from "@/lib/pbi";
-import { addShape, deleteReportMeasure, reportMeasuresText, setInteractions, setPositions, setSlicerSelection, setTextbox, upsertReportMeasure } from "@/lib/report-def";
+import { addShape, deleteReportMeasure, formatTable, reportMeasuresText, setInteractions, setPositions, setSlicerSelection, setTextbox, sortVisual, upsertReportMeasure } from "@/lib/report-def";
 import type { DatasetEntry, ReportEntry } from "@/lib/store";
 import { refreshModel } from "@/server/ms";
 import { tool, type Tool } from "./loop";
@@ -20,6 +20,10 @@ export async function rewrite(r: Report, task: () => Promise<string>) {
   });
   await r.reload().catch(() => undefined);
   await ready;
+  // Not reloaded (error, or the editor was recreated): say it rather than failing every next step.
+  await r.getPages().catch(() => {
+    throw new Error(`${text} — but the editor did not reload. Wait a few seconds and retry; if it persists, the user should reopen the report.`);
+  });
   return text;
 }
 
@@ -90,6 +94,10 @@ export function reportModelTools({ report, entry, dataset, changed }: {
         format: z.string().optional().describe('Format string, e.g. "#,0", "0.0%", "$#,0"'),
         folder: z.string().optional(),
         description: z.string().optional(),
+        category: z
+          .enum(["ImageUrl", "WebUrl"])
+          .optional()
+          .describe('"ImageUrl": the measure returns an image link, shown as an image in a table / matrix (e.g. the image of the selected item)'),
       }),
       run: (m) => {
         const { reportRef, datasetRef, d } = need();
@@ -182,12 +190,69 @@ export function reportModelTools({ report, entry, dataset, changed }: {
     }),
     tool({
       name: "set_slicer_selection",
-      description: 'Slicer settings: single or multiple selection, "Select all" option, and style: "dropdown" (a select), "list" or "tile" (buttons).',
-      args: z.object({ visual: z.string(), single: z.boolean().optional(), select_all: z.boolean().optional(), style: z.enum(["dropdown", "list", "tile"]).optional() }),
-      run: ({ visual, single, select_all, style }) =>
+      description:
+        'Slicer settings: single or multiple selection, "Select all" option, style "dropdown" (a select), "list" or "tile" (buttons), and a search box (search = true: typing filters the values, e.g. a search on task titles).',
+      args: z.object({
+        visual: z.string(),
+        single: z.boolean().optional(),
+        select_all: z.boolean().optional(),
+        style: z.enum(["dropdown", "list", "tile"]).optional(),
+        search: z.boolean().optional(),
+      }),
+      run: ({ visual, single, select_all, style, search }) =>
         around(async () => {
           const v = await visualByName(visual);
-          return setSlicerSelection(need().reportRef, v.page, v.visual, { single, selectAll: select_all, style });
+          return setSlicerSelection(need().reportRef, v.page, v.visual, { single, selectAll: select_all, style, search });
+        }),
+    }),
+    tool({
+      name: "sort_visual",
+      description: "Sorts a visual by one of its fields (e.g. a table by date, most recent first: direction descending).",
+      args: z.object({
+        visual: z.string(),
+        field: z.string().describe("Table[Column], Table[Measure] or Sum(Table[Column]), preferably a field of the visual"),
+        direction: z.enum(["ascending", "descending"]),
+      }),
+      run: ({ visual, field, direction }) =>
+        around(async () => {
+          const v = await visualByName(visual);
+          return sortVisual(need().reportRef, v.page, v.visual, field, direction);
+        }),
+    }),
+    tool({
+      name: "format_table",
+      description:
+        "Formats a table or matrix: header background / text color / bold / size, row backgrounds (alternating), text color and size, image height (for ImageUrl fields), row padding, horizontal grid lines. Only the given values change.",
+      args: z.object({
+        visual: z.string(),
+        header_background: z.string().optional(),
+        header_color: z.string().optional(),
+        header_bold: z.boolean().optional(),
+        header_size: z.number().optional(),
+        font_size: z.number().optional(),
+        row_background: z.string().optional(),
+        alt_row_background: z.string().optional().describe("Background of every other row"),
+        row_color: z.string().optional(),
+        image_height: z.number().optional().describe("px, for images of ImageUrl fields"),
+        row_padding: z.number().optional(),
+        grid_lines: z.boolean().optional(),
+      }),
+      run: ({ visual, ...f }) =>
+        around(async () => {
+          const v = await visualByName(visual);
+          return formatTable(need().reportRef, v.page, v.visual, {
+            headerBackground: f.header_background,
+            headerColor: f.header_color,
+            headerBold: f.header_bold,
+            headerSize: f.header_size,
+            fontSize: f.font_size,
+            rowBackground: f.row_background,
+            altRowBackground: f.alt_row_background,
+            rowColor: f.row_color,
+            imageHeight: f.image_height,
+            rowPadding: f.row_padding,
+            gridLines: f.grid_lines,
+          });
         }),
     }),
     tool({

@@ -32,12 +32,31 @@ export type Field = {
 
 export type Row = Record<string, unknown>;
 
-/** Technical columns (row id) are kept in the file but not shown. */
-export const isHidden = (f: Field) => /^(id|_id|row_?id)$/i.test(f.name);
+/* ---------------------------------- Row ids --------------------------------- */
+
+/** Row id column (shown, read only): values like TASK_001, given by the app only. */
+export const isIdField = (f: Field) => /^(id|_id|row_?id)$/i.test(f.name);
+export const ID_FIELD: Field = { name: "id", type: "string", label: "ID", description: "Row id, given by the app (e.g. TASK_001)" };
+
+/** Id prefix of a table: its name in capitals, singular ("Tasks" → TASK, "Project list" → PROJECT_LIST). */
+export function idPrefix(table: string) {
+  const name = table.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "ROW";
+  return name.length > 3 && /[^S]S$/.test(name) ? name.slice(0, -1) : name;
+}
+
+/**
+ * The only place ids are made: `count` new ids after the highest one of this prefix already used
+ * (other values, e.g. older UUIDs, are kept as they are and ignored). PREFIX_001, PREFIX_002…
+ */
+export function nextIds(prefix: string, existing: unknown[], count: number) {
+  const pattern = new RegExp(`^${prefix}_(\\d+)$`);
+  const max = Math.max(0, ...existing.map((v) => Number(String(v ?? "").trim().match(pattern)?.[1] ?? 0)));
+  return Array.from({ length: count }, (_, i) => `${prefix}_${String(max + 1 + i).padStart(3, "0")}`);
+}
 
 /** Field used as the title of a row: title / name / label…, else the first short text. */
 export const titleField = (fields: Field[]) =>
-  fields.find((f) => !isHidden(f) && /^(title|titre|name|nom|label|libell[ée])$/i.test(f.name)) ?? fields.find((f) => !isHidden(f) && f.type === "string") ?? fields.find((f) => !isHidden(f));
+  fields.find((f) => !isIdField(f) && /^(title|titre|name|nom|label|libell[ée])$/i.test(f.name)) ?? fields.find((f) => !isIdField(f) && f.type === "string") ?? fields.find((f) => !isIdField(f));
 
 export const labelOf = (f: Field) => {
   const label = f.label || f.name.replace(/_/g, " ");

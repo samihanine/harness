@@ -47,7 +47,7 @@ export type ExcelEntry = {
   fileUrl: string;
   table: string;
   context: string;
-  /** Folder receiving uploaded images (default: "<file> images" next to the file). */
+  /** Folder receiving uploaded images (chosen by the user; required to upload). */
   imagesFolder?: { link: string; driveId: string; itemId: string; name: string };
   /** Named views of the dataset builder (layout, search, filters, sort, kanban column). */
   savedViews?: { name: string; view: Record<string, unknown> }[];
@@ -60,33 +60,41 @@ type Collections = { reports: ReportEntry; datasets: DatasetEntry; excels: Excel
 type Name = keyof Collections;
 
 const cache = new Map<Name, unknown[]>();
+const loading = new Map<Name, Promise<void>>();
 const listeners = new Map<Name, Set<() => void>>();
 
 export async function all<N extends Name>(name: N): Promise<Collections[N][]> {
-  if (!cache.has(name)) cache.set(name, (await get(name)) ?? []);
+  // One read of IndexedDB per collection: concurrent first reads used to overwrite a newer write
+  // with the stale stored list (an added entry then vanished from the screen and from later writes).
+  if (!loading.has(name)) loading.set(name, get(name).then((items) => void (cache.has(name) || cache.set(name, items ?? []))));
+  await loading.get(name);
   return cache.get(name) as Collections[N][];
+}
+
+/** Writes one at a time per collection (each starts from the result of the previous one). */
+const queues = new Map<Name, Promise<unknown>>();
+function queued<T>(name: Name, task: () => Promise<T>) {
+  const run = (queues.get(name) ?? Promise.resolve()).then(task);
+  queues.set(name, run.catch(() => undefined));
+  return run;
 }
 
 async function write<N extends Name>(name: N, items: Collections[N][]) {
   cache.set(name, items);
-  await set(name, items);
   listeners.get(name)?.forEach((l) => l());
+  await set(name, items);
 }
 
-export async function put<N extends Name>(name: N, item: Collections[N]) {
-  const items = await all(name);
-  await write(name, [...items.filter((i) => i.id !== item.id), item]);
-  return item;
-}
+export const put = <N extends Name>(name: N, item: Collections[N]) =>
+  queued(name, async () => {
+    await write(name, [...(await all(name)).filter((i) => i.id !== item.id), item]);
+    return item;
+  });
 
-export async function patch<N extends Name>(name: N, id: string, values: Partial<Collections[N]>) {
-  const items = await all(name);
-  await write(name, items.map((i) => (i.id === id ? { ...i, ...values } : i)));
-}
+export const patch = <N extends Name>(name: N, id: string, values: Partial<Collections[N]>) =>
+  queued(name, async () => write(name, (await all(name)).map((i) => (i.id === id ? { ...i, ...values } : i))));
 
-export async function remove(name: Name, id: string) {
-  await write(name, (await all(name)).filter((i) => i.id !== id) as never);
-}
+export const remove = (name: Name, id: string) => queued(name, async () => write(name, (await all(name)).filter((i) => i.id !== id) as never));
 
 export const find = async <N extends Name>(name: N, id?: string) => (id ? (await all(name)).find((i) => i.id === id) : undefined);
 

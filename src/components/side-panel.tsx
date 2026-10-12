@@ -1,14 +1,38 @@
-import { useState, type ReactNode } from "react";
+import { useState, type PointerEvent, type ReactNode } from "react";
 import { PanelLeftCloseIcon, PanelLeftOpenIcon } from "lucide-react";
 import { last } from "@/lib/last";
 
-/** Left panel with tabs, which can be folded; every tab stays mounted (the chat keeps its state). */
-export function SidePanel({ tabs, width = 380 }: { tabs: { id: string; label: string; content: ReactNode }[]; width?: number }) {
+const MIN = 280;
+const MAX = 760;
+const clamp = (w: number) => Math.round(Math.min(Math.max(w, MIN), Math.min(MAX, window.innerWidth - 320)));
+
+/**
+ * Left panel with tabs, which can be folded and resized (drag its right edge; width remembered in this
+ * browser); every tab stays mounted (the chat keeps its state).
+ */
+export function SidePanel({ tabs, width: initial = 380 }: { tabs: { id: string; label: string; content: ReactNode }[]; width?: number }) {
   const [active, setActive] = useState(tabs[0]?.id);
   const [open, setOpen] = useState(() => last.get("panel") !== "closed");
+  const [width, setWidth] = useState(() => Number(last.get("panel-width")) || initial);
+  const [dragging, setDragging] = useState(false);
   const toggle = (next: boolean) => {
     last.set("panel", next ? "open" : "closed");
     setOpen(next);
+  };
+  const resize = (e: PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const start = e.clientX - width;
+    let next = width;
+    const move = (m: globalThis.PointerEvent) => setWidth((next = clamp(m.clientX - start)));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDragging(false);
+      last.set("panel-width", String(next));
+    };
+    setDragging(true);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   };
   if (tabs.length === 0) return null;
   if (!open)
@@ -27,7 +51,17 @@ export function SidePanel({ tabs, width = 380 }: { tabs: { id: string; label: st
       </aside>
     );
   return (
-    <aside style={{ width }} className="flex min-h-0 shrink-0 flex-col border-r bg-card">
+    <aside style={{ width }} className="relative flex min-h-0 shrink-0 flex-col border-r bg-card">
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        title="Drag to resize (double-click: default width)"
+        onPointerDown={resize}
+        onDoubleClick={() => (setWidth(initial), last.set("panel-width", String(initial)))}
+        className={`absolute inset-y-0 -right-1 z-20 w-2 cursor-col-resize transition-colors hover:bg-ring/30 ${dragging ? "bg-ring/40" : ""}`}
+      />
+      {/* While dragging, embedded reports (iframes) must not swallow the pointer. */}
+      {dragging && <div className="fixed inset-0 z-50 cursor-col-resize" />}
       <div className="flex h-12 shrink-0 items-center border-b px-2">
         {tabs.map((t) => (
           <button key={t.id} type="button" className="tab" data-active={t.id === active} onClick={() => setActive(t.id)}>

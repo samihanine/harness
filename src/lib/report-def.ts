@@ -16,6 +16,8 @@ export type ExtensionMeasure = {
   formatString?: string;
   displayFolder?: string;
   description?: string;
+  /** "ImageUrl": the text is an image link, shown as an image in tables; "WebUrl": a link. */
+  dataCategory?: string;
   references?: { measures?: { entity: string; name: string; schema?: string }[]; unrecognizedReferences?: boolean };
 };
 
@@ -55,7 +57,7 @@ export async function upsertReportMeasure(
   report: Ref,
   dataset: Ref,
   model: ModelInfo | undefined,
-  m: { table: string; name: string; expression: string; format?: string; folder?: string; description?: string },
+  m: { table: string; name: string; expression: string; format?: string; folder?: string; description?: string; category?: "ImageUrl" | "WebUrl" },
 ) {
   const parts = await definition(report);
   const part = parts.find((p) => p.path === PATH);
@@ -77,6 +79,7 @@ export async function upsertReportMeasure(
     ...(m.format && { formatString: m.format }),
     ...(m.folder && { displayFolder: m.folder }),
     ...(m.description && { description: m.description }),
+    ...(m.category && { dataCategory: m.category }),
     ...(references.length && { references: { measures: references, unrecognizedReferences: false } }),
   };
   const entities = (ext.entities ?? []).map((e) => ({ ...e, measures: (e.measures ?? []).filter((x) => x.name !== m.name) })).filter((e) => e.measures.length || e.name === m.table);
@@ -86,7 +89,7 @@ export async function upsertReportMeasure(
   const next = { ...ext, $schema: ext.$schema ?? SCHEMA, name: ext.name ?? "extension", entities };
   const nextParts = [...parts.filter((p) => p.path !== PATH), { path: PATH, payload: encode(JSON.stringify(next, null, 2)), payloadType: "InlineBase64" }];
   await fabric(`/workspaces/${await workspaceId(report.groupId)}/reports/${report.id}/updateDefinition`, "POST", { definition: { parts: nextParts } });
-  return `Report measure [${m.name}] saved in '${m.table}' (value now: ${row?.value ?? "blank"}).`;
+  return `Report measure [${m.name}] saved in '${m.table}'${m.category ? ` (category ${m.category})` : ""} (value now: ${row?.value ?? "blank"}).`;
 }
 
 export async function deleteReportMeasure(report: Ref, name: string) {
@@ -181,7 +184,12 @@ export function addShape(report: Ref, page: string, s: Required<Box> & { color: 
           fill: [{ properties: { show: lit("true"), fillColor: { solid: { color: lit(`'${s.color}'`) } }, transparency: lit(`${s.transparency ?? 0}D`) }, selector: { id: "default" } }],
           outline: [{ properties: { show: lit("false") } }],
         },
-        drawVisualDisplayBorder: false,
+        // No container border / background / title around the shape ("drawVisualDisplayBorder" is not in the PBIR schema).
+        visualContainerObjects: {
+          border: [{ properties: { show: lit("false") } }],
+          background: [{ properties: { show: lit("false") } }],
+          title: [{ properties: { show: lit("false") } }],
+        },
       },
     });
     return `Shape ${name} (${s.color}) x=${Math.round(s.x)} y=${Math.round(s.y)} w=${Math.round(s.width)} h=${Math.round(s.height)}${s.behind ? ", behind the other visuals" : ""}.`;
@@ -204,7 +212,7 @@ export function setInteractions(report: Ref, page: string, source: string, targe
 }
 
 /** Single or multiple selection of a slicer (and the "Select all" option). */
-export function setSlicerSelection(report: Ref, page: string, visual: string, mode: { single?: boolean; selectAll?: boolean; style?: "dropdown" | "list" | "tile" }) {
+export function setSlicerSelection(report: Ref, page: string, visual: string, mode: { single?: boolean; selectAll?: boolean; style?: "dropdown" | "list" | "tile"; search?: boolean }) {
   return editJson(report, (read, write) => {
     const path = `definition/pages/${page}/visuals/${visual}/visual.json`;
     const json = read(path);
@@ -226,9 +234,100 @@ export function setSlicerSelection(report: Ref, page: string, visual: string, mo
       }),
       // Slicer style: "Dropdown" (a select), "Basic" (a list) or "Tile" (buttons).
       ...(mode.style && { data: [{ properties: { mode: text(mode.style === "dropdown" ? "Dropdown" : mode.style === "tile" ? "Tile" : "Basic") } }] }),
+      // Search box at the top of the slicer list (typing filters the items).
+      ...(mode.search !== undefined && { general: [{ properties: { ...json.visual.objects?.general?.[0]?.properties, selfFilterEnabled: lit(mode.search) } }] }),
     };
     write(path, json);
-    return `Slicer ${visual}:${mode.single === undefined ? "" : ` ${mode.single ? "single" : "multiple"} selection`}${mode.style ? ` ${mode.style} style` : ""}.`;
+    return `Slicer ${visual}:${mode.single === undefined ? "" : ` ${mode.single ? "single" : "multiple"} selection`}${mode.style ? ` ${mode.style} style` : ""}${mode.search === undefined ? "" : mode.search ? " with a search box" : " without search box"}.`;
+  });
+}
+
+/** Field reference ("Table[Column]", "Table[Measure]", "Sum(Table[Column])") → PBIR query expression, reusing the visual's own when bound. */
+function fieldExpr(json: any, spec: string) {
+  const m = spec.trim().match(/^(?:(\w+)\()?'?([^'[]+)'?\[([^\]]+)\]\)?$/);
+  if (!m) throw new Error(`Field "${spec}" must look like Table[Column], Table[Measure] or Sum(Table[Column])`);
+  const [, aggregation, table, name] = m;
+  for (const state of Object.values<any>(json.visual?.query?.queryState ?? {}))
+    for (const p of state.projections ?? []) {
+      const f = p.field;
+      const inner = f?.Aggregation?.Expression ?? f;
+      const ref = inner?.Column ?? inner?.Measure;
+      if (ref?.Property === name && ref.Expression?.SourceRef?.Entity === table && !!f?.Aggregation === !!aggregation) return f;
+    }
+  const column = { Column: { Expression: { SourceRef: { Entity: table } }, Property: name } };
+  if (!aggregation) return column;
+  const fn = ["sum", "avg", "count", "min", "max", "countnonnull"].indexOf(aggregation.toLowerCase());
+  return { Aggregation: { Expression: column, Function: Math.max(0, fn) } };
+}
+
+/** Sort of a visual (e.g. a table by date, most recent first). The authoring API cannot set it. */
+export function sortVisual(report: Ref, page: string, visual: string, field: string, direction: "ascending" | "descending") {
+  return editJson(report, (read, write) => {
+    const path = `definition/pages/${page}/visuals/${visual}/visual.json`;
+    const json = read(path);
+    json.visual.query = {
+      ...json.visual.query,
+      sortDefinition: { sort: [{ field: fieldExpr(json, field), direction: direction === "ascending" ? "Ascending" : "Descending" }], isDefaultSort: false },
+    };
+    write(path, json);
+    return `${visual} sorted by ${field} ${direction}.`;
+  });
+}
+
+export type TableFormat = {
+  headerBackground?: string;
+  headerColor?: string;
+  headerBold?: boolean;
+  headerSize?: number;
+  fontSize?: number;
+  /** Alternating row backgrounds. */
+  rowBackground?: string;
+  altRowBackground?: string;
+  rowColor?: string;
+  /** Height of images (ImageUrl fields), px. */
+  imageHeight?: number;
+  rowPadding?: number;
+  /** Horizontal grid lines. */
+  gridLines?: boolean;
+};
+
+/** Table / matrix formatting (header, rows, images), merged with the current one. */
+export function formatTable(report: Ref, page: string, visual: string, f: TableFormat) {
+  return editJson(report, (read, write) => {
+    const path = `definition/pages/${page}/visuals/${visual}/visual.json`;
+    const json = read(path);
+    const type = json.visual?.visualType;
+    if (type !== "tableEx" && type !== "pivotTable") throw new Error(`${visual} is a ${type}, not a table or matrix.`);
+    const lit = (v: string) => ({ expr: { Literal: { Value: v } } });
+    const color = (c: string) => ({ solid: { color: lit(`'${c}'`) } });
+    const num = (n: number) => lit(`${n}D`);
+    const set = (object: string, props: Record<string, unknown>) => {
+      const entries = Object.entries(props).filter(([, v]) => v !== undefined);
+      if (!entries.length) return;
+      const current = json.visual.objects?.[object]?.[0]?.properties ?? {};
+      json.visual.objects = { ...json.visual.objects, [object]: [{ properties: { ...current, ...Object.fromEntries(entries) } }] };
+    };
+    set("columnHeaders", {
+      backColor: f.headerBackground && color(f.headerBackground),
+      fontColor: f.headerColor && color(f.headerColor),
+      bold: f.headerBold === undefined ? undefined : lit(String(f.headerBold)),
+      fontSize: f.headerSize && num(f.headerSize),
+    });
+    set("values", {
+      backColorPrimary: f.rowBackground && color(f.rowBackground),
+      backColorSecondary: f.altRowBackground && color(f.altRowBackground),
+      fontColorPrimary: f.rowColor && color(f.rowColor),
+      fontColorSecondary: f.rowColor && color(f.rowColor),
+      fontSize: f.fontSize && num(f.fontSize),
+    });
+    set("grid", {
+      imageHeight: f.imageHeight && num(f.imageHeight),
+      rowPadding: f.rowPadding && num(f.rowPadding),
+      gridHorizontal: f.gridLines === undefined ? undefined : lit(String(f.gridLines)),
+      textSize: f.fontSize && num(f.fontSize),
+    });
+    write(path, json);
+    return `Table ${visual} formatted: ${Object.entries(f).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${v}`).join(", ")}.`;
   });
 }
 

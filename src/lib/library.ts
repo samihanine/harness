@@ -1,11 +1,15 @@
 /** Library entries: what is read from Power BI / SharePoint when a link is added or refreshed. */
-import { readTable, resolveExcel, saveFields } from "./excel";
+import { readTable, resolveExcel, saveFields, styleSheet } from "./excel";
 import { COLORS, type Field } from "./schema";
 import { graph, pbi } from "./ms";
-import { readModel, modelSummary } from "./model";
+import { addSamples, readModel, modelSummary } from "./model";
 import { embedReport, parseDatasetUrl, parseReportUrl, reportText, resetEmbed, scope, type Ref } from "./pbi";
 import { definition, definitionText } from "./report-def";
-import { find, patch, put, type DatasetEntry, type ExcelEntry, type ReportEntry } from "./store";
+import { all, find, patch, put, type DatasetEntry, type ExcelEntry, type ReportEntry } from "./store";
+
+/** Rejects when a promise has not settled in time (a hidden embed may never fire "loaded"). */
+const timeout = <T>(promise: Promise<T>, seconds: number, what: string) =>
+  Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${what}: no answer after ${seconds} s`)), seconds * 1000))]);
 
 /**
  * What is stored to rebuild a report: its full definition (formatting, shapes, text, theme,
@@ -28,7 +32,7 @@ async function embedSnapshot(ref: Ref) {
   element.style.cssText = "position:fixed;left:-10000px;top:0;width:1280px;height:720px";
   document.body.append(element);
   try {
-    return await reportText(await embedReport(element, ref));
+    return await timeout(embedReport(element, ref).then(reportText), 90, "Hidden embed");
   } finally {
     await resetEmbed(element);
     element.remove();
@@ -50,18 +54,25 @@ export async function addReport(link: string): Promise<ReportEntry> {
     datasetGroupId: r.datasetWorkspaceId ?? ref.groupId,
     editable: ref.appId ? false : (r.isOwnedByMe ?? undefined),
     context: old?.context ?? "",
-    snapshot: await snapshot(ref).catch((e) => `Not readable: ${e instanceof Error ? e.message : e}`),
   };
   await put("reports", entry);
-  if (!(await find("datasets", r.datasetId))) {
+  // The slow part (definition or hidden embed, then its model) completes the entry in the background:
+  // awaiting it kept the "Add" button busy for minutes (or for ever when the hidden embed never loaded).
+  void completeReport(entry, ref, r.datasetId, r.name);
+  return entry;
+}
+
+async function completeReport(entry: ReportEntry, ref: Ref, datasetId: string, name: string) {
+  const text = await snapshot(ref).catch((e) => `Not readable: ${e instanceof Error ? e.message : e}`);
+  await patch("reports", entry.id, { snapshot: text });
+  if (!(await find("datasets", datasetId))) {
     // The report is kept even when its model cannot be read; the reason is shown in the library.
-    const error = await addDataset(r.datasetId, entry.datasetGroupId, {}, `${r.name} (model)`).then(
+    const error = await addDataset(datasetId, entry.datasetGroupId, {}, `${name} (model)`).then(
       (d) => (d.groupId !== entry.datasetGroupId ? patch("reports", entry.id, { datasetGroupId: d.groupId }) : undefined, undefined),
       (e) => (e instanceof Error ? e.message : String(e)),
     );
     await patch("reports", entry.id, { datasetError: error });
   }
-  return entry;
 }
 
 /**
@@ -73,9 +84,11 @@ export async function addDataset(linkOrId: string, groupId?: string, values: Par
   const old = await find("datasets", ref.id);
   const d = await pbi(`${scope(ref.groupId)}/datasets/${ref.id}`).catch(() => null);
   const target: Ref = d ? ref : { id: ref.id };
-  const info = await readModel(target).catch((e) => {
+  const info = await readModel(target, false).catch((e) => {
     throw new Error(`Semantic model not readable: no access to its workspace, and DAX queries fail (${e instanceof Error ? e.message : e}). You need the Build permission on it.`);
   });
+  // Value samples (many DAX queries) are added in the background.
+  void addSamples(target, info).then(() => patch("datasets", ref.id, { info, model: modelSummary(info) }), () => undefined);
   return put("datasets", {
     ...old,
     id: ref.id,
@@ -93,7 +106,6 @@ export async function refreshDatasetText(entry: DatasetEntry) {
   await patch("datasets", entry.id, { info, model: modelSummary(info) });
 }
 
-/** Adds an Excel table: its columns are detected, written as its schema and the sheet is styled after them. */
 /**
  * Adds an Excel table: its columns are detected, written as its schema and the sheet is styled after them.
  * `required`: fields the file must have (missing columns are added; a file without table gets one).
@@ -105,19 +117,21 @@ export async function addExcel(link: string, table?: string, required: Field[] =
     file = await resolveExcel(link);
   }
   if (file.tables.length === 0) throw new Error("This file has no Excel table: select the data in Excel and use Insert › Table.");
+  const name = table && file.tables.includes(table) ? table : file.tables[0];
+  // The same file and table again: the existing entry is kept (no duplicate).
+  const old = (await all("excels")).find((x) => x.itemId === file.itemId && x.table === name);
   const entry = await put("excels", {
-    id: crypto.randomUUID(),
+    ...old,
+    id: old?.id ?? crypto.randomUUID(),
     name: file.name.replace(/\.xlsx$/i, ""),
     link,
     driveId: file.driveId,
     itemId: file.itemId,
     fileUrl: file.fileUrl,
-    table: table && file.tables.includes(table) ? table : file.tables[0],
-    context: "",
+    table: name,
+    context: old?.context ?? "",
   });
-  const data = await readTable(entry);
-  const missing = required.filter((r) => !data.fields.some((f) => f.name.toLowerCase() === r.name.toLowerCase()));
-  if (!data.hasSchema || missing.length) await saveFields(entry, data, [...data.fields, ...missing]).catch(() => undefined);
+  await ensureFields(entry, required).catch(() => undefined);
   return entry;
 }
 
@@ -153,10 +167,17 @@ export async function connectReportExcel(reportId: string, kind: "info" | "guide
   await patch("reports", reportId, kind === "info" ? { infoExcelId: excel.id } : { guidesExcelId: excel.id });
 }
 
+/**
+ * Writes the schema when the file has none or misses required fields. The sheet styling (dozens of
+ * slow, best-effort requests) runs in the background: awaiting it is what kept the first add busy.
+ */
 async function ensureFields(excel: ExcelEntry, required: Field[]) {
   const data = await readTable(excel);
   const missing = required.filter((r) => !data.fields.some((f) => f.name.toLowerCase() === r.name.toLowerCase()));
-  if (missing.length) await saveFields(excel, data, [...data.fields, ...missing]);
+  if (!data.hasSchema || missing.length) {
+    const fields = await saveFields(excel, data, [...data.fields, ...missing], { style: false });
+    void styleSheet(excel, fields).catch(() => undefined);
+  }
   return excel;
 }
 

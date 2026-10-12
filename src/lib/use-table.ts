@@ -18,16 +18,26 @@ export function useTable(excel?: ExcelEntry) {
     current.current = t;
     setTable(t);
   };
+  const id = useRef(excel?.id);
+  id.current = excel?.id;
   const reload = useCallback(async () => {
     if (!excel) return show(undefined);
     try {
-      show(await readTable(excel));
+      const t = await readTable(excel);
+      // Another file was chosen meanwhile: its own read shows it.
+      if (id.current !== excel.id) return;
+      show(t);
       setError(undefined);
     } catch (e) {
-      setError(errorText(e));
+      if (id.current === excel.id) setError(errorText(e));
     }
   }, [excel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => void reload(), [reload]);
+  useEffect(() => {
+    // Not the previous file's rows (nor its error) while the new one loads.
+    show(undefined);
+    setError(undefined);
+    void reload();
+  }, [reload]);
 
   const write = useCallback(
     (task: (t: Table) => Promise<unknown>, { refetch = false, optimistic }: { refetch?: boolean; optimistic?: (t: Table) => Table } = {}) => {

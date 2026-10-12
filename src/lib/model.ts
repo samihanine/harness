@@ -29,7 +29,8 @@ export type ModelInfo = { source: "tmdl" | "info"; tables: TableInfo[]; relation
 const AUTO_DATE = /^(LocalDateTable|DateTableTemplate)_/;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 160);
 
-export async function readModel(ref: Ref): Promise<ModelInfo> {
+/** `samples` false: structure only (the samples can be added later with addSamples). */
+export async function readModel(ref: Ref, samples = true): Promise<ModelInfo> {
   const warnings: string[] = [];
   let info: ModelInfo;
   try {
@@ -39,7 +40,7 @@ export async function readModel(ref: Ref): Promise<ModelInfo> {
     info = await fromInfoViews(ref, warnings);
   }
   info.warnings.unshift(...warnings);
-  await addSamples(ref, info);
+  if (samples) await addSamples(ref, info);
   return info;
 }
 
@@ -231,7 +232,7 @@ const isText = (type = "") => /^(string|text)$/i.test(type);
 const isRange = (type = "") => /^(int64|integer|double|decimal|number|currency|datetime|date)$/i.test(type);
 
 /** Row count, distinct text values (all when few, else examples), number / date ranges: one light query per table. */
-async function addSamples(ref: Ref, info: ModelInfo) {
+export async function addSamples(ref: Ref, info: ModelInfo) {
   const targets = info.tables.filter((t) => t.kind !== "calculation group" && t.kind !== "parameter" && t.columns.length).slice(0, 60);
   let failed = 0;
   const run = async (t: TableInfo) => {

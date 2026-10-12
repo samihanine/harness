@@ -3,7 +3,7 @@ import { Navigate, createFileRoute } from "@tanstack/react-router";
 import { SCREENS } from "@/config";
 import { downloadText, fullModelText } from "@/lib/model";
 import { CopyIcon, DownloadIcon, ExternalLinkIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
-import { resolveFolder, imagesFolderLabel } from "@/lib/excel";
+import { resolveFolder } from "@/lib/excel";
 import { addDataset, addExcel, addReport, cloneReport, refreshDatasetText } from "@/lib/library";
 import { errorText } from "@/lib/ms";
 import { patch, remove, useCollection, type ExcelEntry } from "@/lib/store";
@@ -207,12 +207,12 @@ function Pick({ label, value, options, onChange }: { label: string; value?: stri
   );
 }
 
-/** Where uploaded images go: a SharePoint / OneDrive folder link, or the default folder next to the file. */
+/** Where uploaded images go: a SharePoint / OneDrive folder link (image uploads need one). */
 function ImagesFolder({ excel }: { excel: ExcelEntry }) {
   const [error, setError] = useState<string>();
   return (
     <label className="flex flex-col gap-1">
-      <span className="label">Images folder (sharing link of a folder; default: {imagesFolderLabel({ ...excel, imagesFolder: undefined })})</span>
+      <span className="label">Images folder (sharing link of a folder; needed to upload images)</span>
       <input
         className="input"
         defaultValue={excel.imagesFolder?.link ?? ""}

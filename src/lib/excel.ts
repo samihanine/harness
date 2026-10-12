@@ -3,7 +3,7 @@
  * position in the table; the fields come from the hidden "_schema" sheet (or are guessed).
  */
 import { graph } from "./ms";
-import { SCHEMA_HEADER, coerce, fieldToRow, inferFields, isHidden, rowToField, toCell, type Color, type Field, type FieldType, type Row } from "./schema";
+import { ID_FIELD, SCHEMA_HEADER, coerce, fieldToRow, idPrefix, inferFields, isIdField, nextIds, rowToField, toCell, type Color, type Field, type FieldType, type Row } from "./schema";
 import type { ExcelEntry } from "./store";
 
 export type Table = { fields: Field[]; rows: Row[]; header: string[]; hasSchema: boolean };
@@ -49,7 +49,22 @@ export async function readTable(e: ExcelEntry): Promise<Table> {
       }
     return row;
   });
+  await fillIds(e, fields, rows);
   return { fields, rows, header: names, hasSchema: declared.length > 0 };
+}
+
+/** Rows without id get the next ones (existing ids never change), written to the id column. */
+async function fillIds(e: ExcelEntry, fields: Field[], rows: Row[]) {
+  const id = fields.find(isIdField);
+  const empty = (v: unknown) => !String(toCell(v)).trim();
+  // Blank rows (e.g. the one row of a new table) get none.
+  const missing = id ? rows.filter((r) => empty(r[id.name]) && fields.some((f) => f !== id && f.type !== "boolean" && !empty(r[f.name]))) : [];
+  if (!id || !missing.length) return;
+  const ids = nextIds(idPrefix(e.table), rows.map((r) => r[id.name]), missing.length);
+  missing.forEach((r, i) => (r[id.name] = ids[i]));
+  await graph(`${tablePath(e)}/columns/${encodeURIComponent(id.name)}/dataBodyRange`, "PATCH", { values: rows.map((r) => [toCell(r[id.name])]) }).catch(() =>
+    missing.forEach((r) => (r[id.name] = null)), // not saved: not shown either
+  );
 }
 
 const check = (t: Table, values: Row) => {
@@ -57,6 +72,7 @@ const check = (t: Table, values: Row) => {
   for (const [name, value] of Object.entries(values)) {
     const field = t.fields.find((f) => f.name === name);
     if (!field) throw new Error(`Unknown field "${name}" (fields: ${t.fields.map((f) => f.name).join(", ")})`);
+    if (isIdField(field)) continue; // ids are given by the app only (addRows)
     out[name] = coerce(field, value);
   }
   return out;
@@ -120,9 +136,13 @@ export async function addRows(e: ExcelEntry, t: Table, rows: Row[]) {
     if (missing.length) throw new Error(`Missing required field(s): ${missing.map(labelOrName).join(", ")}`);
     return row;
   });
-  // A hidden id column gets a fresh id.
-  const id = t.fields.find(isHidden);
-  for (const r of checked) if (id && !r[id.name]) r[id.name] = crypto.randomUUID();
+  // Next ids from the file itself (not the screen): unique even when several adds are queued.
+  const id = t.fields.find((f) => isIdField(f) && t.header.includes(f.name));
+  if (id) {
+    const { values } = await graph(`${tablePath(e)}/columns/${encodeURIComponent(id.name)}/dataBodyRange?$select=values`);
+    const ids = nextIds(idPrefix(e.table), (values as unknown[][]).map((v) => v[0]), checked.length);
+    checked.forEach((r, i) => (r[id.name] = ids[i]));
+  }
   await graph(`${tablePath(e)}/rows/add`, "POST", { index: null, values: checked.map((r) => cells(t, r)) });
 }
 const labelOrName = (f: Field) => f.label ?? f.name;
@@ -135,7 +155,9 @@ export async function deleteRows(e: ExcelEntry, indexes: number[]) {
  * Writes the fields to the hidden "_schema" sheet, adds the Excel columns of new fields (columns are
  * never deleted: a removed field only stops being shown), then styles the sheet after the fields.
  */
-export async function saveFields(e: ExcelEntry, t: Table, fields: Field[], { style = true } = {}) {
+export async function saveFields(e: ExcelEntry, t: Table, given: Field[], { style = true } = {}) {
+  // Every table has an id column (first in the app, first Excel column when added).
+  const fields = given.some(isIdField) ? given : [ID_FIELD, ...given];
   const names = new Set<string>();
   for (const f of fields) {
     if (!/^[\p{L}_][\p{L}\p{N}_ ]*$/u.test(f.name)) throw new Error(`Invalid field name "${f.name}"`);
@@ -143,7 +165,7 @@ export async function saveFields(e: ExcelEntry, t: Table, fields: Field[], { sty
     names.add(f.name);
   }
   for (const f of fields.filter((f) => !t.header.includes(f.name)))
-    await graph(`${tablePath(e)}/columns/add`, "POST", { values: [[f.name], ...t.rows.map(() => [""])] });
+    await graph(`${tablePath(e)}/columns/add`, "POST", { index: isIdField(f) ? 0 : null, values: [[f.name], ...t.rows.map(() => [""])] });
   const sheet = `${book(e)}/worksheets('${SCHEMA_SHEET}')`;
   if (!(await graph(`${sheet}?$select=name`).then(() => true, () => false))) {
     await graph(`${book(e)}/worksheets/add`, "POST", { name: SCHEMA_SHEET });
@@ -154,6 +176,7 @@ export async function saveFields(e: ExcelEntry, t: Table, fields: Field[], { sty
   await graph(`${sheet}/range(address='A1:G${values.length}')`, "PATCH", { values });
   // Reordering only: the sheet styles do not change.
   if (style) await styleSheet(e, fields);
+  return fields;
 }
 
 /** Option colors in the Excel file: light fill, dark text (same hues as the badges). */
@@ -168,8 +191,11 @@ const CELL_COLORS: Record<Color, { fill: string; font: string }> = {
   violet: { fill: "#EDE9FE", font: "#6D28D9" },
   pink: { fill: "#FCE7F3", font: "#BE185D" },
 };
-/** Column width (points) by type: short for dates / yes-no, long and wrapped for rich text. */
-const WIDTH: Record<FieldType, number> = { boolean: 55, date: 85, integer: 70, number: 85, option: 110, string: 170, image: 170, text: 360 };
+/** Column width (points) by type: short for dates / yes-no, long and wrapped for long text. */
+const WIDTH: Record<FieldType, number> = { boolean: 55, date: 85, integer: 70, number: 85, option: 110, string: 170, image: 220, text: 330 };
+/** Short-text fields that hold long text (description, notes…): wide and wrapped like rich text. */
+const isLongText = (f: Field) => f.type === "text" || (f.type === "string" && /desc|note|comment|summary|r[ée]sum|detail|content|remark/i.test(f.name));
+const widthOf = (f: Field) => (isIdField(f) ? 75 : isLongText(f) ? WIDTH.text : WIDTH[f.type]);
 /** Rows below the header that get the validation and formats (rows added later included). */
 const STYLED_ROWS = 2000;
 
@@ -205,8 +231,11 @@ export async function styleSheet(e: ExcelEntry, fields: Field[]) {
     if (i < 0) continue;
     const col = letter(left + i);
     const cells = `${ws}/range(address='${col}${top + 1}:${col}${top + STYLED_ROWS}')`;
-    await step(`${ws}/range(address='${col}:${col}')/format`, { columnWidth: WIDTH[f.type] });
-    await step(`${cells}/format`, { wrapText: f.type === "text" || (f.type === "option" && !!f.multiple), horizontalAlignment: f.type === "boolean" ? "Center" : "General" });
+    const wrap = isLongText(f) || (f.type === "option" && !!f.multiple);
+    await step(`${cells}/format`, { wrapText: wrap, horizontalAlignment: f.type === "boolean" ? "Center" : "General" });
+    // Width set last, on a bounded range: through the whole-column address ('C:C') it was not
+    // reliably applied, which left wrapped long text columns narrow.
+    await step(`${ws}/range(address='${col}${top}:${col}${top + STYLED_ROWS}')/format`, { columnWidth: widthOf(f) });
     if (f.type === "date") await step(cells, { numberFormat: Array.from({ length: STYLED_ROWS }, () => ["yyyy-mm-dd"]) });
     // Validation and colors are rebuilt from the options each time.
     await step(`${cells}/dataValidation/clear`, {}, "POST");
@@ -220,9 +249,13 @@ export async function styleSheet(e: ExcelEntry, fields: Field[]) {
     for (const o of f.options) {
       const added = await graph(`${cells}/conditionalFormats/add`, "POST", { type: f.multiple ? "ContainsText" : "CellValue" }).catch(() => undefined);
       if (!added?.id) break; // conditional formats not available
-      const format = { fill: { color: CELL_COLORS[o.color].fill }, font: { color: CELL_COLORS[o.color].font } };
+      const format = `${cells}/conditionalFormats/${encodeURIComponent(added.id)}/${f.multiple ? "textComparison" : "cellValue"}`;
       const rule = f.multiple ? { operator: "Contains", text: o.value } : { operator: "EqualTo", formula1: `="${o.value.replace(/"/g, '""')}"` };
-      await step(`${cells}/conditionalFormats/${encodeURIComponent(added.id)}/${f.multiple ? "textComparison" : "cellValue"}`, { format, rule });
+      // The format is a child resource: given inside the rule's PATCH it was ignored (rule without
+      // fill, so transparent cells). Fill and font are set on their own paths.
+      await step(format, { rule });
+      await step(`${format}/format/fill`, { color: CELL_COLORS[o.color].fill });
+      await step(`${format}/format/font`, { color: CELL_COLORS[o.color].font });
     }
   }
 }
@@ -240,9 +273,6 @@ export function imageUrl(value: unknown): Promise<string | null> {
   return urls.get(url)!;
 }
 
-/** Folder that receives the uploaded images: the one chosen in the library, else "<file> images" next to the Excel file. */
-export const imagesFolderLabel = (e: ExcelEntry) => (e.imagesFolder ? `the folder "${e.imagesFolder.name}"` : `"${e.name} images", next to the Excel file`);
-
 /** Sharing link of a SharePoint / OneDrive folder → reference. */
 export async function resolveFolder(link: string) {
   const item = await graph(`/shares/${shareId(link)}/driveItem?$select=id,name,folder,parentReference`);
@@ -250,7 +280,11 @@ export async function resolveFolder(link: string) {
   return { link, driveId: item.parentReference.driveId as string, itemId: item.id as string, name: item.name as string };
 }
 
-/** Uploads an image and returns a sharing link for the organization (stored in the cell). */
+/**
+ * Uploads an image and returns its direct URL (stored in the cell): usable as is by Power BI
+ * (image fields) and by the app. A sharing link for the organization is created so the report's
+ * readers can see it.
+ */
 export async function uploadImage(e: ExcelEntry, file: File) {
   if (file.size > 4 * 1024 * 1024) throw new Error("Images up to 4 MB.");
   const target = e.imagesFolder
@@ -263,6 +297,6 @@ export async function uploadImage(e: ExcelEntry, file: File) {
   });
   const { uploadFile } = await import("@/server/ms");
   const item = await uploadFile({ data: { ...target, path: target.path.replace(/[^\w./ -]+/g, "-"), base64, type: file.type } });
-  const link = await graph(`/drives/${target.driveId}/items/${item.id}/createLink`, "POST", { type: "view", scope: "organization" });
-  return link.link.webUrl as string;
+  await graph(`/drives/${target.driveId}/items/${item.id}/createLink`, "POST", { type: "view", scope: "organization" }).catch(() => undefined);
+  return (await graph(`/drives/${target.driveId}/items/${item.id}?$select=webUrl`)).webUrl as string;
 }

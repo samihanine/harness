@@ -34,6 +34,10 @@ function Builder() {
   const entry = reports.find((r) => r.id === reportId);
   const dataset = datasets.find((d) => d.id === (entry?.datasetId ?? newOn));
   const { element, report, error } = useEmbed(entry, "edit");
+  // The agent keeps the closures of the turn's start: tools read the CURRENT editor from this ref
+  // (the embed can be recreated during a turn, e.g. after a reload).
+  const reportRef = useRef(report);
+  reportRef.current = report;
   const [inspiration, setInspiration] = useState<string[]>([]);
   // Report measures (stored in the report): known to the AI and usable as visual fields.
   const [extension, setExtension] = useState<{ names: string[]; list: { table: string; name: string }[]; text: string }>({ names: [], list: [], text: "" });
@@ -57,6 +61,7 @@ function Builder() {
 
   // Report measures bound by the authoring API need their references fixed in the definition.
   const fixReportMeasures = async (page: string, visual: string, fields: string[]) => {
+    const report = reportRef.current;
     if (!report || !entry) return;
     // Names that are not model columns / measures may be report measures created during this turn.
     const known = new Set(dataset?.info?.tables.flatMap((t) => [...t.columns.map((c) => c.name), ...t.measures.map((m) => m.name)]) ?? []);
@@ -83,15 +88,22 @@ Power BI facts to rely on:
 - Per-series colors: set_theme. Page / report background: set_page_background (set_theme background only colors visuals and panes).
 - Titles and text: create_visual type "textbox", then set_textbox (text, size, bold, color, alignment).
 - Layout: every visual's position is in the context (x y w h z) with the layout problems (overlaps, outside the page). Plan the whole page: visuals inside the page size given in the context, no overlap, ~20 px gaps. "Align vertically" (one above the other) = same x AND same width; "align horizontally" = same y (and usually the same height). Move with arrange_visuals (all visuals in one call), read the positions it returns, fix any remaining problem, and only then tell the user — never say "already aligned" without comparing the numbers.
-- A colored rectangle / panel behind visuals: add_shape (around = those visuals, behind). Never fake it by coloring the visuals' backgrounds.`,
-    tools: [...authorTools(() => report, () => measures, fixReportMeasures), daxTool(() => dataset && { id: dataset.id, groupId: dataset.groupId }), ...modelTools(() => dataset), ...reportModelTools({ report: () => report, entry: () => entry, dataset: () => dataset, changed: loadExtension })],
+- A colored rectangle / panel behind visuals: add_shape (around = those visuals, behind). Never fake it by coloring the visuals' backgrounds.
+- A header band with a title: add_shape (x=0, y=0, full page width, ~70 px high, behind), then a textbox ON it (same box, inner margin) with set_textbox (size ~24, bold, a color readable on the band).
+- Filters "like a select": slicers on the columns, set_slicer_selection style "dropdown", single false (multiple choice). A text search: a slicer on the text column (e.g. the title) with search true. Group them in a panel (add_shape around them).
+- "The filters only filter the table": set_interactions for EACH slicer: table → filter, every other visual (detail, other slicers, shapes) → none.
+- Sorting (e.g. most recent first): sort_visual on a field of the visual, direction descending. Table look: format_table (header colors, alternating rows, size).
+- Master / detail ("click a row to see all its fields, most recent shown by default"): a table of a few key fields (sorted by date, descending); the detail = a multiRowCard with all the item's fields; set_visual_filter kind "top" on each detail visual (column = the item id, order_by = the date, n = 1); set_interactions source = table: detail visuals → filter, slicers → none.
+- An image of the item (a column holding an image link, e.g. on SharePoint): add_report_measure with category "ImageUrl" (expression: VAR u = SELECTEDVALUE('T'[image column]) RETURN IF(CONTAINSSTRING(u, "/:i:/"), u & IF(CONTAINSSTRING(u, "?"), "&", "?") & "download=1", u) — a SharePoint sharing link "/:i:/" opens a page, download=1 gives the image itself), shown in a tableEx with that measure only, with the same top filter and interaction as the detail; format_table image_height. Images on SharePoint show for users signed in to it in their browser.
+- Build a whole dashboard in this order: header, filter panel and slicers, table, detail and image, then interactions, sorting, filters and formatting; save at the end. Check the layout (no overlap, inside the page) before answering.`,
+    tools: [...authorTools(() => reportRef.current, () => measures, fixReportMeasures), daxTool(() => dataset && { id: dataset.id, groupId: dataset.groupId }), ...modelTools(() => dataset), ...reportModelTools({ report: () => reportRef.current, entry: () => entry, dataset: () => dataset, changed: loadExtension })],
     context: async () =>
       [
         libraryContext(entry, dataset),
         ...reports.filter((r) => inspiration.includes(r.id)).map((r) => `Report given as inspiration: "${r.name}"\n${r.context}\n${r.snapshot ?? ""}`),
         extensionRef.current.text ? `Report measures (stored in this report):\n${extensionRef.current.text}` : "",
         `Model write access: ${dataset?.info?.source === "tmdl" ? "yes (parameters possible)" : "no (use report measures; parameters impossible)"}`,
-        report ? `Report being edited, current state:\n${await pageText(report, false)}` : "No report open.",
+        reportRef.current ? `Report being edited, current state:\n${await pageText(reportRef.current, false)}` : "No report open.",
       ].join("\n\n"),
   };
 

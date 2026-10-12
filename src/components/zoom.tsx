@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MaximizeIcon, MinusIcon, PlusIcon } from "lucide-react";
+import { MoveHorizontalIcon, MinusIcon, PlusIcon } from "lucide-react";
 import { models, type Report } from "@/lib/pbi";
 
 const STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
@@ -18,10 +18,12 @@ export function Zoom({ report }: { report?: Report }) {
     const next = dir > 0 ? STEPS.find((s) => s > current + 0.01) : [...STEPS].reverse().find((s) => s < current - 0.01);
     if (next) void go(next);
   };
+  /** Page as wide as the frame (scrolls vertically), not the whole page centered. */
   const fit = async () => {
     const m = await models();
-    await report.updateSettings({ layoutType: m.LayoutType.Custom, customLayout: { displayOption: m.DisplayOption.FitToPage } });
-    await go(1);
+    await report.setZoom(1).catch(() => undefined);
+    setZoom(1);
+    await report.updateSettings({ layoutType: m.LayoutType.Custom, customLayout: { displayOption: m.DisplayOption.FitToWidth } });
   };
   return (
     <div className="flex items-center rounded-md border bg-card">
@@ -34,8 +36,8 @@ export function Zoom({ report }: { report?: Report }) {
       <button type="button" className="icon-btn" title="Zoom in" onClick={() => step(1)}>
         <PlusIcon />
       </button>
-      <button type="button" className="icon-btn" title="Fit to page" onClick={() => void fit()}>
-        <MaximizeIcon />
+      <button type="button" className="icon-btn" title="Fit to width" onClick={() => void fit()}>
+        <MoveHorizontalIcon />
       </button>
     </div>
   );

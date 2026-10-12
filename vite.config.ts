@@ -8,6 +8,8 @@ export default defineConfig(({ mode }) => {
   // checks for the server's requests to Microsoft (sign-in, Power BI, Fabric, Graph).
   const env = loadEnv(mode, process.cwd(), "");
   if (env.IGNORE_TLS_ERRORS === "true") process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+  // AI key of the server (used when none is set in the app): see src/server/ai.ts.
+  if (env.AI_KEY && !process.env.AI_KEY) process.env.AI_KEY = env.AI_KEY;
   return {
     server: { port: 3300 },
     resolve: { tsconfigPaths: true },

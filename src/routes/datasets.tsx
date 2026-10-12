@@ -7,6 +7,7 @@ import {
   ArrowUpIcon,
   DatabaseIcon,
   ExternalLinkIcon,
+  EyeIcon,
   FilterIcon,
   PanelLeftIcon,
   KanbanIcon,
@@ -30,11 +31,11 @@ import { Empty, SidePanel } from "@/components/side-panel";
 import { tool, type Agent } from "@/agent/loop";
 import { daxTool } from "@/agent/pbi-tools";
 import { modelTools } from "@/agent/model-tools";
-import { addRows, deleteRows, imagesFolderLabel, readTable, saveFields, updateRows, uploadImage, withRows, withUpdates, withoutRows, type Table } from "@/lib/excel";
+import { addRows, deleteRows, readTable, resolveFolder, saveFields, updateRows, uploadImage, withRows, withUpdates, withoutRows, type Table } from "@/lib/excel";
 import { API_REFRESHES_PER_DAY, addDataset, addExcel, apiRefreshesToday, modelPage, refreshDatasetText } from "@/lib/library";
 import { errorText } from "@/lib/ms";
 import { rowsText } from "@/lib/pbi";
-import { COLORS, FIELD_TYPES, TINTS, TYPE_LABELS, isHidden, labelOf, listOf, titleField, type Field, type Row } from "@/lib/schema";
+import { COLORS, FIELD_TYPES, TINTS, TYPE_LABELS, idPrefix, isIdField, labelOf, listOf, titleField, type Field, type Row } from "@/lib/schema";
 import { patch, useCollection, type DatasetEntry, type ExcelEntry } from "@/lib/store";
 import { createModel, readModelFiles, tableTmdl, writeModelFiles } from "@/lib/tmdl";
 import { refreshModel } from "@/server/ms";
@@ -63,9 +64,21 @@ type View = {
   where: Record<string, Cond>;
   sort: SortingState;
   selected?: number;
+  /** Fields shown per layout (table columns, card content); missing = the layout's default. */
+  shown?: Partial<Record<View["layout"], string[]>>;
 };
 const INITIAL: View = { layout: "table", search: "", filters: {}, where: {}, sort: [] };
 const isActive = (c?: Cond) => !!c && Object.values(c).some((v) => v !== undefined && v !== "");
+
+/** Default fields of a layout: every column in the table; title + first two option fields on cards (+ image on kanban). */
+function defaultShown(fields: Field[], layout: View["layout"]) {
+  if (layout === "table") return fields.map((f) => f.name);
+  const options = fields.filter((f) => f.type === "option").slice(0, 2);
+  const image = layout === "kanban" ? fields.find((f) => f.type === "image") : undefined;
+  return [titleField(fields), ...options, image].filter((f): f is Field => !!f).map((f) => f.name);
+}
+/** Names of the fields shown by the current layout. */
+const shownOf = (fields: Field[], view: View) => view.shown?.[view.layout] ?? defaultShown(fields, view.layout);
 
 /** Row filter of a column: kept option values and / or condition. */
 function matches(field: Field | undefined, value: unknown, { values, cond }: { values?: string[]; cond?: Cond }) {
@@ -130,7 +143,7 @@ function Datasets() {
 
   const columns = useMemo<ColumnDef<Row>[]>(
     () =>
-      (table?.fields ?? []).filter((f) => !isHidden(f)).map((f) => ({
+      (table?.fields ?? []).map((f) => ({
         id: f.name,
         accessorFn: (row) => (f.type === "option" ? listOf(row[f.name]).join(", ") : row[f.name]),
         filterFn: (row, id, filter) => matches(f, row.original[id], filter),
@@ -143,10 +156,13 @@ function Datasets() {
     () => [...new Set([...Object.keys(view.filters), ...Object.keys(view.where ?? {})])].map((id) => ({ id, value: { values: view.filters[id], cond: view.where?.[id] } })),
     [view.filters, view.where],
   );
+  // Hidden table columns keep their filters (visibility, not removal).
+  const tableShown = view.shown?.table;
+  const columnVisibility = useMemo(() => Object.fromEntries((table?.fields ?? []).map((f) => [f.name, !tableShown || tableShown.includes(f.name)])), [table?.fields, tableShown]);
   const grid = useReactTable({
     data: table?.rows ?? NO_ROWS,
     columns,
-    state: { globalFilter: view.search, sorting: view.sort, columnFilters },
+    state: { globalFilter: view.search, sorting: view.sort, columnFilters, columnVisibility },
     onSortingChange: (u) => setView({ sort: typeof u === "function" ? u(view.sort) : u }),
     // No pagination: never reset it (each reset is a state change, hence a new render).
     autoResetAll: false,
@@ -160,7 +176,12 @@ function Datasets() {
     const changes = [{ index, values: { [name]: value } }];
     void write((t) => updateRows(excel!, t, changes), { optimistic: (t) => withUpdates(t, changes) }).catch(() => undefined);
   };
-  const upload: Uploader | undefined = excel && { save: (file) => uploadImage(excel, file), label: imagesFolderLabel(excel) };
+  // Uploads only once a folder is chosen (never a default folder).
+  const upload: Uploader | undefined = excel && {
+    save: (file) => uploadImage(excel, file),
+    folder: excel.imagesFolder?.name,
+    chooseFolder: async (link) => patch("excels", excel.id, { imagesFolder: await resolveFolder(link) }),
+  };
 
   const agent = useMemo(() => (excel && table ? datasetAgent({ excel, table, dataset, rows: () => grid.getRowModel().rows, checked, view, setView, write }) : undefined), [excel, table, dataset, view, grid, setView, write, checked]);
 
@@ -211,6 +232,7 @@ function Datasets() {
                 ]}
               />
               <SavedViews excel={excel} view={view} setView={setView} />
+              <ShownFields fields={table.fields} view={view} setView={setView} />
               <button type="button" className="btn" onClick={() => setDialog("fields")}>
                 <SlidersHorizontalIcon /> Fields
               </button>
@@ -235,7 +257,7 @@ function Datasets() {
           ) : view.layout === "kanban" ? (
             <KanbanLayout table={table} rows={rows} view={view} setView={setView} onChange={change} onOpen={(index) => setView({ layout: "detail", selected: index })} />
           ) : (
-            <DetailLayout table={table} rows={rows} selected={view.selected} onSelect={(selected) => setView({ selected })} upload={upload} onChange={change} checked={checked} onCheck={toggle} onDelete={(index) => remove([index])} />
+            <DetailLayout table={table} rows={rows} shown={shownOf(table.fields, view)} selected={view.selected} onSelect={(selected) => setView({ selected })} upload={upload} onChange={change} checked={checked} onCheck={toggle} onDelete={(index) => remove([index])} />
           )
         )}
       </div>
@@ -363,6 +385,73 @@ function SavedViews({ excel, view, setView }: { excel: ExcelEntry; view: View; s
   );
 }
 
+/** What a card shows: its title, option chips, other fields as short lines (image: kanban only). */
+type Card = { title?: Field; tags: Field[]; lines: Field[]; image?: Field };
+function cardFields(fields: Field[], shown: string[], layout: "detail" | "kanban"): Card {
+  const list = fields.filter((f) => shown.includes(f.name));
+  const title = list.find((f) => f === titleField(fields));
+  const image = layout === "kanban" ? list.find((f) => f.type === "image") : undefined;
+  return { title, image, tags: list.filter((f) => f.type === "option"), lines: list.filter((f) => f !== title && f !== image && f.type !== "option") };
+}
+
+function CardBody({ row, card }: { row: Row; card: Card }) {
+  return (
+    <>
+      {card.title && <span className="truncate font-medium">{String(row[card.title.name] ?? "") || <span className="font-normal text-muted-foreground">Untitled</span>}</span>}
+      {card.lines.map((f) =>
+        row[f.name] === null || row[f.name] === undefined || row[f.name] === "" ? null : (
+          <span key={f.name} className="truncate text-[12px] text-muted-foreground">
+            {labelOf(f)}: {f.type === "boolean" ? (row[f.name] ? "yes" : "no") : String(row[f.name])}
+          </span>
+        ),
+      )}
+      {card.tags.length > 0 && (
+        <span className="flex flex-wrap gap-1">
+          {card.tags.map((f) => (
+            <OptionBadges key={f.name} field={f} value={row[f.name]} />
+          ))}
+        </span>
+      )}
+    </>
+  );
+}
+
+/** Fields shown by the current layout (table columns or card content), remembered per layout with the view. */
+function ShownFields({ fields, view, setView }: { fields: Field[]; view: View; setView: (p: Partial<View>) => void }) {
+  const shown = shownOf(fields, view);
+  const custom = !!view.shown?.[view.layout];
+  const set = (names: string[] | undefined) => setView({ shown: { ...view.shown, [view.layout]: names } });
+  return (
+    <Popover width={240} trigger={(open) => (
+      <button type="button" className={`btn ${custom ? "" : "text-muted-foreground"}`} title={view.layout === "table" ? "Columns shown" : "Fields shown on the cards"} onClick={open}>
+        <EyeIcon /> {shown.length}/{fields.length}
+      </button>
+    )}>
+      {() => (
+        <div className="flex max-h-96 flex-col gap-1 overflow-y-auto p-1">
+          <span className="label uppercase">{view.layout === "table" ? "Columns" : view.layout === "detail" ? "On the list cards" : "On the cards"}</span>
+          {fields.map((f) => {
+            const on = shown.includes(f.name);
+            return (
+              <label key={f.name} className="flex items-center gap-2 py-0.5">
+                <input type="checkbox" className="accent-foreground" checked={on} onChange={() => set(on ? shown.filter((n) => n !== f.name) : fields.map((x) => x.name).filter((n) => n === f.name || shown.includes(n)))} />
+                <span className="truncate">{labelOf(f)}</span>
+                <span className="ml-auto text-[11px] text-muted-foreground">{TYPE_LABELS[f.type]}</span>
+              </label>
+            );
+          })}
+          {custom && (
+            <button type="button" className="btn mt-1 h-7 w-fit" onClick={() => set(undefined)}>
+              Default
+            </button>
+          )}
+          {view.layout === "detail" && <p className="text-[11px] text-muted-foreground">The form always shows every field.</p>}
+        </div>
+      )}
+    </Popover>
+  );
+}
+
 /** Kanban: one column per value of an option field (+ empty); drag a card to change its value. */
 function KanbanLayout({ table, rows, view, setView, onChange, onOpen }: {
   table: Table;
@@ -372,13 +461,12 @@ function KanbanLayout({ table, rows, view, setView, onChange, onOpen }: {
   onChange: (index: number, name: string, value: unknown) => void;
   onOpen: (index: number) => void;
 }) {
-  const options = table.fields.filter((f) => f.type === "option" && !isHidden(f));
+  const options = table.fields.filter((f) => f.type === "option");
   const by = options.find((f) => f.name === view.kanbanBy) ?? options.find((f) => !f.multiple) ?? options[0];
   const [over, setOver] = useState<string | null>(null);
   if (!by) return <Empty>The kanban needs an option field: add one in Fields.</Empty>;
-  const title = titleField(table.fields)!;
-  const image = table.fields.find((f) => f.type === "image");
-  const tags = options.filter((f) => f !== by);
+  const card = cardFields(table.fields, shownOf(table.fields, view), "kanban");
+  const tags = card.tags.filter((f) => f !== by);
   const lanes = [...(by.options ?? []).map((o) => ({ key: o.value, label: o.value, color: o.color })), { key: "", label: "No value", color: "gray" as const }];
   const laneOf = (r: TRow<Row>) => listOf(r.original[by.name])[0] ?? "";
   const drop = (lane: string, index: number) => {
@@ -428,15 +516,8 @@ function KanbanLayout({ table, rows, view, setView, onChange, onOpen }: {
                     onClick={() => onOpen(r.index)}
                     className="flex cursor-grab flex-col gap-2 rounded-lg border bg-card p-2.5 shadow-sm hover:border-ring active:cursor-grabbing"
                   >
-                    {image && r.original[image.name] ? <Thumbnail value={r.original[image.name]} className="h-28 w-full" /> : null}
-                    <span className="font-medium">{String(r.original[title.name] ?? "") || <span className="font-normal text-muted-foreground">Untitled</span>}</span>
-                    {tags.length > 0 && (
-                      <span className="flex flex-wrap gap-1">
-                        {tags.map((f) => (
-                          <OptionBadges key={f.name} field={f} value={r.original[f.name]} />
-                        ))}
-                      </span>
-                    )}
+                    {card.image && r.original[card.image.name] ? <Thumbnail value={r.original[card.image.name]} className="h-28 w-full" /> : null}
+                    <CardBody row={r.original} card={{ ...card, tags }} />
                   </article>
                 ))}
               </div>
@@ -541,7 +622,7 @@ function TableLayout({ table, rows, grid, upload, onChange, view, setView, onEdi
   // Drag a column header onto another to move it there.
   const [dragged, setDragged] = useState<string>();
   const [over, setOver] = useState<string>();
-  const width = (f: Field) => (f.type === "text" ? "min-w-72 max-w-96" : f.type === "string" ? "min-w-44" : f.type === "image" ? "w-16" : "min-w-28");
+  const width = (f: Field) => (isIdField(f) ? "w-24" : f.type === "text" ? "min-w-72 max-w-96" : f.type === "string" ? "min-w-44" : f.type === "image" ? "w-16" : "min-w-28");
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-card">
       <table className="w-max min-w-full border-separate border-spacing-0">
@@ -618,10 +699,10 @@ function TableLayout({ table, rows, grid, upload, onChange, view, setView, onEdi
   );
 }
 
-function DetailLayout({ table, rows, selected, onSelect, upload, onChange, checked, onCheck, onDelete }: LayoutProps & { selected?: number; onSelect: (index: number) => void }) {
+function DetailLayout({ table, rows, selected, onSelect, shown, upload, onChange, checked, onCheck, onDelete }: LayoutProps & { selected?: number; onSelect: (index: number) => void; shown: string[] }) {
   const title = titleField(table.fields)!;
-  const image = table.fields.find((f) => f.type === "image");
-  const tags = table.fields.filter((f) => f.type === "option");
+  // Summary cards only (no image); the form always shows every field.
+  const card = cardFields(table.fields, shown, "detail");
   const current = rows.find((r) => r.index === selected) ?? rows[0];
   return (
     <div className="flex min-h-0 flex-1">
@@ -632,14 +713,8 @@ function DetailLayout({ table, rows, selected, onSelect, upload, onChange, check
               <span className="pt-0.5">
                 <Check on={checked.includes(r.index)} onChange={() => onCheck(r.index)} title="Select this row" />
               </span>
-              {image && <Thumbnail value={r.original[image.name]} className="size-10 shrink-0" />}
-              <span className="flex min-w-0 flex-col gap-1">
-                <span className="truncate font-medium">{String(r.original[title.name] ?? "") || <span className="font-normal text-muted-foreground">Untitled</span>}</span>
-                <span className="flex flex-wrap gap-1">
-                  {tags.map((f) => (
-                    <OptionBadges key={f.name} field={f} value={r.original[f.name]} />
-                  ))}
-                </span>
+              <span className="flex min-w-0 flex-1 flex-col gap-1">
+                <CardBody row={r.original} card={card} />
               </span>
             </div>
           </li>
@@ -655,7 +730,7 @@ function DetailLayout({ table, rows, selected, onSelect, upload, onChange, check
                 <Trash2Icon /> Delete
               </button>
             </div>
-            {table.fields.filter((f) => !isHidden(f)).map((f) => (
+            {table.fields.map((f) => (
               <FormField key={f.name} field={f}>
                 <FieldInput variant="form" field={f} value={current.original[f.name]} upload={upload} onChange={(v) => onChange(current.index, f.name, v)} />
               </FormField>
@@ -701,7 +776,7 @@ function NewRow({ fields, upload, onClose, onCreate }: { fields: Field[]; upload
   const [error, setError] = useState<string>();
   return (
     <Dialog title="New row" onClose={onClose}>
-      {fields.filter((f) => !isHidden(f)).map((f) => (
+      {fields.filter((f) => !isIdField(f)).map((f) => (
         <FormField key={f.name} field={f}>
           <FieldInput variant="form" field={f} value={values[f.name]} upload={upload} onChange={(v) => setValues((s) => ({ ...s, [f.name]: v }))} />
         </FormField>
@@ -920,11 +995,22 @@ function datasetAgent({ excel, table, dataset, rows, checked, view, setView, wri
   write: (task: (t: Table) => Promise<unknown>, o?: { refetch?: boolean; optimistic?: (t: Table) => Table }) => Promise<unknown>;
 }): Agent {
   const tablePath = `definition/tables/${excel.table}.tmdl`;
+  const idField = table.fields.find(isIdField);
+  /** Row given by its id (TASK_001) or its index. */
+  const indexOf = (r: { index?: number; id?: string }) => {
+    if (r.id === undefined) {
+      if (r.index === undefined) throw new Error("Give the row id (or index).");
+      return r.index;
+    }
+    const index = idField ? table.rows.findIndex((x) => String(x[idField.name] ?? "") === r.id) : -1;
+    if (index < 0) throw new Error(`No row with id ${r.id}`);
+    return index;
+  };
   const fieldsText = table.fields
     .map((f) => `- ${f.name} (${TYPE_LABELS[f.type]}${f.required ? ", required" : ""}${f.multiple ? ", multiple" : ""})${f.label ? ` label "${f.label}"` : ""}${f.options?.length ? ` options: ${f.options.map((o) => `${o.value} [${o.color}]`).join(", ")}` : ""}${f.description ? ` — ${f.description}` : ""}`)
     .join("\n");
   return {
-    instructions: `You manage the content of an Excel table on SharePoint ("${excel.name}"), shown as a table or as detail cards, and the Power BI semantic model generated from it. Rows are identified by "index" (their position in the Excel table). Text fields hold markdown; option fields only accept their listed values (multiple: a list); image fields hold image links; dates are YYYY-MM-DD. Data changes reach Power BI after refresh_model.`,
+    instructions: `You manage the content of an Excel table on SharePoint ("${excel.name}"), shown as a table or as detail cards, and the Power BI semantic model generated from it. Rows have ${idField ? `an id (column "${idField.name}", e.g. ${idPrefix(excel.table)}_001, given by the app: never set or change it; use it to name rows to the user and in tool calls) and ` : ""}an "index" (position in the Excel table). Text fields hold markdown; option fields only accept their listed values (multiple: a list); image fields hold image links; dates are YYYY-MM-DD. Data changes reach Power BI after refresh_model.`,
     context: async () =>
       [
         `Excel "${excel.name}" (table ${excel.table})${excel.context ? `\nNotes: ${excel.context}` : ""}`,
@@ -956,16 +1042,17 @@ function datasetAgent({ excel, table, dataset, rows, checked, view, setView, wri
       }),
       tool({
         name: "update_rows",
-        description: "Changes values of rows (only the given fields).",
-        args: z.object({ rows: z.array(z.object({ index: z.number(), values: z.record(z.string(), cell) })) }),
-        run: async ({ rows: changes }) => {
+        description: "Changes values of rows (only the given fields). Each row by its id (or index).",
+        args: z.object({ rows: z.array(z.object({ id: z.string().optional(), index: z.number().optional(), values: z.record(z.string(), cell) })) }),
+        run: async ({ rows: given }) => {
+          const changes = given.map((r) => ({ index: indexOf(r), values: r.values }));
           await write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) });
           return `${changes.length} row(s) updated.`;
         },
       }),
       tool({
         name: "add_rows",
-        description: "Adds rows at the end of the table.",
+        description: "Adds rows at the end of the table (their ids are given automatically).",
         args: z.object({ rows: z.array(z.record(z.string(), cell)) }),
         run: async ({ rows: added }) => {
           await write((t) => addRows(excel, t, added), { refetch: true, optimistic: (t) => withRows(t, added) });
@@ -974,9 +1061,10 @@ function datasetAgent({ excel, table, dataset, rows, checked, view, setView, wri
       }),
       tool({
         name: "delete_rows",
-        description: "Deletes rows by index.",
-        args: z.object({ indexes: z.array(z.number()) }),
-        run: async ({ indexes }) => {
+        description: "Deletes rows by id (or index).",
+        args: z.object({ ids: z.array(z.string()).optional(), indexes: z.array(z.number()).optional() }),
+        run: async ({ ids = [], indexes: given = [] }) => {
+          const indexes = [...new Set([...ids.map((id) => indexOf({ id })), ...given])];
           await write(() => deleteRows(excel, indexes), { optimistic: (t) => withoutRows(t, indexes) });
           return `${indexes.length} row(s) deleted.`;
         },
