@@ -1,6 +1,7 @@
 /** Agent tools on an embedded report (viewer: navigation & filters; builder: authoring) and on DAX. */
 import { z } from "zod";
 import { basicFilter, checkValues, dax, findVisual, models, rowsText, settled, type Ref, type Report } from "@/lib/pbi";
+import { checkName, resolveField, type ModelInfo } from "@/lib/model";
 import { describeError, tool, type Tool } from "./loop";
 import type { VisualDescriptor as PbiVisual } from "powerbi-client";
 
@@ -26,7 +27,7 @@ export const daxTool = (dataset: () => Ref | undefined): Tool =>
   });
 
 /** "Table[Column]" / "Table[Measure]" / "Sum(Table[Column])" → Power BI target. `measures` = "Table[Measure]" names. */
-function target(spec: string, measures: Set<string>) {
+function target(spec: string, measures: Set<string>, info?: ModelInfo) {
   // "[Measure]" alone: its table is found among the known measures (model or report).
   const bare = spec.trim().match(/^\[([^\]]+)\]$/)?.[1];
   if (bare) {
@@ -34,9 +35,17 @@ function target(spec: string, measures: Set<string>) {
     if (!owner) throw new Error(`Measure [${bare}] not found: write it Table[${bare}] (its home table).`);
     spec = owner;
   }
-  const m = spec.trim().match(/^(?:(\w+)\()?'?([^'[]+)'?\[([^\]]+)\]\)?$/);
-  if (!m) throw new Error(`Field "${spec}" must look like Table[Column], Table[Measure] or Sum(Table[Column]), e.g. Tasks[title] or Tasks[Selected image].`);
-  const [, aggregation, table, name] = m;
+  let m = spec.trim().match(/^(?:(\w+)\()?'?([^'[]+)'?\[([^\]]+)\]\)?$/);
+  // A name without its table (weak models drop it): found when only one table has it.
+  if (!m && info) {
+    const known = resolveField(info, spec);
+    m = [spec, undefined, known.table, known.name] as unknown as RegExpMatchArray;
+  }
+  if (!m) throw new Error(`Field "${spec}" must look like Table[Column], Table[Measure] or Sum(Table[Column]).`);
+  const [, aggregation, given, givenName] = m;
+  // Checked against the model first (report measures are not in it: they are found in `measures`).
+  const known = measures.has(`${given}[${givenName}]`) ? { table: given, name: givenName } : checkName(info, given, givenName);
+  const { table, name } = known;
   if (measures.has(`${table}[${name}]`)) return { $schema: "http://powerbi.com/product/schema#measure", table, measure: name };
   if (aggregation) return { $schema: "http://powerbi.com/product/schema#columnAggr", table, column: name, aggregationFunction: aggregation[0].toUpperCase() + aggregation.slice(1).toLowerCase() };
   return { $schema: "http://powerbi.com/product/schema#column", table, column: name };
@@ -71,7 +80,7 @@ const values = z.preprocess((v) => (Array.isArray(v) ? v : v === undefined || v 
  * Viewer: navigate and filter (works with view-only rights). With the model (`dataset`), filter values
  * are checked first: an unknown value is refused with the valid ones, instead of emptying the visuals.
  */
-export function viewTools(report: () => Report | undefined, dataset: () => Ref | undefined = () => undefined): Tool[] {
+export function viewTools(report: () => Report | undefined, dataset: () => Ref | undefined = () => undefined, info: () => ModelInfo | undefined = () => undefined): Tool[] {
   const r = () => {
     const current = report();
     if (!current) throw new Error("No report open.");
@@ -103,7 +112,8 @@ export function viewTools(report: () => Report | undefined, dataset: () => Ref |
         column: z.string(),
         values,
       }),
-      run: async ({ level, table, column, values: given }) => {
+      run: async ({ level, table: t0, column: c0, values: given }) => {
+        const { table, name: column } = checkName(info(), t0, c0);
         const values = await checkValues(dataset(), table, column, given);
         const owner = level === "report" ? r() : await pageOf(r());
         const others = (await owner.getFilters()).filter((f: any) => !(f.target?.table === table && f.target?.column === column));
@@ -134,14 +144,17 @@ export function viewTools(report: () => Report | undefined, dataset: () => Ref |
         order_by: z.string().optional().describe('Table[Column] (its max is used) or Table[Measure]'),
         bottom: z.boolean().optional().describe("Lowest N instead of highest"),
       }),
-      run: async ({ visual, kind, table, column, values: kept = [], n = 1, order_by, bottom }) => {
+      run: async ({ visual, kind, table: t0, column: c0, values: kept = [], n = 1, order_by, bottom }) => {
+        const { table, name: column } = checkName(info(), t0, c0);
         const v = await visualOf(r(), visual);
         const others = (await v.getFilters()).filter((f: any) => !(f.target?.table === table && f.target?.column === column));
         let filter: unknown;
         if (kind === "values") filter = kept.length ? basicFilter(table, column, await checkValues(dataset(), table, column, kept)) : undefined;
         else {
-          const m = order_by?.match(/^'?([^'[]+)'?\[([^\]]+)\]$/);
-          if (!m) throw new Error('order_by must look like Table[Column] or Table[Measure]');
+          const parsed = order_by?.match(/^'?([^'[]+)'?\[([^\]]+)\]$/);
+          if (!parsed) throw new Error('order_by must look like Table[Column] or Table[Measure]');
+          const by = checkName(info(), parsed[1], parsed[2]);
+          const m = [order_by, by.table, by.name];
           filter = {
             $schema: "http://powerbi.com/product/schema#topN",
             target: { table, column },
@@ -178,6 +191,8 @@ export function authorTools(
   measures: () => Set<string>,
   /** Called after fields are bound (e.g. to fix report measure references); returns a note for the AI. */
   onFields?: (page: string, visual: string, fields: string[]) => Promise<string | void>,
+  /** Model structure: field names are checked against it before the visual is touched. */
+  info: () => ModelInfo | undefined = () => undefined,
 ): Tool[] {
   const r = () => {
     const current = report();
@@ -186,7 +201,7 @@ export function authorTools(
   };
   const prop = (value: unknown) => ({ schema: "http://powerbi.com/product/schema#property", value });
   return [
-    ...viewTools(report),
+    ...viewTools(report, undefined, info),
     tool({
       name: "add_page",
       description: "Adds a page and shows it.",
@@ -232,12 +247,14 @@ export function authorTools(
         title: z.string().optional(),
       }),
       run: async ({ type, x, y, width, height, fields, title }) => {
+        // Every field checked before anything is created (a wrong name used to leave a failed attempt).
+        const targets = Object.entries(fields ?? {}).map(([role, list]) => [role, list.map((f) => target(f, measures(), info()))] as const);
         const page = await pageOf(r());
         const { visual } = await page.createVisual(type, { x, y, width, height });
         try {
-          for (const [role, list] of Object.entries(fields ?? {})) {
+          for (const [role, list] of targets) {
             await checkRole(visual, role);
-            for (const f of list) await visual.addDataField(role, target(f, measures()) as never);
+            for (const t of list) await visual.addDataField(role, t as never);
           }
           if (title) await visual.setProperty({ objectName: "title", propertyName: "titleText" }, prop(title) as never);
         } catch (error) {
@@ -259,7 +276,7 @@ export function authorTools(
         const v = await visualOf(r(), visual);
         await checkRole(v, role);
         for (let i = (await v.getDataFields(role)).length - 1; i >= 0; i--) await v.removeDataField(role, i);
-        for (const f of fields) await v.addDataField(role, target(f, measures()) as never);
+        for (const f of fields) await v.addDataField(role, target(f, measures(), info()) as never);
         const note = await onFields?.((await pageOf(r())).name, v.name, fields);
         return `Fields updated.${note ? ` ${note}` : ""}`;
       },

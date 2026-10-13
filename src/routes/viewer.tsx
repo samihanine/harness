@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { icons, ArrowDownIcon, ArrowUpIcon, CheckIcon, DownloadIcon, ChevronRightIcon, ChevronsUpDownIcon, FileTextIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, SearchIcon, Settings2Icon, Trash2Icon, XIcon } from "lucide-react";
+import { icons, ArrowDownIcon, ArrowUpIcon, CheckIcon, DownloadIcon, ChevronRightIcon, ChevronsUpDownIcon, FileTextIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, SearchIcon, Settings2Icon, SparklesIcon, Trash2Icon, XIcon } from "lucide-react";
 import { Popover } from "@/components/popover";
 import { Drawer } from "@/components/drawer";
 import { Markdown } from "@/components/markdown";
 import { Chat } from "@/components/chat";
-import { EXPORT, REPORT_VIEWER_EDITOR, VIEWER_TABS, VISUAL_PREVIEW, visible } from "@/config";
+import { EXPORT, REPORT_VIEWER_EDITOR, VIEWER_TABS, VISUAL_EXPLAIN, VISUAL_PREVIEW, visible } from "@/config";
+import { explainVisual } from "@/agent/explain";
 import { RichText } from "@/components/rich-text";
 import { COLORS, SWATCHES, isColor, isIdField } from "@/lib/schema";
 import { Picker } from "@/components/picker";
@@ -83,7 +84,7 @@ How to work:
   Find the field in the slicers first (their fields and options), then in the model (search_model).
 - After a change, read the new page state and answer with what changed and the key figures.
 ${DAX_RULES}`,
-    tools: [...viewTools(() => report, () => datasetRef), daxTool(() => datasetRef), ...modelTools(() => dataset)],
+    tools: [...viewTools(() => report, () => datasetRef, () => dataset?.info), daxTool(() => datasetRef), ...modelTools(() => dataset)],
     context: async () => libraryContext(entry, dataset),
     state: async () => (report ? `What the user sees now:\n${await pageText(report, true, datasetRef)}` : "The report is not loaded."),
   };
@@ -93,7 +94,7 @@ ${DAX_RULES}`,
       <SidePanel
         tabs={visible([
           { id: "info", label: "Info", content: <InfoTab excel={excels.find((e) => e.id === entry?.infoExcelId)} reportId={entry?.id} /> },
-          { id: "guide", label: "Guides", content: <GuideTab excel={excels.find((e) => e.id === entry?.guidesExcelId)} reportId={entry?.id} reportRef={entry} report={report} selection={selection} /> },
+          { id: "guide", label: "Guides", content: <GuideTab excel={excels.find((e) => e.id === entry?.guidesExcelId)} reportId={entry?.id} reportRef={entry} report={report} selection={selection} context={libraryContext(entry, dataset)} /> },
           { id: "ai", label: "AI", content: entry ? <Chat scope={`viewer:${entry.id}`} agent={agent} placeholder="Ask about this page…" onConversation={setConversationId} /> : <Empty>Choose a report.</Empty> },
         ], VIEWER_TABS)}
       />
@@ -432,7 +433,7 @@ const linksOf = (row?: Record<string, unknown>) => String(row?.links ?? "").spli
  * separated by ;). Home: the report pages, then every guide. A clicked visual opens its guide. The tab
  * only reads: ⚙ opens the drawer where guides are written, linked and deleted.
  */
-function GuideTab({ excel, reportId, reportRef, report, selection }: { excel?: ExcelEntry; reportId?: string; reportRef?: Ref; report?: Report; selection: Selection }) {
+function GuideTab({ excel, reportId, reportRef, report, selection, context = "" }: { excel?: ExcelEntry; reportId?: string; reportRef?: Ref; report?: Report; selection: Selection; context?: string }) {
   const { table, error, write } = useTable(excel);
   const pages = usePages(report);
   const [view, setView] = useState<GuideView>({ kind: "home" });
@@ -553,10 +554,10 @@ function GuideTab({ excel, reportId, reportRef, report, selection }: { excel?: E
     <div className="flex flex-col">
       {crumbs}
       {VISUAL_PREVIEW && report && reportRef && <VisualPreview report={report} reportRef={reportRef} page={selection.page} visual={selection.visual} handle={preview} />}
-      {body}
-      {(EXPORT.visualPdf || EXPORT.visualPng) && here && report && selection.page && selection.visual && (
-        <VisualDownload key={here} report={report} page={selection.page} visual={selection.visual} title={visualTitle(here)} preview={preview} />
+      {(EXPORT.visualPdf || EXPORT.visualPng || VISUAL_EXPLAIN) && here && report && selection.page && selection.visual && (
+        <VisualDownload key={here} report={report} page={selection.page} visual={selection.visual} title={visualTitle(here)} preview={preview} context={context} />
       )}
+      {body}
       {error && table && <p className="px-3 py-2 text-[12px] text-destructive">{error}</p>}
       {editor && (
         <TabDrawer title="Guides" excel={excel} reportId={reportId} kind="guides" table={table} error={error} onClose={() => setEditor(null)}>
@@ -665,9 +666,13 @@ function VisualPreview({ report, reportRef, page, visual, handle }: { report: Re
   );
 }
 
-/** The clicked visual's download buttons (guide or not), below its guide. */
-function VisualDownload({ report, page, visual, title, preview }: { report: Report; page: string; visual: string; title: string; preview: { current?: PreviewHandle } }) {
-  const [state, setState] = useState<{ busy?: "pdf" | "png"; error?: string }>({});
+/** The clicked visual's buttons (guide or not): PDF, PNG, Explain, above its guide. */
+function VisualDownload({ report, page, visual, title, preview, context }: { report: Report; page: string; visual: string; title: string; preview: { current?: PreviewHandle }; context: string }) {
+  const [state, setState] = useState<{ busy?: "pdf" | "png" | "explain"; error?: string; explanation?: string }>({});
+  const explain = () => {
+    setState({ busy: "explain" });
+    explainVisual(report, page, visual, context).then((explanation) => setState({ explanation }), (e) => setState({ error: describeError(e) }));
+  };
   const run = (kind: "pdf" | "png") => {
     setState({ busy: kind });
     // The preview when it shows this visual (the report is not touched), else the report itself.
@@ -683,7 +688,7 @@ function VisualDownload({ report, page, visual, title, preview }: { report: Repo
     task.then(() => setState({}), (e) => setState({ error: describeError(e) }));
   };
   return (
-    <div className="flex flex-col gap-1 border-t px-3 py-2">
+    <div className="flex flex-col gap-1 border-b px-3 py-2">
       <div className="flex items-center gap-1.5">
         {EXPORT.visualPdf && (
           <button type="button" className="btn h-7 shrink-0" disabled={!!state.busy} onClick={() => run("pdf")}>
@@ -695,7 +700,13 @@ function VisualDownload({ report, page, visual, title, preview }: { report: Repo
             <DownloadIcon /> {state.busy === "png" ? "Capturing…" : "PNG"}
           </button>
         )}
+        {VISUAL_EXPLAIN && (
+          <button type="button" className="btn h-7 shrink-0" title="The AI explains this visual from its data and the active filters" disabled={!!state.busy} onClick={explain}>
+            <SparklesIcon /> {state.busy === "explain" ? "Reading…" : "Explain"}
+          </button>
+        )}
       </div>
+      {state.explanation && <div className="rounded-md bg-muted/50 p-2 text-[12px]"><Markdown>{state.explanation}</Markdown></div>}
       {state.error && <p className="text-[11px] break-words text-destructive">{state.error}</p>}
     </div>
   );

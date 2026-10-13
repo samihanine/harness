@@ -1,11 +1,10 @@
 /// <reference types="vite/client" />
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { HeadContent, Link, Navigate, Outlet, Scripts, createRootRoute, useLocation } from "@tanstack/react-router";
-import { LogOutIcon, SettingsIcon } from "lucide-react";
-import { authStatus, signIn, signOut } from "@/server/ms";
-import { AI_MODELS } from "@/agent/llm";
-import { settings } from "@/lib/store";
-import { AI_PANEL, APP_TITLE, PRIMARY_COLOR, SCREENS, SCREEN_PATHS, SHOW_HEADER, firstScreen } from "@/config";
+import { SettingsIcon } from "lucide-react";
+import { authStatus } from "@/server/ms";
+import { loadHubConfig } from "@/lib/hub-config";
+import { APP_TITLE, PRIMARY_COLOR, SCREENS, SCREEN_PATHS, SHOW_HEADER, firstScreen, onConfigChange } from "@/config";
 import css from "@/styles.css?url";
 
 export const Route = createRootRoute({
@@ -18,7 +17,7 @@ export const Route = createRootRoute({
 });
 
 /** Black or white text, whichever reads best on a color (#rrggbb; anything else: white). */
-function readableOn(color: string) {
+export function readableOn(color: string) {
   const m = color.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
   if (!m) return "#ffffff";
   const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16) / 255);
@@ -39,98 +38,65 @@ function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-const NAV = (
-  [
-    [SCREEN_PATHS.viewer, "Report Viewer", SCREENS.viewer],
-    [SCREEN_PATHS.builder, "Report builder", SCREENS.builder],
-    [SCREEN_PATHS.datasets, "Dataset builder", SCREENS.datasets],
-    [SCREEN_PATHS.dax, "DAX builder", SCREENS.dax],
-    [SCREEN_PATHS.library, "Library", SCREENS.library],
-  ] as const
-).filter(([, , shown]) => shown);
-const HIDDEN_PATHS = (Object.keys(SCREENS) as (keyof typeof SCREENS)[]).filter((k) => !SCREENS[k]).map((k) => SCREEN_PATHS[k]);
+const nav = () =>
+  (
+    [
+      [SCREEN_PATHS.viewer, "Report Viewer", SCREENS.viewer],
+      [SCREEN_PATHS.builder, "Report builder", SCREENS.builder],
+      [SCREEN_PATHS.datasets, "Dataset builder", SCREENS.datasets],
+      [SCREEN_PATHS.dax, "DAX builder", SCREENS.dax],
+      [SCREEN_PATHS.pivot, "TCD builder", SCREENS.pivot],
+      [SCREEN_PATHS.library, "Library", SCREENS.library],
+    ] as const
+  ).filter(([, , shown]) => shown);
+const hiddenPaths = () => (Object.keys(SCREENS) as (keyof typeof SCREENS)[]).filter((k) => !SCREENS[k]).map((k) => SCREEN_PATHS[k]);
 
 type Status = Awaited<ReturnType<typeof authStatus>>;
 
 function Layout() {
   const [status, setStatus] = useState<Status>();
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    let stop = false;
-    const poll = async () => {
-      const s = await authStatus().catch(() => undefined);
-      if (!stop) setStatus(s);
-      if (!stop && s?.pending) setTimeout(poll, 3000);
-    };
-    void poll();
-    return () => void (stop = true);
-  }, [status?.pending?.userCode]);
   const path = useLocation({ select: (l) => l.pathname });
+  // Read again on each screen change (e.g. after signing in from Settings).
+  useEffect(() => void authStatus().then(setStatus, () => setStatus(undefined)), [path]);
+  // Options: the SharePoint file is read at start; any change draws the screens again.
+  const [version, setVersion] = useState(0);
+  useEffect(() => onConfigChange(() => setVersion((v) => v + 1)), []);
+  useEffect(() => void loadHubConfig().catch((e) => console.warn("Config file not read", e)), []);
+  useEffect(() => document.body.style.setProperty("--color-primary-foreground", readableOn(PRIMARY_COLOR)), [version]);
   // A hidden screen is closed to direct links too.
-  if (HIDDEN_PATHS.includes(path)) return <Navigate to={firstScreen()} search={{} as never} replace />;
+  if (hiddenPaths().includes(path)) return <Navigate to={firstScreen()} search={{} as never} replace />;
   // Hidden header: still shown while the user has to sign in.
   const header = SHOW_HEADER || (status !== undefined && !status.signedIn);
 
   return (
     <div className="flex h-full flex-col">
-      {header && <header className="flex h-11 shrink-0 items-center gap-1 border-b bg-card px-3">
-        <span className="mr-3 font-semibold" style={{ color: PRIMARY_COLOR }}>
-          {APP_TITLE}
-        </span>
-        {NAV.map(([to, label]) => (
-          <Link key={to} to={to} className="rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground" activeProps={{ className: "bg-muted !text-foreground" }} activeOptions={{ exact: to === "/" }}>
-            {label}
-          </Link>
-        ))}
-        <div className="ml-auto flex items-center gap-2 text-[12px] text-muted-foreground">
-          {status?.signedIn ? (
-            <>
-              {status.account}
-              <button type="button" className="icon-btn" title="Sign out" onClick={() => void signOut().then(() => setStatus(undefined))}>
-                <LogOutIcon />
-              </button>
-            </>
-          ) : status?.pending ? (
-            <span>
-              Open <a className="underline" href={status.pending.verificationUri} target="_blank" rel="noreferrer">{status.pending.verificationUri}</a> and enter <b className="text-foreground">{status.pending.userCode}</b>
-              {status.pending.error && <span className="text-destructive"> — {status.pending.error}</span>}
-            </span>
-          ) : (
-            <button type="button" className="btn-primary h-7" onClick={() => void signIn().then((pending) => setStatus({ signedIn: false, pending, account: undefined }))}>
-              Sign in with Microsoft
-            </button>
-          )}
-          {AI_PANEL && (
-            <button type="button" className="icon-btn" title="AI settings" onClick={() => setOpen(!open)}>
+      {header && (
+        <header className="flex h-11 shrink-0 items-center gap-1 border-b bg-card px-3">
+          <span className="mr-3 font-semibold" style={{ color: PRIMARY_COLOR }}>
+            {APP_TITLE}
+          </span>
+          {nav().map(([to, label]) => (
+            <Link key={to} to={to} className="rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground" activeProps={{ className: "bg-muted !text-foreground" }} activeOptions={{ exact: to === "/" }}>
+              {label}
+            </Link>
+          ))}
+          <div className="ml-auto flex items-center gap-2 text-[12px] text-muted-foreground">
+            {status?.signedIn ? (
+              status.account
+            ) : status ? (
+              <Link to="/settings" search={{ tab: "microsoft" }} className="btn-primary h-7">
+                Sign in with Microsoft
+              </Link>
+            ) : null}
+            <Link to="/settings" search={{ tab: undefined }} className="icon-btn" title="Settings (config, AI, Microsoft account)" activeProps={{ className: "bg-muted" }}>
               <SettingsIcon />
-            </button>
-          )}
-        </div>
-      </header>}
-      {header && open && <AiSettings onClose={() => setOpen(false)} />}
-      <main className="min-h-0 flex-1">
+            </Link>
+          </div>
+        </header>
+      )}
+      <main key={version} className="min-h-0 flex-1">
         <Outlet />
       </main>
-    </div>
-  );
-}
-
-function AiSettings({ onClose }: { onClose: () => void }) {
-  const [values, setValues] = useState({ aiKey: "", model: AI_MODELS[0] as string });
-  useEffect(() => void settings.get().then((s) => setValues({ aiKey: s.aiKey ?? "", model: s.model ?? AI_MODELS[0] })), []);
-  return (
-    <div className="absolute top-12 right-3 z-50 flex w-80 flex-col gap-2 rounded-lg border bg-card p-3 shadow-lg">
-      <label className="label">AI key (token, or NAME=value lines)</label>
-      <textarea className="input h-16 py-1 font-mono" value={values.aiKey} onChange={(e) => setValues({ ...values, aiKey: e.target.value })} />
-      <label className="label">Model</label>
-      <select className="input" value={values.model} onChange={(e) => setValues({ ...values, model: e.target.value })}>
-        {AI_MODELS.map((m) => (
-          <option key={m}>{m}</option>
-        ))}
-      </select>
-      <button type="button" className="btn-primary self-end" onClick={() => void settings.set(values).then(onClose)}>
-        Save
-      </button>
     </div>
   );
 }

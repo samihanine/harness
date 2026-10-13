@@ -99,7 +99,7 @@ Power BI facts to rely on:
 - An image of the item (a column holding an image link, e.g. on SharePoint): add_report_measure with category "ImageUrl" (expression: VAR u = SELECTEDVALUE('T'[image column]) RETURN IF(CONTAINSSTRING(u, "/:i:/"), u & IF(CONTAINSSTRING(u, "?"), "&", "?") & "download=1", u) — a SharePoint sharing link "/:i:/" opens a page, download=1 gives the image itself), shown in a tableEx with that measure only, with the same top filter and interaction as the detail; format_table image_height. Images on SharePoint show for users signed in to it in their browser.
 - Build a whole dashboard in this order: header, filter panel and slicers, table, detail and image, then interactions, sorting, filters and formatting; save at the end. Check the layout (no overlap, inside the page) before answering.
 ${DAX_RULES}`,
-    tools: [...authorTools(() => reportRef.current, measures, fixReportMeasures), daxTool(() => dataset && { id: dataset.id, groupId: dataset.groupId }), ...modelTools(() => dataset), ...reportModelTools({ report: () => reportRef.current, entry: () => entry, dataset: () => dataset, changed: loadExtension })],
+    tools: [...authorTools(() => reportRef.current, measures, fixReportMeasures, () => dataset?.info), daxTool(() => dataset && { id: dataset.id, groupId: dataset.groupId }), ...modelTools(() => dataset), ...reportModelTools({ report: () => reportRef.current, entry: () => entry, dataset: () => dataset, changed: loadExtension })],
     context: async () =>
       [
         libraryContext(entry, dataset),

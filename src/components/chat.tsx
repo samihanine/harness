@@ -15,6 +15,13 @@ import remarkGfm from "remark-gfm";
 import { ArrowUpIcon, CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DownloadIcon, PlusIcon, SearchIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { Popover } from "./popover";
 import { forgetSession, runAgent, type Agent, type Update } from "@/agent/loop";
+import { PROMPTS, withPrompts, type PromptScreen } from "@/config";
+
+/** The screen's agent with the instructions the admin added in Settings (for all screens, and this one). */
+const withAdmin = (agent: Agent, scope: string): Agent => {
+  const screen = SCREEN_OF[scope.split(":")[0]];
+  return screen ? { ...agent, instructions: withPrompts(screen, agent.instructions) } : PROMPTS.all.trim() ? { ...agent, instructions: `${agent.instructions}\n\n${PROMPTS.all}` } : agent;
+};
 import { AI_MODELS, deleteRemoteConversation } from "@/agent/llm";
 import { find, put, remove, settings, useCollection, type Conversation } from "@/lib/store";
 import { last } from "@/lib/last";
@@ -32,7 +39,10 @@ function historyOf(m: ThreadMessage) {
   return `${m.role}: ${textOf(m)}${actions.length ? `\n  actions:\n${actions.join("\n")}` : ""}`;
 }
 
-function adapter(agent: { current: Agent }, conversationId: string): ChatModelAdapter {
+/** Screen of a chat scope ("viewer:<id>", "dataset:<id>"…), for the admin's additional instructions. */
+const SCREEN_OF: Record<string, PromptScreen> = { viewer: "viewer", builder: "builder", dataset: "datasets", dax: "dax", pivot: "pivot" };
+
+function adapter(agent: { current: Agent }, conversationId: string, scope: string): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
       const previous = messages.slice(0, -1).map(historyOf).join("\n\n");
@@ -48,7 +58,7 @@ function adapter(agent: { current: Agent }, conversationId: string): ChatModelAd
       });
       let last: Update = { steps: [], llm: [] };
       try {
-        for await (const update of runAgent({ agent: agent.current, model: model ?? AI_MODELS[0], conversationId, history: previous, request: textOf(messages.at(-1)!), signal: abortSignal })) {
+        for await (const update of runAgent({ agent: withAdmin(agent.current, scope), model: model ?? AI_MODELS[0], conversationId, history: previous, request: textOf(messages.at(-1)!), signal: abortSignal })) {
           last = update;
           yield parts(update, update.answer);
         }
@@ -176,7 +186,7 @@ export function Chat({ scope, agent, placeholder = "Ask anything…", onConversa
 }
 
 function Runtime({ id, scope, initial, agent, placeholder }: { id: string; scope: string; initial?: Conversation; agent: { current: Agent }; placeholder: string }) {
-  const chatModel = useMemo(() => adapter(agent, id), [agent, id]);
+  const chatModel = useMemo(() => adapter(agent, id, scope), [agent, id, scope]);
   const runtime = useLocalRuntime(chatModel, { initialMessages: (initial?.messages ?? []) as never });
 
   // Saves the conversation when a run ends.

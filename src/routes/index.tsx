@@ -1,10 +1,11 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { downloadText, fullModelText } from "@/lib/model";
 import { CopyIcon, DownloadIcon, ExternalLinkIcon, PlusIcon, RefreshCwIcon, Trash2Icon } from "lucide-react";
 import { resolveFolder } from "@/lib/excel";
 import { addDataset, addExcel, addReport, cloneReport, refreshDatasetText } from "@/lib/library";
 import { errorText } from "@/lib/ms";
+import { datasetHealth, excelHealth, reportHealth, type Check } from "@/lib/health";
 import { patch, remove, useCollection, type ExcelEntry } from "@/lib/store";
 
 // Hidden (SCREENS.library = false): the root layout opens the first screen shown instead.
@@ -27,6 +28,7 @@ function LibraryPage() {
             onContext={(context) => patch("reports", r.id, { context })}
             onRefresh={() => addReport(r.url)}
             onRemove={() => remove("reports", r.id)}
+            health={() => reportHealth(r, datasets.find((d) => d.id === r.datasetId))}
             extra={
               <>
                 <div className="grid grid-cols-2 gap-2">
@@ -59,6 +61,7 @@ function LibraryPage() {
             onContext={(context) => patch("datasets", d.id, { context })}
             onRefresh={() => refreshDatasetText(d)}
             onRemove={() => remove("datasets", d.id)}
+            health={() => datasetHealth(d)}
             extra={
               d.model && (
                 <>
@@ -92,6 +95,7 @@ function LibraryPage() {
             context={e.context}
             onContext={(context) => patch("excels", e.id, { context })}
             onRemove={() => remove("excels", e.id)}
+            health={() => excelHealth(e)}
             extra={<ImagesFolder excel={e} />}
           />
         ))}
@@ -137,10 +141,20 @@ function Item(props: {
   onRefresh?: () => Promise<unknown>;
   onRemove: () => void;
   extra?: ReactNode;
+  /** Read-only checks of the item, run when it is shown. */
+  health?: () => Promise<Check[]>;
 }) {
+  const [checks, setChecks] = useState<Check[]>();
+  const check = () => {
+    setChecks(undefined);
+    void props.health?.().then(setChecks, (e) => setChecks([{ level: "error", text: errorText(e) }]));
+  };
+  useEffect(check, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const worst = checks?.some((c) => c.level === "error") ? "error" : checks?.some((c) => c.level === "warn") ? "warn" : checks ? "ok" : undefined;
   return (
     <details className="group rounded-lg border bg-card">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2">
+        {props.health && <span title={checks?.map((c) => c.text).join("\n") ?? "Checking…"} className={`size-2 shrink-0 rounded-full ${DOT[worst ?? "busy"]}`} />}
         <div className="min-w-0 flex-1">
           <div className="truncate font-medium">{props.title}</div>
           {props.subtitle && <div className="truncate text-[11px] text-muted-foreground">{props.subtitle}</div>}
@@ -152,6 +166,23 @@ function Item(props: {
         )}
       </summary>
       <div className="flex flex-col gap-2 border-t p-3">
+        {props.health && (
+          <div className="flex flex-col gap-0.5">
+            <span className="flex items-center gap-1">
+              <span className="label">Health</span>
+              <button type="button" className="icon-btn size-5 [&_svg]:size-3" title="Check again" onClick={check}>
+                <RefreshCwIcon />
+              </button>
+            </span>
+            {!checks && <span className="text-[11px] text-muted-foreground">Checking…</span>}
+            {checks?.map((c, i) => (
+              <span key={i} className="flex items-start gap-1.5 text-[11px]">
+                <span className={`mt-1 size-1.5 shrink-0 rounded-full ${DOT[c.level]}`} />
+                <span className={c.level === "error" ? "text-destructive" : c.level === "warn" ? "text-amber-800" : "text-muted-foreground"}>{c.text}</span>
+              </span>
+            ))}
+          </div>
+        )}
         <label className="label">Context for the AI</label>
         <textarea className="input h-20 py-1" defaultValue={props.context} onBlur={(e) => e.target.value !== props.context && props.onContext(e.target.value)} />
         {props.extra}
@@ -165,6 +196,8 @@ function Item(props: {
     </details>
   );
 }
+
+const DOT = { ok: "bg-emerald-500", warn: "bg-amber-500", error: "bg-red-500", busy: "bg-zinc-300 animate-pulse" };
 
 function Action({ icon, label, run }: { icon: ReactNode; label: string; run: () => Promise<unknown> }) {
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});

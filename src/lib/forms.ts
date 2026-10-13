@@ -1,5 +1,6 @@
 /** Microsoft Forms linked to an Excel table: its questions as a plain schema (read from the form link). */
 import { readForm } from "@/server/ms";
+import { COLORS, type Field, type FieldType } from "./schema";
 
 export type FormQuestionType = "choice" | "text" | "long_text" | "number" | "date" | "rating" | "ranking" | "likert" | "file" | "nps" | "other";
 
@@ -71,4 +72,44 @@ export async function readFormSchema(url: string): Promise<FormSchema> {
   const form = await readForm({ data: { url } });
   const questions = [...form.questions].sort((a, b) => Number(a.order ?? 0) - Number(b.order ?? 0)).map(question);
   return { url: url.trim(), id: form.id, title: form.title, questions, readAt: new Date().toISOString() };
+}
+
+/** Excel field type of each question type (a file question holds the file's link). */
+const FIELD_OF: Record<FormQuestionType, FieldType> = {
+  choice: "option",
+  text: "string",
+  long_text: "text",
+  number: "number",
+  date: "date",
+  rating: "integer",
+  nps: "integer",
+  ranking: "string",
+  likert: "string",
+  file: "string",
+  other: "string",
+};
+
+/**
+ * Fields for the questions that have none yet (matched by name, case ignored): type, options with
+ * colors, multiple, required, the question as label. Names keep only the characters a field allows.
+ */
+export function fieldsFromForm(form: FormSchema, existing: Field[]): Field[] {
+  const taken = new Set(existing.map((f) => f.name.toLowerCase()));
+  const out: Field[] = [];
+  for (const q of form.questions) {
+    let name = q.title.normalize("NFC").replace(/[^\p{L}\p{N}_ ]+/gu, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+    if (!/^[\p{L}_]/u.test(name)) name = `q ${name}`.trim();
+    if (!name || taken.has(name.toLowerCase())) continue;
+    taken.add(name.toLowerCase());
+    const type = q.type === "file" && q.file?.types.length === 1 && q.file.types[0] === "Image" ? "image" : FIELD_OF[q.type];
+    out.push({
+      name,
+      type,
+      label: q.title !== name ? q.title : undefined,
+      required: q.required || undefined,
+      multiple: type === "option" && q.multiple ? true : undefined,
+      options: type === "option" ? (q.options ?? []).filter(Boolean).map((value, i) => ({ value, color: COLORS[(i + 1) % COLORS.length] })) : undefined,
+    });
+  }
+  return out;
 }

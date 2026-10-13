@@ -343,6 +343,77 @@ export function searchModel(info: ModelInfo, query: string) {
 }
 
 /** "Table[Measure]" names (to tell measures from columns when building visuals). */
+const norm = (s: string) => s.trim().replace(/^'|'$/g, "").toLowerCase();
+/** Edit distance, for "did you mean" suggestions. */
+function distance(a: string, b: string) {
+  const d = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    let prev = d[0];
+    d[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const next = d[j];
+      d[j] = Math.min(d[j] + 1, d[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = next;
+    }
+  }
+  return d[b.length];
+}
+const closest = (name: string, names: string[], n = 5) =>
+  names
+    .map((x) => ({ x, score: norm(x).includes(norm(name)) || norm(name).includes(norm(x)) ? 0 : distance(norm(x), norm(name)) }))
+    .filter((c) => c.score <= Math.max(3, name.length / 3))
+    .sort((a, b) => a.score - b.score)
+    .slice(0, n)
+    .map((c) => c.x);
+
+/**
+ * A table + column / measure name as the model has it (case and quotes ignored), checked BEFORE a tool
+ * uses it: an unknown name is refused with where it really is or the closest names, so a weak model
+ * fixes it at once instead of failing later in Power BI. Without the structure, kept as given.
+ */
+export function checkName(info: ModelInfo | undefined, table: string, name: string): { table: string; name: string; kind?: "column" | "measure" } {
+  if (!info?.tables.length) return { table, name };
+  const t = info.tables.find((x) => norm(x.name) === norm(table));
+  const homes = info.tables.filter((x) => [...x.columns, ...x.measures].some((c) => norm(c.name) === norm(name)));
+  if (!t) {
+    const where = homes.length ? ` "${name}" is in ${homes.map((h) => `'${h.name}'`).join(", ")}.` : "";
+    const near = closest(table, info.tables.map((x) => x.name));
+    throw new Error(`No table '${table}' in the model.${where}${near.length ? ` Closest tables: ${near.map((x) => `'${x}'`).join(", ")}.` : ""}`);
+  }
+  const column = t.columns.find((c) => norm(c.name) === norm(name));
+  if (column) return { table: t.name, name: column.name, kind: "column" };
+  const measure = t.measures.find((c) => norm(c.name) === norm(name));
+  if (measure) return { table: t.name, name: measure.name, kind: "measure" };
+  const elsewhere = homes.filter((h) => h !== t);
+  if (elsewhere.length) throw new Error(`'${t.name}' has no "${name}": it is in ${elsewhere.map((h) => `'${h.name}'[${name}]`).join(", ")}.`);
+  const near = closest(name, [...t.columns, ...t.measures].map((c) => c.name));
+  throw new Error(`'${t.name}' has no column or measure "${name}".${near.length ? ` Closest: ${near.map((x) => `'${t.name}'[${x}]`).join(", ")}.` : ""} Check with describe_table.`);
+}
+
+/**
+ * A field written any common way — 'Table'[Name], Table[Name], [Name] or just Name — found in the
+ * model: a name without its table is accepted when only one table has it (else the choices are
+ * listed). Weak models often drop the table: no failed round trip for that.
+ */
+export function resolveField(info: ModelInfo | undefined, spec: string) {
+  const s = spec.trim();
+  const full = s.match(/^'?([^'[\]]+?)'?\s*\[([^\]]+)\]$/);
+  if (full) return checkName(info, full[1], full[2]);
+  const name = s.match(/^\[([^\]]+)\]$/)?.[1] ?? s.replace(/^'|'$/g, "");
+  if (!info?.tables.length) throw new Error(`"${spec}": write it 'Table'[${name}].`);
+  const homes = info.tables.filter((t) => [...t.columns, ...t.measures].some((c) => norm(c.name) === norm(name)));
+  if (homes.length === 1) return checkName(info, homes[0].name, name);
+  if (homes.length > 1) throw new Error(`"${name}" is in several tables: write one of ${homes.map((t) => `'${t.name}'[${name}]`).join(", ")}.`);
+  // Closest by the name itself (not the table), visible tables first.
+  const near = info.tables
+    .flatMap((t) => [...t.columns, ...t.measures].map((c) => ({ label: `'${t.name}'[${c.name}]`, score: Math.min(distance(norm(c.name), norm(name)), norm(c.name).includes(norm(name)) ? 2 : 99) + (t.hidden ? 0.5 : 0) })))
+    .filter((c) => c.score <= Math.max(3, name.length / 3))
+    .sort((a, b) => a.score - b.score)
+    .slice(0, 5)
+    .map((c) => c.label);
+  throw new Error(`No column or measure "${name}" in the model.${near.length ? ` Closest: ${near.join(", ")}.` : ""}`);
+}
+
 export const measureNames = (info?: ModelInfo) => new Set(info?.tables.flatMap((t) => t.measures.map((m) => `${t.name}[${m.name}]`)) ?? []);
 
 /** The whole structure as markdown: summary, then every table in detail (columns with sample values, measures with DAX, relationships). */

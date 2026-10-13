@@ -56,7 +56,8 @@ export type ExcelEntry = {
 
 /** `viewState`: the report as the user left it in this conversation (filters, slicers, page: a bookmark state). */
 export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number; viewState?: string };
-export type Settings = { aiKey?: string; model?: string };
+/** `configLink`: the SharePoint JSON file holding the app's options (read at start). */
+export type Settings = { aiKey?: string; model?: string; configLink?: string };
 
 type Collections = { reports: ReportEntry; datasets: DatasetEntry; excels: ExcelEntry; conversations: Conversation };
 type Name = keyof Collections;

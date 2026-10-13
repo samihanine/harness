@@ -29,7 +29,7 @@ import { Popover } from "@/components/popover";
 import { Empty, SidePanel } from "@/components/side-panel";
 import { tool, type Agent } from "@/agent/loop";
 import { addRows, deleteRows, idError, resolveFolder, saveFields, updateRows, uploadImage, withRows, withUpdates, withoutRows, type Table } from "@/lib/excel";
-import { readFormSchema } from "@/lib/forms";
+import { fieldsFromForm, readFormSchema } from "@/lib/forms";
 import { addExcel } from "@/lib/library";
 import { errorText } from "@/lib/ms";
 import { rowsText } from "@/lib/pbi";
@@ -185,7 +185,7 @@ function Datasets() {
       <SidePanel
         tabs={visible([
           { id: "ai", label: "AI", content: agent ? <Chat scope={`dataset:${excelId}`} agent={agent} placeholder="Ask to filter, fix or add rows, change fields…" /> : <Empty>Choose an Excel file.</Empty> },
-          { id: "schema", label: "Schema", content: excel && table ? <SchemaTab excel={excel} table={table} /> : <Empty>Choose an Excel file.</Empty> },
+          { id: "schema", label: "Schema", content: excel && table ? <SchemaTab excel={excel} table={table} onAddFields={(added) => write((t) => saveFields(excel, t, [...t.fields, ...added]), { refetch: true })} /> : <Empty>Choose an Excel file.</Empty> },
         ], DATASET_TABS)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -900,7 +900,7 @@ export const schemaOf = (excel: ExcelEntry, table: Table) => ({
   form: excel.form ?? null,
 });
 
-function SchemaTab({ excel, table }: { excel: ExcelEntry; table: Table }) {
+function SchemaTab({ excel, table, onAddFields }: { excel: ExcelEntry; table: Table; onAddFields: (fields: Field[]) => Promise<unknown> }) {
   const json = JSON.stringify(schemaOf(excel, table), null, 2);
   const download = () => {
     const a = document.createElement("a");
@@ -911,7 +911,7 @@ function SchemaTab({ excel, table }: { excel: ExcelEntry; table: Table }) {
   };
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-3">
-      <FormLink excel={excel} />
+      <FormLink excel={excel} table={table} onAddFields={onAddFields} />
       <div className="flex items-center gap-2">
         <span className="label">Schema (JSON)</span>
         <button type="button" className="btn ml-auto h-7" onClick={download}>
@@ -923,10 +923,16 @@ function SchemaTab({ excel, table }: { excel: ExcelEntry; table: Table }) {
   );
 }
 
-/** The Microsoft Form filling the table (optional): link, read again, remove. */
-function FormLink({ excel }: { excel: ExcelEntry }) {
+/** The Microsoft Form filling the table (optional): link, read again, remove, make the table's fields from it. */
+function FormLink({ excel, table, onAddFields }: { excel: ExcelEntry; table: Table; onAddFields: (fields: Field[]) => Promise<unknown> }) {
   const [link, setLink] = useState("");
-  const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
+  const [state, setState] = useState<{ busy?: boolean; error?: string; done?: string }>({});
+  const missing = excel.form ? fieldsFromForm(excel.form, table.fields) : [];
+  const addFields = () => {
+    if (!confirm(`Add ${missing.length} field(s) (new Excel columns)?\n\n${missing.map((f) => `• ${f.name} — ${TYPE_LABELS[f.type]}${f.multiple ? ", multiple" : ""}${f.options?.length ? ` (${f.options.length} options)` : ""}`).join("\n")}`)) return;
+    setState({ busy: true });
+    onAddFields(missing).then(() => setState({ done: `${missing.length} field(s) added.` }), (e) => setState({ error: errorText(e) }));
+  };
   const read = (url: string) => {
     setState({ busy: true });
     readFormSchema(url).then(
@@ -958,6 +964,12 @@ function FormLink({ excel }: { excel: ExcelEntry }) {
           </button>
         </div>
       )}
+      {excel.form && (
+        <button type="button" className="btn h-7 w-fit" disabled={state.busy || !missing.length} title="One field per question that has none yet: type, options, multiple, required" onClick={addFields}>
+          <PlusIcon /> {missing.length ? `Create the fields from the form (${missing.length})` : "Every question has its field"}
+        </button>
+      )}
+      {state.done && <p className="text-[11px] text-green-700">{state.done}</p>}
       {state.error && <p className="text-[11px] break-words text-destructive">{state.error}</p>}
     </div>
   );
