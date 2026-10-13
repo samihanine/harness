@@ -22,7 +22,7 @@ type Write = ReturnType<typeof useTable>["write"];
 import { errorText } from "@/lib/ms";
 import { describeError } from "@/agent/loop";
 import { embedVisual, models, pageText, setVisualFilters, type Ref, type Report } from "@/lib/pbi";
-import { captureVisualPng, printVisual } from "@/lib/visual-image";
+import { capturePreviewPng, captureVisualPng, printVisual } from "@/lib/visual-image";
 import { find, patch, useCollection, type DatasetEntry, type ExcelEntry, type ReportEntry } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
 import { useLast } from "@/lib/last";
@@ -440,6 +440,8 @@ function GuideTab({ excel, reportId, reportRef, report, selection }: { excel?: E
   const [editor, setEditor] = useState<{ index?: number } | null>(null);
   const rows = table?.rows ?? [];
   const here = selection.visual ? `${selection.page}/${selection.visual}` : undefined;
+  /** The preview of the clicked visual, used by the downloads when it is ready. */
+  const preview = useRef<PreviewHandle>(undefined);
 
   // Follows the visual clicked in the report.
   useEffect(() => {
@@ -550,11 +552,11 @@ function GuideTab({ excel, reportId, reportRef, report, selection }: { excel?: E
   return (
     <div className="flex flex-col">
       {crumbs}
-      {VISUAL_PREVIEW && report && reportRef && <VisualPreview report={report} reportRef={reportRef} page={selection.page} visual={selection.visual} />}
-      {(EXPORT.visualPdf || EXPORT.visualPng) && here && report && selection.page && selection.visual && (
-        <VisualDownload key={here} report={report} page={selection.page} visual={selection.visual} title={visualTitle(here)} />
-      )}
+      {VISUAL_PREVIEW && report && reportRef && <VisualPreview report={report} reportRef={reportRef} page={selection.page} visual={selection.visual} handle={preview} />}
       {body}
+      {(EXPORT.visualPdf || EXPORT.visualPng) && here && report && selection.page && selection.visual && (
+        <VisualDownload key={here} report={report} page={selection.page} visual={selection.visual} title={visualTitle(here)} preview={preview} />
+      )}
       {error && table && <p className="px-3 py-2 text-[12px] text-destructive">{error}</p>}
       {editor && (
         <TabDrawer title="Guides" excel={excel} reportId={reportId} kind="guides" table={table} error={error} onClose={() => setEditor(null)}>
@@ -588,6 +590,9 @@ async function filtersOf(report: Report, page: string, visual: string) {
   return { report: await report.getFilters().catch(() => []), page: [...(await current.getFilters().catch(() => [])), ...selections] };
 }
 
+/** A loaded preview: which visual (page/visual), its embed (to print) and its element (to capture). */
+type PreviewHandle = { visual: string; embed: Awaited<ReturnType<typeof embedVisual>>; element: HTMLElement };
+
 /** Preview height at most (px); the visual is scaled down to fit, never up. */
 const PREVIEW_HEIGHT = 220;
 
@@ -598,7 +603,7 @@ const PREVIEW_HEIGHT = 220;
  * first click, then only reloaded with the next visual (much faster); it stays mounted, hidden, when
  * no visual is selected.
  */
-function VisualPreview({ report, reportRef, page, visual }: { report: Report; reportRef: Ref; page?: string; visual?: string }) {
+function VisualPreview({ report, reportRef, page, visual, handle }: { report: Report; reportRef: Ref; page?: string; visual?: string; handle: { current?: PreviewHandle } }) {
   const element = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const embed = useRef<Awaited<ReturnType<typeof embedVisual>>>(undefined);
@@ -621,8 +626,11 @@ function VisualPreview({ report, reportRef, page, visual }: { report: Report; re
       if (!target || ["shape", "basicShape", "image", "actionButton"].includes(target.type)) return live && setSize(undefined);
       setSize({ width: target.layout.width || 400, height: target.layout.height || 300 });
       setState({ loading: true });
+      handle.current = undefined;
       embed.current = await embedVisual(element.current!, reportRef, page, visual, await filtersOf(report, page, visual));
-      if (live) setState({});
+      if (!live) return;
+      setState({});
+      handle.current = { visual: `${page}/${visual}`, embed: embed.current, element: element.current! };
     })().catch((e) => live && setState({ error: describeError(e) }));
     return () => void (live = false);
   }, [report, reportRef.id, page, visual]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -657,15 +665,25 @@ function VisualPreview({ report, reportRef, page, visual }: { report: Report; re
   );
 }
 
-/** The clicked visual's download buttons (guide or not), above its guide. */
-function VisualDownload({ report, page, visual, title }: { report: Report; page: string; visual: string; title: string }) {
+/** The clicked visual's download buttons (guide or not), below its guide. */
+function VisualDownload({ report, page, visual, title, preview }: { report: Report; page: string; visual: string; title: string; preview: { current?: PreviewHandle } }) {
   const [state, setState] = useState<{ busy?: "pdf" | "png"; error?: string }>({});
   const run = (kind: "pdf" | "png") => {
     setState({ busy: kind });
-    (kind === "pdf" ? printVisual(report, page, visual) : captureVisualPng(report, page, visual, title)).then(() => setState({}), (e) => setState({ error: describeError(e) }));
+    // The preview when it shows this visual (the report is not touched), else the report itself.
+    const ready = preview.current?.visual === `${page}/${visual}` ? preview.current : undefined;
+    const task =
+      kind === "pdf"
+        ? ready
+          ? ready.embed.print()
+          : printVisual(report, page, visual)
+        : ready
+          ? capturePreviewPng(ready.element, title || visual)
+          : captureVisualPng(report, page, visual, title);
+    task.then(() => setState({}), (e) => setState({ error: describeError(e) }));
   };
   return (
-    <div className="flex flex-col gap-1 border-b px-3 py-2">
+    <div className="flex flex-col gap-1 border-t px-3 py-2">
       <div className="flex items-center gap-1.5">
         {EXPORT.visualPdf && (
           <button type="button" className="btn h-7 shrink-0" disabled={!!state.busy} onClick={() => run("pdf")}>

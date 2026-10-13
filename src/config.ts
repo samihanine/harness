@@ -12,7 +12,7 @@ export const AI_PANEL = true;
 /** Export features and their buttons. */
 export const EXPORT = {
   /** Viewer, Guides tab: "PDF" of the clicked visual alone (browser print dialog). */
-  visualPdf: false,
+  visualPdf: true,
   /** Viewer, Guides tab: "PNG" of the clicked visual alone (captured from the tab: the browser asks to share it once). */
   visualPng: false,
   /** Viewer and builder: "Export" button of the report (PDF, .pbix). */

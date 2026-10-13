@@ -84,30 +84,59 @@ async function tabStream() {
 export async function captureVisualPng(report: Report, page: string, visual: string, title: string) {
   // Asked first, while the click still counts as a user gesture.
   const { video } = await tabStream();
-  const element = (report as unknown as { element: HTMLElement }).element;
   const restore = await isolate(report, page, visual);
   try {
-    // The whole tab is captured and the report area cut out by its position. (Region Capture was
-    // dropped: the tab only sends a new frame when the page changes, so after a crop the video kept
-    // showing the previous, uncropped frame, and the second PNG was the whole screen.)
-    await new Promise((r) => setTimeout(r, 500));
-    const frame = document.createElement("canvas");
-    frame.width = video.videoWidth;
-    frame.height = video.videoHeight;
-    const g = frame.getContext("2d", { willReadFrequently: true })!;
-    g.drawImage(video, 0, 0);
-    const box = trim(g, areaOf(element, frame));
-    const out = document.createElement("canvas");
-    out.width = box.w;
-    out.height = box.h;
-    out.getContext("2d")!.drawImage(frame, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
-    const a = document.createElement("a");
-    a.href = out.toDataURL("image/png");
-    a.download = `${(title || visual).replace(/[^\w\- ]+/g, "").trim() || visual}.png`;
-    a.click();
+    save(await grab(video, (report as unknown as { element: HTMLElement }).element), title || visual);
   } finally {
     await restore();
   }
+}
+
+/**
+ * PNG of the guide's preview (the visual alone, with the report's filters): for the capture it is shown
+ * at its real size over the page (only its style changes: moving it would reload its frame), then put
+ * back. The main report is not touched.
+ */
+export async function capturePreviewPng(element: HTMLElement, title: string) {
+  const { video } = await tabStream();
+  const before = element.style.cssText;
+  const width = element.offsetWidth;
+  const height = element.offsetHeight;
+  // As large as the window allows, never larger than in the report.
+  const scale = Math.min(1, (window.innerWidth - 40) / width, (window.innerHeight - 40) / height);
+  Object.assign(element.style, { position: "fixed", left: "20px", top: "20px", zIndex: "9999", background: "#fff", transform: `scale(${scale})`, opacity: "1" });
+  try {
+    await new Promise((r) => setTimeout(r, 700)); // redrawn at that size, and a fresh frame sent
+    save(await grab(video, element), title);
+  } finally {
+    element.style.cssText = before;
+  }
+}
+
+/** The tab's current frame, cut to an element and trimmed of its even margins, as a PNG data URL. */
+async function grab(video: HTMLVideoElement, element: HTMLElement) {
+  // The whole tab is captured and the area cut out by its position. (Region Capture was dropped: the
+  // tab only sends a new frame when the page changes, so after a crop the video kept showing the
+  // previous, uncropped frame, and the second PNG was the whole screen.)
+  await new Promise((r) => setTimeout(r, 500));
+  const frame = document.createElement("canvas");
+  frame.width = video.videoWidth;
+  frame.height = video.videoHeight;
+  const g = frame.getContext("2d", { willReadFrequently: true })!;
+  g.drawImage(video, 0, 0);
+  const box = trim(g, areaOf(element, frame));
+  const out = document.createElement("canvas");
+  out.width = box.w;
+  out.height = box.h;
+  out.getContext("2d")!.drawImage(frame, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+  return out.toDataURL("image/png");
+}
+
+function save(href: string, title: string) {
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = `${title.replace(/[^\w\- ]+/g, "").trim() || "visual"}.png`;
+  a.click();
 }
 
 type Box = { x: number; y: number; w: number; h: number };
