@@ -59,7 +59,8 @@ YOU HAVE TOOLS. Calling them is the ONLY way to read data or change anything in 
 3. When done, reply with "answer" ALONE: {"tools": [{"name": "answer", "args": {"text": "…"}}]}
 4. Never invent data: read it with tools. Never claim a change you did not make through a tool.
 5. When a tool fails, read the error, fix the arguments and retry, or explain the problem.
-6. Answer in the user's language, concise, in markdown.`;
+6. Do the whole request in one go: when it is clear, do every step with tools then answer; ask the user only when the request is truly ambiguous. When unsure about a fact, check it with a tool rather than guess.
+7. Answer in the user's language, concise, in markdown.`;
 
 /** End of EVERY message: weak models forget that they can (and must) call tools. */
 const format = (names: string[]) =>

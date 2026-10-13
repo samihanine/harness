@@ -1,6 +1,6 @@
 /** Agent tools on an embedded report (viewer: navigation & filters; builder: authoring) and on DAX. */
 import { z } from "zod";
-import { basicFilter, dax, findVisual, models, rowsText, settled, type Ref, type Report } from "@/lib/pbi";
+import { basicFilter, checkValues, dax, findVisual, models, rowsText, settled, type Ref, type Report } from "@/lib/pbi";
 import { describeError, tool, type Tool } from "./loop";
 import type { VisualDescriptor as PbiVisual } from "powerbi-client";
 
@@ -67,8 +67,11 @@ const visualOf = async (report: Report, name: string) => findVisual(await (await
 /** One value or a list. */
 const values = z.preprocess((v) => (Array.isArray(v) ? v : v === undefined || v === null || v === "" ? [] : [v]), z.array(z.union([z.string(), z.number(), z.boolean()])));
 
-/** Viewer: navigate and filter (works with view-only rights). */
-export function viewTools(report: () => Report | undefined): Tool[] {
+/**
+ * Viewer: navigate and filter (works with view-only rights). With the model (`dataset`), filter values
+ * are checked first: an unknown value is refused with the valid ones, instead of emptying the visuals.
+ */
+export function viewTools(report: () => Report | undefined, dataset: () => Ref | undefined = () => undefined): Tool[] {
   const r = () => {
     const current = report();
     if (!current) throw new Error("No report open.");
@@ -93,14 +96,15 @@ export function viewTools(report: () => Report | undefined): Tool[] {
     }),
     tool({
       name: "set_filter",
-      description: "Filters the report or the current page on a column (values = kept values). Empty values removes the filter on that column.",
+      description: "Filters the report or the current page on a column (values = kept values, as they are in the data). Empty values removes the filter on that column. Prefer a slicer of the page when one is on that column.",
       args: z.object({
         level: z.enum(["report", "page"]),
         table: z.string(),
         column: z.string(),
         values,
       }),
-      run: async ({ level, table, column, values }) => {
+      run: async ({ level, table, column, values: given }) => {
+        const values = await checkValues(dataset(), table, column, given);
         const owner = level === "report" ? r() : await pageOf(r());
         const others = (await owner.getFilters()).filter((f: any) => !(f.target?.table === table && f.target?.column === column));
         await owner.setFilters(values.length ? [...others, basicFilter(table, column, values)] : others as never);
@@ -134,7 +138,7 @@ export function viewTools(report: () => Report | undefined): Tool[] {
         const v = await visualOf(r(), visual);
         const others = (await v.getFilters()).filter((f: any) => !(f.target?.table === table && f.target?.column === column));
         let filter: unknown;
-        if (kind === "values") filter = kept.length ? basicFilter(table, column, kept) : undefined;
+        if (kind === "values") filter = kept.length ? basicFilter(table, column, await checkValues(dataset(), table, column, kept)) : undefined;
         else {
           const m = order_by?.match(/^'?([^'[]+)'?\[([^\]]+)\]$/);
           if (!m) throw new Error('order_by must look like Table[Column] or Table[Measure]');
@@ -153,15 +157,16 @@ export function viewTools(report: () => Report | undefined): Tool[] {
     }),
     tool({
       name: "set_slicer",
-      description: "Selects values in a slicer of the current page (empty values clears it).",
+      description: "Selects values in a slicer of the current page (empty values clears it). Values as listed in the slicer's options (page state); unknown values are refused with the valid ones.",
       args: z.object({ visual: z.string().describe("Slicer name (its id, name=… in the context); a title only when no other visual has it"), values }),
       run: async ({ visual, values }) => {
         const slicer = await visualOf(r(), visual);
         const { targets } = await slicer.getSlicerState();
         const t = targets?.[0] as { table: string; column: string } | undefined;
         if (!t) throw new Error("This visual is not a slicer on a column.");
-        await slicer.setSlicerState({ filters: values.length ? [basicFilter(t.table, t.column, values) as never] : [] });
-        return "Slicer updated.";
+        const kept = await checkValues(dataset(), t.table, t.column, values);
+        await slicer.setSlicerState({ filters: kept.length ? [basicFilter(t.table, t.column, kept) as never] : [] });
+        return kept.length ? `Slicer set to ${kept.map((v) => JSON.stringify(v)).join(", ")}.` : "Slicer cleared.";
       },
     }),
   ].map(after);

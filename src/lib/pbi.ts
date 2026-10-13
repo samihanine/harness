@@ -54,6 +54,49 @@ export async function dax(dataset: Ref, query: string): Promise<Rows> {
   );
 }
 
+/* ----------------------------- Column values ----------------------------- */
+
+const columnRef = (table: string, column: string) => `'${table.replace(/'/g, "''")}'[${column.replace(/]/g, "]]")}]`;
+const literal = (v: unknown) => (typeof v === "number" ? String(v) : typeof v === "boolean" ? (v ? "TRUE" : "FALSE") : `"${String(v).replace(/"/g, '""')}"`);
+
+/** Distinct values of a column (first `VALUES_SHOWN`), kept for the session: what slicers and filters can take. */
+const VALUES_SHOWN = 40;
+const valuesCache = new Map<string, Promise<{ values: unknown[]; more: boolean }>>();
+export function columnValues(dataset: Ref, table: string, column: string) {
+  const key = `${dataset.id}|${table}|${column}`;
+  if (!valuesCache.has(key)) {
+    const run = dax(dataset, `EVALUATE TOPN(${VALUES_SHOWN + 1}, VALUES(${columnRef(table, column)}))`).then((rows) => {
+      const values = rows.map((r) => Object.values(r)[0]).filter((v) => v !== null && v !== "");
+      return { values: values.slice(0, VALUES_SHOWN), more: values.length > VALUES_SHOWN };
+    });
+    valuesCache.set(key, run);
+    run.catch(() => valuesCache.delete(key));
+  }
+  return valuesCache.get(key)!;
+}
+
+/**
+ * The values to filter on, as the model holds them: matched without case ("fall" → "Fall"), and
+ * refused when they do not exist (the error lists the valid ones), so the AI never filters on a value
+ * that empties the visuals. Without access to the model (no Build right), kept as given.
+ */
+export async function checkValues(dataset: Ref | undefined, table: string, column: string, given: unknown[]) {
+  if (!dataset || !given.length) return given;
+  const found = await dax(dataset, `EVALUATE FILTER(VALUES(${columnRef(table, column)}), ${columnRef(table, column)} IN {${given.map(literal).join(", ")}})`)
+    .then((rows) => rows.map((r) => Object.values(r)[0]))
+    .catch(() => undefined);
+  if (!found) return given;
+  const same = (a: unknown, b: unknown) => String(a).toLowerCase() === String(b).toLowerCase();
+  const missing = given.filter((g) => !found.some((f) => same(f, g)));
+  if (missing.length) {
+    const { values, more } = await columnValues(dataset, table, column).catch(() => ({ values: [] as unknown[], more: false }));
+    throw new Error(
+      `${table}[${column}] has no value ${missing.map((m) => JSON.stringify(m)).join(", ")}. ${values.length ? `Its values${more ? " (first " + values.length + ")" : ""}: ${values.map((v) => JSON.stringify(v)).join(", ")}.` : ""} Pick the matching one (e.g. a translation or synonym of the user's word) and retry${more ? ", or search them with run_dax" : ""}.`,
+    );
+  }
+  return given.map((g) => found.find((f) => same(f, g)) ?? g);
+}
+
 /** Rows as a compact text table for the AI. */
 export function rowsText(rows: Rows, max = 50) {
   if (rows.length === 0) return "(no rows)";
@@ -139,10 +182,15 @@ export async function embedVisual(element: HTMLElement, ref: Ref, page: string, 
     settings: { panes: { filters: { visible: false } }, background: p.models.BackgroundType.Transparent },
   } as PbiClient.IVisualEmbedConfiguration) as PbiClient.Visual;
   await loaded(embed);
-  if (filters) {
-    await embed.setFilters(filters.report as never, p.models.FiltersLevel.Report).catch(() => undefined);
-    await embed.setFilters(filters.page as never, p.models.FiltersLevel.Page).catch(() => undefined);
-  }
+  if (filters) await setVisualFilters(embed, filters);
+  return embed;
+}
+
+/** Report and page filters of a visual embed (kept in step with the main report). */
+export async function setVisualFilters(embed: PbiClient.Visual, filters: { report: unknown[]; page: unknown[] }) {
+  const { pbi: p } = await load();
+  await embed.setFilters(filters.report as never, p.models.FiltersLevel.Report).catch(() => undefined);
+  await embed.setFilters(filters.page as never, p.models.FiltersLevel.Page).catch(() => undefined);
 }
 
 export const resetEmbed = async (element: HTMLElement) => (await load()).service.reset(element);
@@ -196,8 +244,11 @@ export function findVisual<V extends { name: string; title?: string }>(visuals: 
   return matches[0];
 }
 
-/** One visual for the AI: kind, fields, filters, slicer state, and (optionally) its data. `shared`: its title is not unique. */
-export async function visualText(visual: Visual, withData: boolean, shared = false) {
+/**
+ * One visual for the AI: kind, fields, filters, slicer state (with the values it offers, when the
+ * model can be queried: `dataset`), and (optionally) its data. `shared`: its title is not unique.
+ */
+export async function visualText(visual: Visual, withData: boolean, shared = false, dataset?: Ref) {
   const { pbi: p } = await load();
   const { x = 0, y = 0, width = 0, height = 0 } = visual.layout;
   const box = `x=${Math.round(x)} y=${Math.round(y)} w=${Math.round(width)} h=${Math.round(height)} z=${Math.round(visual.layout.z ?? 0)}`;
@@ -209,6 +260,9 @@ export async function visualText(visual: Visual, withData: boolean, shared = fal
   if (visual.type === "slicer") {
     const state = await visual.getSlicerState().catch(() => null);
     if (state) lines.push(`  slicer on ${state.targets?.map((t) => fieldName(t as never)).join(", ")}: ${active(state.filters).length ? active(state.filters).map(filterText).join("; ") : "nothing selected"}`);
+    const t = state?.targets?.[0] as { table?: string; column?: string } | undefined;
+    const options = dataset && t?.table && t.column ? await columnValues(dataset, t.table, t.column).catch(() => undefined) : undefined;
+    if (options?.values.length) lines.push(`  options${options.more ? ` (first ${options.values.length})` : ""}: ${options.values.map((v) => JSON.stringify(v)).join(", ")}`);
   }
   if (withData && !["slicer", "textbox", "image", "shape", "actionButton", "basicShape"].includes(visual.type)) {
     const exported = await visual.exportData(p.models.ExportDataType.Summarized, 30).catch(() => null);
@@ -217,14 +271,14 @@ export async function visualText(visual: Visual, withData: boolean, shared = fal
   return lines.join("\n");
 }
 
-/** The page the user is looking at: name, filters, visuals with their data. Sent with every message. */
-export async function pageText(report: Report, withData = true) {
+/** The page the user is looking at: name, filters, visuals with their data (and slicer options: `dataset`). */
+export async function pageText(report: Report, withData = true, dataset?: Ref) {
   const pages = await report.getPages();
   const page = pages.find((p) => p.isActive) ?? pages[0];
   const visuals = await page.getVisuals();
   const [reportFilters, pageFilters] = (await Promise.all([report.getFilters().catch(() => []), page.getFilters().catch(() => [])])).map(active);
   const shared = (v: Visual) => visuals.filter((x) => sameTitle(x.title, v.title)).length > 1 && !!v.title;
-  const parts = await Promise.all(visuals.map((v) => visualText(v, withData, shared(v))));
+  const parts = await Promise.all(visuals.map((v) => visualText(v, withData, shared(v), dataset)));
   return [
     `pages: ${pages.map((p) => `${p.displayName} (name=${p.name}${p.isActive ? ", current" : ""}${p.visibility === 1 ? ", hidden" : ""})`).join(", ")}`,
     `report filters: ${reportFilters.map(filterText).join("; ") || "none"}`,

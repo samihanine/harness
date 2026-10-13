@@ -21,7 +21,7 @@ import { useTable } from "@/lib/use-table";
 type Write = ReturnType<typeof useTable>["write"];
 import { errorText } from "@/lib/ms";
 import { describeError } from "@/agent/loop";
-import { embedVisual, models, pageText, type Ref, type Report } from "@/lib/pbi";
+import { embedVisual, models, pageText, setVisualFilters, type Ref, type Report } from "@/lib/pbi";
 import { captureVisualPng, printVisual } from "@/lib/visual-image";
 import { find, patch, useCollection, type DatasetEntry, type ExcelEntry, type ReportEntry } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
@@ -67,12 +67,25 @@ function Viewer() {
   const conversationExists = useCollection("conversations").some((c) => c.id === conversationId);
   useReportView(report, conversationId, conversationExists);
 
+  const datasetRef = entry && { id: entry.datasetId, groupId: entry.datasetGroupId };
   const agent = {
     instructions:
-      `You help the user read a Power BI report. You see the page they are looking at (visuals with their data). You can change page, filters and slicers, and run DAX on the model to answer precisely. Explain numbers simply.\n${DAX_RULES}`,
-    tools: [...viewTools(() => report), daxTool(() => entry && { id: entry.datasetId, groupId: entry.datasetGroupId }), ...modelTools(() => dataset)],
+      `You help the user read and explore a Power BI report. You see the page they are looking at (visuals with their data, slicers with their options). You can change page, slicers and filters, and run DAX on the model to answer precisely. Explain numbers simply.
+How to work:
+- Do the whole request in ONE go: when it is clear, act with the tools then answer. Never ask for a confirmation when the meaning is obvious, also through a translation or a synonym (e.g. "automne" → the season value "Fall", "last year" → the previous year). Ask only when the request really has several equally likely meanings.
+- Values: filter only on values that exist. A slicer lists its options in the page state; for any other column, or when unsure, read the real values first with run_dax (EVALUATE TOPN(50, VALUES('Table'[Column])), or a search with CONTAINSSTRING). The filter tools refuse unknown values and list the valid ones: then pick the right one and retry, without asking.
+- Not sure about a fact (a value, a total, which column holds something)? Check it with run_dax or the model tools instead of guessing.
+- To filter or select, use the FIRST of these that fits, in this order:
+  1. a slicer of the current page on that field (set_slicer) — what the user sees and expects;
+  2. a page filter on the column (set_filter, level "page");
+  3. a report filter (set_filter, level "report"), when it must apply to every page;
+  4. a visual filter (set_visual_filter), only when the user means one visual.
+  Find the field in the slicers first (their fields and options), then in the model (search_model).
+- After a change, read the new page state and answer with what changed and the key figures.
+${DAX_RULES}`,
+    tools: [...viewTools(() => report, () => datasetRef), daxTool(() => datasetRef), ...modelTools(() => dataset)],
     context: async () => libraryContext(entry, dataset),
-    state: async () => (report ? `What the user sees now:\n${await pageText(report)}` : "The report is not loaded."),
+    state: async () => (report ? `What the user sees now:\n${await pageText(report, true, datasetRef)}` : "The report is not loaded."),
   };
 
   return (
@@ -566,37 +579,79 @@ function GuideTab({ excel, reportId, reportRef, report, selection }: { excel?: E
   );
 }
 
+/** The user's filters on a page: report and page filters, and the slicers' selections (as page filters). */
+async function filtersOf(report: Report, page: string, visual: string) {
+  const current = (await report.getPages()).find((p) => p.name === page);
+  if (!current) return { report: [], page: [] };
+  const slicers = (await current.getVisuals()).filter((v) => v.type === "slicer" && v.name !== visual);
+  const selections = (await Promise.all(slicers.map((v) => v.getSlicerState().then((st) => st.filters, () => [])))).flat();
+  return { report: await report.getFilters().catch(() => []), page: [...(await current.getFilters().catch(() => [])), ...selections] };
+}
+
+/** Preview height at most (px); the visual is scaled down to fit, never up. */
+const PREVIEW_HEIGHT = 220;
+
 /**
- * Live preview of the clicked visual: that visual alone in a second embed, with the report's filters
- * and the slicers' selections. The frame is made once, on the first click, then only reloaded with the next
- * visual (much faster than a new one); it stays mounted, hidden, when no visual is selected.
+ * Live preview of the clicked visual: that visual alone in a second embed, drawn at its real size in
+ * the report and scaled down (same look, ratio kept), with the report's filters and the slicers'
+ * selections, kept in step when they change. Read only (no clicks). The frame is made once, on the
+ * first click, then only reloaded with the next visual (much faster); it stays mounted, hidden, when
+ * no visual is selected.
  */
 function VisualPreview({ report, reportRef, page, visual }: { report: Report; reportRef: Ref; page?: string; visual?: string }) {
   const element = useRef<HTMLDivElement>(null);
-  const [state, setState] = useState<{ ratio?: number; loading?: boolean; error?: string }>({});
-  const shown = !!(page && visual);
+  const box = useRef<HTMLDivElement>(null);
+  const embed = useRef<Awaited<ReturnType<typeof embedVisual>>>(undefined);
+  const [size, setSize] = useState<{ width: number; height: number }>();
+  const [width, setWidth] = useState(0);
+  const [state, setState] = useState<{ loading?: boolean; error?: string }>({});
+  const shown = !!(page && visual && size);
+  useEffect(() => {
+    if (!box.current) return;
+    const observer = new ResizeObserver(([e]) => setWidth(e.contentRect.width));
+    observer.observe(box.current);
+    return () => observer.disconnect();
+  }, []);
   useEffect(() => {
     if (!page || !visual || !element.current) return;
     let live = true;
     void (async () => {
       const target = (await (await report.getPages()).find((p) => p.name === page)?.getVisuals())?.find((v) => v.name === visual);
       // Decorations (shapes, images, buttons) are not worth a preview.
-      if (!target || ["shape", "basicShape", "image", "actionButton"].includes(target.type)) return live && setState({});
-      const { width = 16, height = 9 } = target.layout;
-      setState({ ratio: width / height, loading: true });
-      // The user's filters: report and page filters, and the slicers' selections (as page filters).
-      const current = (await report.getPages()).find((p) => p.name === page)!;
-      const slicers = (await current.getVisuals()).filter((v) => v.type === "slicer" && v.name !== visual);
-      const selections = (await Promise.all(slicers.map((v) => v.getSlicerState().then((st) => st.filters, () => [])))).flat();
-      const filters = { report: await report.getFilters().catch(() => []), page: [...(await current.getFilters().catch(() => [])), ...selections] };
-      await embedVisual(element.current!, reportRef, page, visual, filters);
-      if (live) setState({ ratio: width / height });
+      if (!target || ["shape", "basicShape", "image", "actionButton"].includes(target.type)) return live && setSize(undefined);
+      setSize({ width: target.layout.width || 400, height: target.layout.height || 300 });
+      setState({ loading: true });
+      embed.current = await embedVisual(element.current!, reportRef, page, visual, await filtersOf(report, page, visual));
+      if (live) setState({});
     })().catch((e) => live && setState({ error: describeError(e) }));
     return () => void (live = false);
   }, [report, reportRef.id, page, visual]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The user changes a filter or a slicer: the preview follows (filters only, no reload).
+  useEffect(() => {
+    if (!page || !visual) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const follow = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => embed.current && (await setVisualFilters(embed.current, await filtersOf(report, page, visual))), 800);
+    };
+    report.on("rendered", follow);
+    return () => {
+      clearTimeout(timer);
+      report.off("rendered", follow);
+    };
+  }, [report, page, visual]);
+  const scale = size && width ? Math.min(1, width / size.width, PREVIEW_HEIGHT / size.height) : 0;
   return (
-    <div className={shown && state.ratio ? "relative border-b p-2" : "hidden"}>
-      <div ref={element} style={{ aspectRatio: state.ratio ?? 16 / 9 }} className={`max-h-64 w-full ${state.loading ? "opacity-40" : ""}`} />
+    <div className={shown ? "border-b p-2" : "hidden"}>
+      <div ref={box} className="flex w-full justify-center">
+        <div className="relative overflow-hidden" style={{ width: (size?.width ?? 0) * scale, height: (size?.height ?? 0) * scale }}>
+          <div
+            ref={element}
+            style={{ width: size?.width, height: size?.height, transform: `scale(${scale})` }}
+            className={`pointer-events-none absolute top-0 left-0 origin-top-left select-none ${state.loading ? "opacity-40" : ""}`}
+          />
+        </div>
+      </div>
       {state.error && <p className="text-[11px] break-words text-destructive">{state.error}</p>}
     </div>
   );
