@@ -2,7 +2,7 @@
 import { z } from "zod";
 import { refreshDatasetText } from "@/lib/library";
 import { addFieldParameter, addNumericParameter } from "@/lib/parameters";
-import { layoutIssues, type Report } from "@/lib/pbi";
+import { findVisual, layoutIssues, type Report } from "@/lib/pbi";
 import { addShape, deleteReportMeasure, formatTable, reportMeasuresText, setInteractions, setPositions, setSlicerSelection, setTextbox, sortVisual, upsertReportMeasure } from "@/lib/report-def";
 import type { DatasetEntry, ReportEntry } from "@/lib/store";
 import { refreshModel } from "@/server/ms";
@@ -48,9 +48,7 @@ export function reportModelTools({ report, entry, dataset, changed }: {
     const { r } = need();
     const page = (await r.getPages()).find((p) => p.isActive)!;
     const visuals = await page.getVisuals();
-    const norm = (s = "") => s.toLowerCase().replace(/[\s_-]+/g, " ").trim();
-    const v = visuals.find((x) => x.name === name) ?? visuals.find((x) => norm(x.title) === norm(name));
-    if (!v) throw new Error(`Visual "${name}" not on the current page. Visuals: ${visuals.map((x) => `"${x.title ?? ""}" (name=${x.name})`).join(", ")}`);
+    const v = findVisual(visuals, name);
     return { page: page.name, visual: v.name, all: visuals };
   };
   const activeVisuals = async () => (await (await need().r.getPages()).find((p) => p.isActive)!.getVisuals());
@@ -115,7 +113,7 @@ export function reportModelTools({ report, entry, dataset, changed }: {
       description:
         'Sets how a selection / click in a visual acts on the other visuals of the page ("Edit interactions"): "filter", "highlight", "none" or "default". E.g. clicking a row of a table filters only the detail card: source = the table, targets = detail → filter, every other visual → none.',
       args: z.object({
-        source: z.string().describe("Visual name (preferred) or title"),
+        source: z.string().describe("Visual name (its id, name=… in the context); a title only when no other visual has it"),
         targets: z.array(z.object({ visual: z.string(), type: z.enum(["filter", "highlight", "none", "default"]) })),
       }),
       run: ({ source, targets }) =>

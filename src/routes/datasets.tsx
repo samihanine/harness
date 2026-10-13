@@ -997,6 +997,9 @@ function datasetAgent({ excel, table, rows, checked, view, setView, write }: {
         `Excel "${excel.name}" (table ${excel.table})${excel.context ? `\nNotes: ${excel.context}` : ""}`,
         `Fields:\n${fieldsText}`,
         excel.form ? `Microsoft Form "${excel.form.title}" fills this table; its questions: ${excel.form.questions.map((q) => `${q.title} (${q.type}${q.multiple ? ", multiple" : ""}${q.required ? ", required" : ""})`).join("; ")}` : "",
+      ].filter(Boolean).join("\n\n"),
+    state: async () =>
+      [
         checked.length
           ? `THE USER SELECTED ${checked.length} ROW(S): indexes ${checked.join(", ")}. Act on these rows only (read them with read_rows), unless the user clearly asks otherwise.`
           : "No row selected: the request concerns all the rows.",

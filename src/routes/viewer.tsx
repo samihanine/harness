@@ -1,18 +1,19 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { icons, ChartColumnIcon, CheckIcon, DownloadIcon, ChevronRightIcon, FileTextIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, Settings2Icon, Trash2Icon, XIcon } from "lucide-react";
+import { icons, ArrowDownIcon, ArrowUpIcon, CheckIcon, DownloadIcon, ChevronRightIcon, ChevronsUpDownIcon, FileTextIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, SearchIcon, Settings2Icon, Trash2Icon, XIcon } from "lucide-react";
+import { Popover } from "@/components/popover";
 import { Drawer } from "@/components/drawer";
 import { Markdown } from "@/components/markdown";
 import { Chat } from "@/components/chat";
-import { EXPORT, REPORT_VIEWER_EDITOR, VIEWER_TABS, visible } from "@/config";
+import { EXPORT, REPORT_VIEWER_EDITOR, VIEWER_TABS, VISUAL_PREVIEW, visible } from "@/config";
 import { RichText } from "@/components/rich-text";
-import { COLORS, SWATCHES, isColor } from "@/lib/schema";
+import { COLORS, SWATCHES, isColor, isIdField } from "@/lib/schema";
 import { Picker } from "@/components/picker";
 import { addReport, connectReportExcel } from "@/lib/library";
 import { ReportActions } from "@/components/report-actions";
 import { Zoom } from "@/components/zoom";
 import { Empty, SidePanel } from "@/components/side-panel";
-import { daxTool, viewTools } from "@/agent/pbi-tools";
+import { DAX_RULES, daxTool, viewTools } from "@/agent/pbi-tools";
 import { modelTools } from "@/agent/model-tools";
 import { addRows, deleteRows, updateRows, withRows, withUpdates, withoutRows, type Table } from "@/lib/excel";
 import { useTable } from "@/lib/use-table";
@@ -20,9 +21,9 @@ import { useTable } from "@/lib/use-table";
 type Write = ReturnType<typeof useTable>["write"];
 import { errorText } from "@/lib/ms";
 import { describeError } from "@/agent/loop";
-import { pageText, type Report } from "@/lib/pbi";
+import { embedVisual, models, pageText, type Ref, type Report } from "@/lib/pbi";
 import { captureVisualPng, printVisual } from "@/lib/visual-image";
-import { useCollection, type DatasetEntry, type ExcelEntry, type ReportEntry } from "@/lib/store";
+import { find, patch, useCollection, type DatasetEntry, type ExcelEntry, type ReportEntry } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
 import { useLast } from "@/lib/last";
 
@@ -62,12 +63,16 @@ function Viewer() {
   const dataset = useCollection("datasets").find((d) => d.id === entry?.datasetId);
   const excels = useCollection("excels");
   const { element, report, error, selection } = useEmbed(entry, "view");
+  const [conversationId, setConversationId] = useState<string>();
+  const conversationExists = useCollection("conversations").some((c) => c.id === conversationId);
+  useReportView(report, conversationId, conversationExists);
 
   const agent = {
     instructions:
-      "You help the user read a Power BI report. You see the page they are looking at (visuals with their data). You can change page, filters and slicers, and run DAX on the model to answer precisely. Explain numbers simply.",
+      `You help the user read a Power BI report. You see the page they are looking at (visuals with their data). You can change page, filters and slicers, and run DAX on the model to answer precisely. Explain numbers simply.\n${DAX_RULES}`,
     tools: [...viewTools(() => report), daxTool(() => entry && { id: entry.datasetId, groupId: entry.datasetGroupId }), ...modelTools(() => dataset)],
-    context: async () => [libraryContext(entry, dataset), report ? `What the user sees now:\n${await pageText(report)}` : "The report is not loaded."].join("\n\n"),
+    context: async () => libraryContext(entry, dataset),
+    state: async () => (report ? `What the user sees now:\n${await pageText(report)}` : "The report is not loaded."),
   };
 
   return (
@@ -75,8 +80,8 @@ function Viewer() {
       <SidePanel
         tabs={visible([
           { id: "info", label: "Info", content: <InfoTab excel={excels.find((e) => e.id === entry?.infoExcelId)} reportId={entry?.id} /> },
-          { id: "guide", label: "Guides", content: <GuideTab excel={excels.find((e) => e.id === entry?.guidesExcelId)} reportId={entry?.id} report={report} selection={selection} /> },
-          { id: "ai", label: "AI", content: entry ? <Chat scope={`viewer:${entry.id}`} agent={agent} placeholder="Ask about this page…" /> : <Empty>Choose a report.</Empty> },
+          { id: "guide", label: "Guides", content: <GuideTab excel={excels.find((e) => e.id === entry?.guidesExcelId)} reportId={entry?.id} reportRef={entry} report={report} selection={selection} /> },
+          { id: "ai", label: "AI", content: entry ? <Chat scope={`viewer:${entry.id}`} agent={agent} placeholder="Ask about this page…" onConversation={setConversationId} /> : <Empty>Choose a report.</Empty> },
         ], VIEWER_TABS)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -92,6 +97,49 @@ function Viewer() {
       </div>
     </div>
   );
+}
+
+/**
+ * The report once loaded: fit to width; then the state the user left in the open AI conversation
+ * (filters, slicers, page) is applied, and kept with it as it changes (a reload brings it back).
+ */
+function useReportView(report: Report | undefined, conversationId: string | undefined, exists: boolean) {
+  useEffect(() => {
+    if (!report) return;
+    // On the first render: set before, the page was still shown whole (fit to page).
+    const fit = async () => {
+      report.off("rendered", fit);
+      const m = await models();
+      await report.setZoom(1).catch(() => undefined);
+      await report.updateSettings({ layoutType: m.LayoutType.Custom, customLayout: { displayOption: m.DisplayOption.FitToWidth } }).catch(() => undefined);
+    };
+    report.on("rendered", fit);
+    return () => report.off("rendered", fit);
+  }, [report]);
+  useEffect(() => {
+    if (!report || !conversationId) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const save = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const c = await find("conversations", conversationId);
+        if (!live || !c) return; // a new conversation is saved with its first message
+        const state = (await report.bookmarksManager.capture().catch(() => undefined))?.state;
+        if (state && state !== c.viewState) await patch("conversations", conversationId, { viewState: state });
+      }, 1500);
+    };
+    void find("conversations", conversationId).then(async (c) => {
+      if (live && c?.viewState) await report.bookmarksManager.applyState(c.viewState).catch(() => undefined);
+      if (live) save();
+    });
+    report.on("rendered", save);
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      report.off("rendered", save);
+    };
+  }, [report, conversationId, exists]);
 }
 
 const IconOf = ({ name }: { name?: unknown }) => {
@@ -180,11 +228,7 @@ function InfoTab({ excel, reportId }: { excel?: ExcelEntry; reportId?: string })
   const [editing, setEditing] = useState(false);
   if (!reportId) return <Empty>Choose a report.</Empty>;
   return (
-    <div className="flex flex-col">
-      <div className="flex h-10 items-center justify-between pr-2 pl-4">
-        <span className="label">Links</span>
-        <SettingsButton title="Edit the links" onClick={() => setEditing(true)} />
-      </div>
+    <div className="flex flex-1 flex-col pt-3">
       {!excel ? (
         <Empty>No info links for this report yet{REPORT_VIEWER_EDITOR ? ": add some with ⚙" : ""}.</Empty>
       ) : !table ? (
@@ -205,7 +249,7 @@ function InfoTab({ excel, reportId }: { excel?: ExcelEntry; reportId?: string })
                 className="group flex min-w-0 flex-col items-center gap-1.5 rounded-2xl px-1 py-2.5 text-center transition-colors hover:bg-muted/70"
               >
                 <span
-                  className={`flex size-12 items-center justify-center rounded-[14px] bg-linear-to-b from-white/25 to-white/0 shadow-sm ring-1 ring-black/5 transition-transform duration-200 group-hover:scale-105 group-active:scale-95 [&_svg]:size-6 [&_svg]:stroke-[1.75] ${f.className}`}
+                  className={`flex size-14 items-center justify-center rounded-2xl bg-linear-to-b from-white/25 to-white/0 shadow-sm ring-1 ring-black/5 transition-transform duration-200 group-hover:scale-105 group-active:scale-95 [&_svg]:size-7 [&_svg]:stroke-[1.75] ${f.className}`}
                   style={f.style}
                 >
                   <IconOf name={row.icon} />
@@ -217,6 +261,9 @@ function InfoTab({ excel, reportId }: { excel?: ExcelEntry; reportId?: string })
         </div>
       )}
       {error && table && <p className="px-4 text-[12px] text-destructive">{error}</p>}
+      <div className="sticky bottom-0 mt-auto flex justify-end p-2">
+        <SettingsButton title="Edit the links" onClick={() => setEditing(true)} />
+      </div>
       {editing && (
         <TabDrawer title="Info links" excel={excel} reportId={reportId} kind="info" table={table} error={error} onClose={() => setEditing(false)}>
           {() => <LinksTable excel={excel!} table={table!} write={write} />}
@@ -231,6 +278,16 @@ function LinksTable({ excel, table, write }: { excel: ExcelEntry; table: Table; 
   const quiet = (p: Promise<unknown>) => void p.catch(() => undefined); // errors are shown by the drawer
   const save = (index: number, values: Partial<Link>) => {
     const changes = [{ index, values }];
+    quiet(write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) }));
+  };
+  /** The order is the Excel rows' order: two links trade their content (each row keeps its id). */
+  const move = (index: number, to: number) => {
+    const names = table.fields.filter((f) => !isIdField(f)).map((f) => f.name);
+    const pick = (row: Record<string, unknown>) => Object.fromEntries(names.map((n) => [n, row[n] ?? null]));
+    const changes = [
+      { index, values: pick(table.rows[to]) },
+      { index: to, values: pick(table.rows[index]) },
+    ];
     quiet(write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) }));
   };
   // A plain function (not a component): the inputs keep their focus when the table re-renders.
@@ -257,13 +314,19 @@ function LinksTable({ excel, table, write }: { excel: ExcelEntry; table: Table; 
                   <IconOf name={row.icon} />
                 </span>
                 {cell(i, "label", String(row.label ?? ""), "Title")}
+                <button type="button" className="icon-btn" title="Move up" disabled={i === 0} onClick={() => move(i, i - 1)}>
+                  <ArrowUpIcon />
+                </button>
+                <button type="button" className="icon-btn" title="Move down" disabled={i === table.rows.length - 1} onClick={() => move(i, i + 1)}>
+                  <ArrowDownIcon />
+                </button>
                 <button type="button" className="icon-btn" title="Delete" onClick={() => confirm("Delete this link?") && quiet(write(() => deleteRows(excel, [i]), { optimistic: (t) => withoutRows(t, [i]) }))}>
                   <Trash2Icon />
                 </button>
               </div>
               {cell(i, "url", String(row.url ?? ""), "https://…")}
               <div className="flex items-center gap-1.5">
-                <span className="w-24 shrink-0">{cell(i, "icon", String(row.icon ?? ""), "icon name")}</span>
+                <IconPicker value={String(row.icon ?? "")} onChange={(icon) => save(i, { icon })} />
                 <span className="flex flex-wrap gap-1">
                   {COLORS.map((c) => (
                     <button key={c} type="button" title={c} onClick={() => c !== color && save(i, { color: c })} className={`size-5 rounded-full ${SWATCHES[c]} ${color === c ? "ring-2 ring-foreground ring-offset-1 ring-offset-card" : ""}`} />
@@ -278,8 +341,46 @@ function LinksTable({ excel, table, write }: { excel: ExcelEntry; table: Table; 
       <button type="button" className="btn w-fit" onClick={() => quiet(write((t) => addRows(excel, t, [NEW_LINK]), { refetch: true, optimistic: (t) => withRows(t, [NEW_LINK]) }))}>
         <PlusIcon /> Add a link
       </button>
-      <p className="text-[11px] text-muted-foreground">Icons: lucide names (book-open, mail, video, calendar, file-text…).</p>
     </div>
+  );
+}
+
+/** Lucide icon names as stored in the Excel file (book-open), from the library's names (BookOpen). */
+const ICON_NAMES = Object.keys(icons).map((k) => k.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase());
+
+/** Icon chosen in a searchable list (with previews) rather than typed. */
+function IconPicker({ value, onChange }: { value: string; onChange: (name: string) => void }) {
+  const [search, setSearch] = useState("");
+  const q = search.trim().toLowerCase().replace(/\s+/g, "-");
+  const shown = (q ? ICON_NAMES.filter((n) => n.includes(q)) : ICON_NAMES).slice(0, 120);
+  return (
+    <Popover
+      width={300}
+      trigger={(open) => (
+        <button type="button" onClick={() => (setSearch(""), open())} className="flex h-8 w-40 shrink-0 items-center gap-1.5 rounded-md border bg-card px-2 text-left text-[12px] hover:bg-muted/50 [&_svg]:size-4">
+          <IconOf name={value} />
+          <span className="min-w-0 flex-1 truncate">{value || "icon"}</span>
+          <ChevronsUpDownIcon className="size-3.5! shrink-0 text-muted-foreground" />
+        </button>
+      )}
+    >
+      {(close) => (
+        <div className="flex flex-col gap-1.5">
+          <label className="flex items-center gap-2 border-b px-1 pb-1.5">
+            <SearchIcon className="size-3.5 text-muted-foreground" />
+            <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search an icon (mail, book, chart…)" className="h-7 flex-1 bg-transparent text-[12px] outline-none" />
+          </label>
+          <div className="grid max-h-64 grid-cols-6 gap-0.5 overflow-y-auto">
+            {shown.map((n) => (
+              <button key={n} type="button" title={n} onClick={() => (onChange(n), close())} className={`flex h-9 items-center justify-center rounded-md hover:bg-muted [&_svg]:size-4.5 ${n === value ? "bg-muted ring-1 ring-ring" : ""}`}>
+                <IconOf name={n} />
+              </button>
+            ))}
+          </div>
+          {shown.length === 0 && <p className="px-1 text-[12px] text-muted-foreground">No icon found.</p>}
+        </div>
+      )}
+    </Popover>
   );
 }
 
@@ -318,7 +419,7 @@ const linksOf = (row?: Record<string, unknown>) => String(row?.links ?? "").spli
  * separated by ;). Home: the report pages, then every guide. A clicked visual opens its guide. The tab
  * only reads: ⚙ opens the drawer where guides are written, linked and deleted.
  */
-function GuideTab({ excel, reportId, report, selection }: { excel?: ExcelEntry; reportId?: string; report?: Report; selection: Selection }) {
+function GuideTab({ excel, reportId, reportRef, report, selection }: { excel?: ExcelEntry; reportId?: string; reportRef?: Ref; report?: Report; selection: Selection }) {
   const { table, error, write } = useTable(excel);
   const pages = usePages(report);
   const [view, setView] = useState<GuideView>({ kind: "home" });
@@ -388,10 +489,9 @@ function GuideTab({ excel, reportId, report, selection }: { excel?: ExcelEntry; 
     const links = linksOf(row);
     body = row && (
       <div className="flex flex-col gap-3 p-3">
-        <h3 className="text-[14px] font-medium">{String(row.title ?? "")}</h3>
-        {row.content ? <Markdown>{String(row.content)}</Markdown> : <p className="text-[12px] text-muted-foreground">Empty guide.</p>}
+        {row.content ? <Markdown>{String(row.content)}</Markdown> : null}
         {links.length > 0 && (
-          <div className="flex flex-col gap-1.5 border-t pt-3">
+          <div className="hidden flex-col gap-1.5 border-t pt-3">
             <span className="label">Linked to</span>
             <div className="flex flex-wrap gap-1">
               {links.map((l) => (
@@ -409,11 +509,6 @@ function GuideTab({ excel, reportId, report, selection }: { excel?: ExcelEntry; 
     const unmatched = here && selection.page === view.page && !rows.some((r) => linksOf(r).includes(here));
     body = (
       <>
-        {unmatched && (
-          <p className="mx-3 mt-3 rounded-lg bg-muted/60 px-3 py-2 text-[12px] text-muted-foreground">
-            No guide for <span className="font-medium text-foreground">{visualTitle(here)}</span> yet{REPORT_VIEWER_EDITOR ? ": write one with ⚙" : ""}.
-          </p>
-        )}
         <ul className="p-1.5">{guides.map((g) => item(g.index, String(g.row.title ?? ""), `${g.links.length} item(s)`, () => setView({ kind: "guide", index: g.index })))}</ul>
         {guides.length === 0 && !unmatched && <Empty>No guide on this page.</Empty>}
       </>
@@ -442,6 +537,7 @@ function GuideTab({ excel, reportId, report, selection }: { excel?: ExcelEntry; 
   return (
     <div className="flex flex-col">
       {crumbs}
+      {VISUAL_PREVIEW && report && reportRef && <VisualPreview report={report} reportRef={reportRef} page={selection.page} visual={selection.visual} />}
       {(EXPORT.visualPdf || EXPORT.visualPng) && here && report && selection.page && selection.visual && (
         <VisualDownload key={here} report={report} page={selection.page} visual={selection.visual} title={visualTitle(here)} />
       )}
@@ -470,7 +566,43 @@ function GuideTab({ excel, reportId, report, selection }: { excel?: ExcelEntry; 
   );
 }
 
-/** The visual clicked in the report, with buttons to save it alone as a PDF or a PNG (guide or not). */
+/**
+ * Live preview of the clicked visual: that visual alone in a second embed, with the report's filters
+ * and the slicers' selections. The frame is made once, on the first click, then only reloaded with the next
+ * visual (much faster than a new one); it stays mounted, hidden, when no visual is selected.
+ */
+function VisualPreview({ report, reportRef, page, visual }: { report: Report; reportRef: Ref; page?: string; visual?: string }) {
+  const element = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<{ ratio?: number; loading?: boolean; error?: string }>({});
+  const shown = !!(page && visual);
+  useEffect(() => {
+    if (!page || !visual || !element.current) return;
+    let live = true;
+    void (async () => {
+      const target = (await (await report.getPages()).find((p) => p.name === page)?.getVisuals())?.find((v) => v.name === visual);
+      // Decorations (shapes, images, buttons) are not worth a preview.
+      if (!target || ["shape", "basicShape", "image", "actionButton"].includes(target.type)) return live && setState({});
+      const { width = 16, height = 9 } = target.layout;
+      setState({ ratio: width / height, loading: true });
+      // The user's filters: report and page filters, and the slicers' selections (as page filters).
+      const current = (await report.getPages()).find((p) => p.name === page)!;
+      const slicers = (await current.getVisuals()).filter((v) => v.type === "slicer" && v.name !== visual);
+      const selections = (await Promise.all(slicers.map((v) => v.getSlicerState().then((st) => st.filters, () => [])))).flat();
+      const filters = { report: await report.getFilters().catch(() => []), page: [...(await current.getFilters().catch(() => [])), ...selections] };
+      await embedVisual(element.current!, reportRef, page, visual, filters);
+      if (live) setState({ ratio: width / height });
+    })().catch((e) => live && setState({ error: describeError(e) }));
+    return () => void (live = false);
+  }, [report, reportRef.id, page, visual]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div className={shown && state.ratio ? "relative border-b p-2" : "hidden"}>
+      <div ref={element} style={{ aspectRatio: state.ratio ?? 16 / 9 }} className={`max-h-64 w-full ${state.loading ? "opacity-40" : ""}`} />
+      {state.error && <p className="text-[11px] break-words text-destructive">{state.error}</p>}
+    </div>
+  );
+}
+
+/** The clicked visual's download buttons (guide or not), above its guide. */
 function VisualDownload({ report, page, visual, title }: { report: Report; page: string; visual: string; title: string }) {
   const [state, setState] = useState<{ busy?: "pdf" | "png"; error?: string }>({});
   const run = (kind: "pdf" | "png") => {
@@ -480,8 +612,6 @@ function VisualDownload({ report, page, visual, title }: { report: Report; page:
   return (
     <div className="flex flex-col gap-1 border-b px-3 py-2">
       <div className="flex items-center gap-1.5">
-        <ChartColumnIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 truncate text-[12px]">{title}</span>
         {EXPORT.visualPdf && (
           <button type="button" className="btn h-7 shrink-0" disabled={!!state.busy} onClick={() => run("pdf")}>
             <DownloadIcon /> {state.busy === "pdf" ? "Preparing…" : "PDF"}

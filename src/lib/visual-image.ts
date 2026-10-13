@@ -35,7 +35,12 @@ async function isolate(report: Report, page: string, visual: string) {
   });
   // Lets the visual draw at its new size.
   await new Promise((r) => setTimeout(r, 1000));
-  return () => layout({ [page]: { defaultLayout: { displayState: { mode: m.VisualContainerDisplayMode.Visible } }, visualsLayout: original } });
+  // Back to the viewer's default view (fit to width).
+  return () =>
+    report.updateSettings({
+      layoutType: m.LayoutType.Custom,
+      customLayout: { displayOption: m.DisplayOption.FitToWidth, pagesLayout: { [page]: { defaultLayout: { displayState: { mode: m.VisualContainerDisplayMode.Visible } }, visualsLayout: original } } },
+    } as never);
 }
 
 export async function printVisual(report: Report, page: string, visual: string) {

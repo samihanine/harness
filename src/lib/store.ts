@@ -54,7 +54,8 @@ export type ExcelEntry = {
   savedViews?: { name: string; view: Record<string, unknown> }[];
 };
 
-export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number };
+/** `viewState`: the report as the user left it in this conversation (filters, slicers, page: a bookmark state). */
+export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number; viewState?: string };
 export type Settings = { aiKey?: string; model?: string };
 
 type Collections = { reports: ReportEntry; datasets: DatasetEntry; excels: ExcelEntry; conversations: Conversation };

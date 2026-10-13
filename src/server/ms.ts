@@ -150,7 +150,12 @@ export const ms = createServerFn({ method: "POST" })
     }
     if (!response.ok) {
       const e = body?.error;
-      throw new Error(e?.pbi?.error?.details?.[0]?.detail?.value ?? e?.message ?? body?.message ?? `${data.service} error ${response.status}: ${String(text).slice(0, 200)}`);
+      // Power BI puts the useful message (e.g. "Column 'X' in table 'Y' cannot be found") under
+      // "pbi.error", with names wrapped in <oii> tags.
+      const pbiError = e?.["pbi.error"] ?? e?.pbi?.error;
+      const detail = pbiError?.details?.find((d: { code?: string }) => d.code === "DetailsMessage")?.detail?.value ?? pbiError?.details?.[0]?.detail?.value;
+      const message = detail ?? e?.message ?? body?.message ?? `${data.service} error ${response.status}: ${String(text).slice(0, 600)}`;
+      throw new Error(String(message).replace(/<\/?(oii|ccon)>/g, ""));
     }
     return body;
   });

@@ -6,7 +6,7 @@ import { Picker } from "@/components/picker";
 import { ReportActions } from "@/components/report-actions";
 import { Zoom } from "@/components/zoom";
 import { Empty, SidePanel } from "@/components/side-panel";
-import { authorTools, daxTool } from "@/agent/pbi-tools";
+import { DAX_RULES, authorTools, daxTool } from "@/agent/pbi-tools";
 import { modelTools } from "@/agent/model-tools";
 import { reportModelTools, rewrite } from "@/agent/report-model-tools";
 import { fixExtensionRefs, readExtension } from "@/lib/report-def";
@@ -95,7 +95,8 @@ Power BI facts to rely on:
 - Sorting (e.g. most recent first): sort_visual on a field of the visual, direction descending. Table look: format_table (header colors, alternating rows, size).
 - Master / detail ("click a row to see all its fields, most recent shown by default"): a table of a few key fields (sorted by date, descending); the detail = a multiRowCard with all the item's fields; set_visual_filter kind "top" on each detail visual (column = the item id, order_by = the date, n = 1); set_interactions source = table: detail visuals → filter, slicers → none.
 - An image of the item (a column holding an image link, e.g. on SharePoint): add_report_measure with category "ImageUrl" (expression: VAR u = SELECTEDVALUE('T'[image column]) RETURN IF(CONTAINSSTRING(u, "/:i:/"), u & IF(CONTAINSSTRING(u, "?"), "&", "?") & "download=1", u) — a SharePoint sharing link "/:i:/" opens a page, download=1 gives the image itself), shown in a tableEx with that measure only, with the same top filter and interaction as the detail; format_table image_height. Images on SharePoint show for users signed in to it in their browser.
-- Build a whole dashboard in this order: header, filter panel and slicers, table, detail and image, then interactions, sorting, filters and formatting; save at the end. Check the layout (no overlap, inside the page) before answering.`,
+- Build a whole dashboard in this order: header, filter panel and slicers, table, detail and image, then interactions, sorting, filters and formatting; save at the end. Check the layout (no overlap, inside the page) before answering.
+${DAX_RULES}`,
     tools: [...authorTools(() => reportRef.current, () => measures, fixReportMeasures), daxTool(() => dataset && { id: dataset.id, groupId: dataset.groupId }), ...modelTools(() => dataset), ...reportModelTools({ report: () => reportRef.current, entry: () => entry, dataset: () => dataset, changed: loadExtension })],
     context: async () =>
       [
@@ -103,8 +104,8 @@ Power BI facts to rely on:
         ...reports.filter((r) => inspiration.includes(r.id)).map((r) => `Report given as inspiration: "${r.name}"\n${r.context}\n${r.snapshot ?? ""}`),
         extensionRef.current.text ? `Report measures (stored in this report):\n${extensionRef.current.text}` : "",
         `Model write access: ${dataset?.info?.source === "tmdl" ? "yes (parameters possible)" : "no (use report measures; parameters impossible)"}`,
-        reportRef.current ? `Report being edited, current state:\n${await pageText(reportRef.current, false)}` : "No report open.",
       ].join("\n\n"),
+    state: async () => (reportRef.current ? `Report being edited, current state:\n${await pageText(reportRef.current, false)}` : "No report open."),
   };
 
   return (

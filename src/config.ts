@@ -14,7 +14,7 @@ export const EXPORT = {
   /** Viewer, Guides tab: "PDF" of the clicked visual alone (browser print dialog). */
   visualPdf: false,
   /** Viewer, Guides tab: "PNG" of the clicked visual alone (captured from the tab: the browser asks to share it once). */
-  visualPng: true,
+  visualPng: false,
   /** Viewer and builder: "Export" button of the report (PDF, .pbix). */
   report: true,
 };
@@ -51,6 +51,9 @@ export const DATASET_TABS = {
 export const DAX_TABS = {
   ai: true,
 };
+
+/** Viewer, Guides tab: live preview of the clicked visual (a second, light embed of that visual alone). */
+export const VISUAL_PREVIEW = true;
 
 /** Viewer: guides and info links can be added / edited / deleted (false = read only). */
 export const REPORT_VIEWER_EDITOR = true;

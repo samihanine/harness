@@ -1,13 +1,21 @@
 /** Agent tools on an embedded report (viewer: navigation & filters; builder: authoring) and on DAX. */
 import { z } from "zod";
-import { basicFilter, dax, models, rowsText, settled, type Ref, type Report } from "@/lib/pbi";
+import { basicFilter, dax, findVisual, models, rowsText, settled, type Ref, type Report } from "@/lib/pbi";
 import { describeError, tool, type Tool } from "./loop";
 import type { VisualDescriptor as PbiVisual } from "powerbi-client";
+
+/** How to write DAX that runs the first time (given to every agent writing queries). */
+export const DAX_RULES = `DAX rules (follow them, queries fail otherwise):
+- Use ONLY tables, columns and measures that exist, with their exact names copied from the model (context, describe_table). Never guess, shorten or translate a name. Not sure a column exists or in which table it is? search_model first.
+- Syntax: 'Table'[Column], [Measure], text in "double quotes". Count rows with COUNTROWS('Table') or an existing measure.
+- Grouping: SUMMARIZECOLUMNS('T'[a], 'T'[b], "Label", [Measure]). A plain list of value pairs of ONE table: DISTINCT(SELECTCOLUMNS('T', "A", 'T'[a], "B", 'T'[b])). Columns of two tables together only if they are related (see the relationships).
+- ORDER BY only columns of the result. Count the parentheses before sending.
+- A failed query: read the error, it names the problem (a missing name, or a (line, column) position) — fix exactly that and retry. To explain a failure to the user, quote the error; never invent a cause.`;
 
 export const daxTool = (dataset: () => Ref | undefined): Tool =>
   tool({
     name: "run_dax",
-    description: "Runs a DAX query (EVALUATE …) on the semantic model and returns the rows (max 50 shown). Use TOPN / SUMMARIZECOLUMNS to keep results small.",
+    description: "Runs a DAX query (EVALUATE …) on the semantic model and returns the rows (max 50 shown). Use TOPN / SUMMARIZECOLUMNS to keep results small. Exact names only (see the DAX rules).",
     args: z.object({ query: z.string().describe("DAX query starting with EVALUATE (or DEFINE)") }),
     readOnly: true,
     run: async ({ query }) => {
@@ -54,14 +62,8 @@ const pageOf = async (report: Report, name?: string) => {
   if (!page) throw new Error(`Page "${name}" not found. Pages: ${pages.map((p) => p.displayName).join(", ")}`);
   return page;
 };
-/** "Selected item", "selected_item", "SELECTED ITEM" are the same visual. */
-const same = (a = "", b = "") => a.toLowerCase().replace(/[\s_-]+/g, " ").trim() === b.toLowerCase().replace(/[\s_-]+/g, " ").trim();
-const visualOf = async (report: Report, name: string) => {
-  const visuals = await (await pageOf(report)).getVisuals();
-  const visual = visuals.find((v) => v.name === name) ?? visuals.find((v) => same(v.title, name));
-  if (!visual) throw new Error(`Visual "${name}" not on the current page. Visuals: ${visuals.map((v) => `"${v.title ?? ""}" (name=${v.name})`).join(", ")}. Prefer the name.`);
-  return visual;
-};
+/** By name (id) or title ("Selected item" = "selected_item"); a title shared by several visuals needs the name. */
+const visualOf = async (report: Report, name: string) => findVisual(await (await pageOf(report)).getVisuals(), name);
 /** One value or a list. */
 const values = z.preprocess((v) => (Array.isArray(v) ? v : v === undefined || v === null || v === "" ? [] : [v]), z.array(z.union([z.string(), z.number(), z.boolean()])));
 
@@ -119,7 +121,7 @@ export function viewTools(report: () => Report | undefined): Tool[] {
       description:
         'Filters ONE visual (other visuals are not affected). kind "values": keeps the given values of a column (empty = removes the filter on it). kind "top": keeps the top / bottom N items of a column ordered by another column or measure — e.g. a detail card showing only the most recent task by default: column = the task id or title, order_by = due date, n = 1, top. A click on a row of a table then shows that row (the top 1 of the selection).',
       args: z.object({
-        visual: z.string().describe("Visual name (preferred) or title"),
+        visual: z.string().describe("Visual name (its id, name=… in the context); a title only when no other visual has it"),
         kind: z.enum(["values", "top"]),
         table: z.string(),
         column: z.string(),
@@ -152,7 +154,7 @@ export function viewTools(report: () => Report | undefined): Tool[] {
     tool({
       name: "set_slicer",
       description: "Selects values in a slicer of the current page (empty values clears it).",
-      args: z.object({ visual: z.string().describe("Slicer name (preferred) or title"), values }),
+      args: z.object({ visual: z.string().describe("Slicer name (its id, name=… in the context); a title only when no other visual has it"), values }),
       run: async ({ visual, values }) => {
         const slicer = await visualOf(r(), visual);
         const { targets } = await slicer.getSlicerState();

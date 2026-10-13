@@ -7,7 +7,7 @@ import { DAX_TABS, visible } from "@/config";
 import { Picker } from "@/components/picker";
 import { Empty, SidePanel } from "@/components/side-panel";
 import { tool, type Agent } from "@/agent/loop";
-import { daxTool } from "@/agent/pbi-tools";
+import { DAX_RULES, daxTool } from "@/agent/pbi-tools";
 import { modelTools } from "@/agent/model-tools";
 import { addDataset } from "@/lib/library";
 import { errorText } from "@/lib/ms";
@@ -151,11 +151,14 @@ function ResultTable({ rows }: { rows?: Rows }) {
 function daxAgent(dataset: DatasetEntry, live: { current: { query: string; result: Result; setQuery: (q: string) => void; run: (q?: string) => Promise<Result> } }): Agent {
   return {
     instructions:
-      "You write DAX queries for the user, on one semantic model. Read the model with its tools (describe_table, search_model, get_measure), test with run_dax if needed, then put the final query in the user's editor with set_query (it runs it there). Queries start with EVALUATE (or DEFINE); prefer SUMMARIZECOLUMNS, existing measures, TOPN for large results. Explain the query briefly.",
-    context: async () => {
+      `You write DAX queries for the user, on one semantic model.
+Steps: 1. find the tables and columns the request needs (search_model, describe_table) and use their exact names; 2. if unsure, test with run_dax; 3. put the final query in the user's editor with set_query (it runs it there); 4. answer with a short explanation.
+Queries start with EVALUATE (or DEFINE); prefer existing measures, TOPN for large results.
+${DAX_RULES}`,
+    context: async () => `Semantic model "${dataset.name}"${dataset.context ? `\nNotes: ${dataset.context}` : ""}\n${dataset.model ?? "(structure not read: use the model tools)"}`,
+    state: async () => {
       const { query, result } = live.current;
       return [
-        `Semantic model "${dataset.name}"${dataset.context ? `\nNotes: ${dataset.context}` : ""}\n${dataset.model ?? "(structure not read: use the model tools)"}`,
         `The user's editor:\n${query.trim() || "(empty)"}`,
         result.error ? `Last run failed: ${result.error}` : result.rows ? `Last run: ${result.rows.length} rows\n${rowsText(result.rows, 10)}` : "Not run yet.",
       ].join("\n\n");
@@ -163,7 +166,7 @@ function daxAgent(dataset: DatasetEntry, live: { current: { query: string; resul
     tools: [
       tool({
         name: "set_query",
-        description: "Writes a DAX query in the user's editor and runs it there; returns its first rows or its error.",
+        description: "Writes a DAX query in the user's editor and runs it there; returns its first rows or its error. Only with exact table / column names read from the model (see the DAX rules).",
         args: z.object({ query: z.string().describe("Full DAX query (EVALUATE …)") }),
         run: async ({ query }) => {
           live.current.setQuery(query);

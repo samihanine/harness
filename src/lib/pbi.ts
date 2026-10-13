@@ -30,13 +30,25 @@ export function parseDatasetUrl(url: string): Ref {
 
 export type Rows = Record<string, unknown>[];
 
+/** A DAX error with what to do about it (weak models otherwise guess another name, or a wrong cause). */
+function daxError(message: string) {
+  const hint = /cannot be found|can't be found|not found|introuvable|n'existe pas|cannot find/i.test(message)
+    ? " → A name does not exist: look up the exact table / column / measure names with search_model or describe_table (never guess or translate them), then fix the query."
+    : /^Query \(\d+, \d+\)|syntax/i.test(message)
+      ? " → (line, column) of the query: fix the query exactly there."
+      : "";
+  return new Error(`${message}${hint}`);
+}
+
 export async function dax(dataset: Ref, query: string): Promise<Rows> {
   const data = await pbi(`${scope(dataset.groupId)}/datasets/${dataset.id}/executeQueries`, "POST", {
     queries: [{ query }],
     serializerSettings: { includeNulls: true },
+  }).catch((e) => {
+    throw daxError(e instanceof Error ? e.message : String(e));
   });
   const result = data.results[0];
-  if (result.error) throw new Error(result.error.message);
+  if (result.error) throw daxError(result.error.message);
   return (result.tables?.[0]?.rows ?? []).map((row: Record<string, unknown>) =>
     Object.fromEntries(Object.entries(row).map(([k, v]) => [k.replace(/^.*\[(.*)\]$/, "$1"), v])),
   );
@@ -67,13 +79,15 @@ export const models = async () => (await load()).pbi.models;
 
 export type EmbedMode = "view" | "edit";
 
+const embedUrlOf = (ref: Ref) => `https://app.powerbi.com/reportEmbed?reportId=${ref.id}${ref.appId ? `&appId=${ref.appId}` : ref.groupId ? `&groupId=${ref.groupId}` : ""}`;
+
 export async function embedReport(element: HTMLElement, ref: Ref, mode: EmbedMode = "view") {
   const { pbi: p, service } = await load();
   service.reset(element);
   const report = service.embed(element, {
     type: "report",
     id: ref.id,
-    embedUrl: `https://app.powerbi.com/reportEmbed?reportId=${ref.id}${ref.appId ? `&appId=${ref.appId}` : ref.groupId ? `&groupId=${ref.groupId}` : ""}`,
+    embedUrl: embedUrlOf(ref),
     accessToken: await powerBiToken(),
     tokenType: p.models.TokenType.Aad,
     permissions: mode === "edit" ? p.models.Permissions.All : p.models.Permissions.Read,
@@ -106,10 +120,38 @@ export async function embedNewReport(element: HTMLElement, dataset: Ref) {
   return embed;
 }
 
+/**
+ * One visual of a report, alone (guide preview), with the main report's filters (`filters`: report
+ * level, and page level — the slicers' selections go there). Not a bookmark: applied to a visual
+ * embed, it brought the rest of the page back over the visual. Embedding again in the same element
+ * reuses its frame: only the first one is slow.
+ */
+export async function embedVisual(element: HTMLElement, ref: Ref, page: string, visual: string, filters?: { report: unknown[]; page: unknown[] }) {
+  const { pbi: p, service } = await load();
+  const embed = service.embed(element, {
+    type: "visual",
+    id: ref.id,
+    embedUrl: embedUrlOf(ref),
+    accessToken: await powerBiToken(),
+    tokenType: p.models.TokenType.Aad,
+    pageName: page,
+    visualName: visual,
+    settings: { panes: { filters: { visible: false } }, background: p.models.BackgroundType.Transparent },
+  } as PbiClient.IVisualEmbedConfiguration) as PbiClient.Visual;
+  await loaded(embed);
+  if (filters) {
+    await embed.setFilters(filters.report as never, p.models.FiltersLevel.Report).catch(() => undefined);
+    await embed.setFilters(filters.page as never, p.models.FiltersLevel.Page).catch(() => undefined);
+  }
+}
+
 export const resetEmbed = async (element: HTMLElement) => (await load()).service.reset(element);
 
+/** Next "loaded" (or error) of an embed; earlier waits are dropped (an embed can be loaded again). */
 const loaded = (embed: PbiClient.Embed) =>
   new Promise<void>((resolve, reject) => {
+    embed.off("loaded");
+    embed.off("error");
     embed.on("loaded", () => resolve());
     embed.on("error", (e) => {
       const d = e.detail as { message?: string; detailedMessage?: string };
@@ -139,12 +181,27 @@ async function visualFields(visual: Visual) {
   return roles.join("; ");
 }
 
-/** One visual for the AI: kind, fields, filters, slicer state, and (optionally) its data. */
-export async function visualText(visual: Visual, withData: boolean) {
+const sameTitle = (a = "", b = "") => a.toLowerCase().replace(/[\s_-]+/g, " ").trim() === b.toLowerCase().replace(/[\s_-]+/g, " ").trim();
+
+/**
+ * A visual by its name (its id) or its title. A title shared by several visuals is refused: the AI
+ * must then give the name, else it would act on the wrong one.
+ */
+export function findVisual<V extends { name: string; title?: string }>(visuals: V[], nameOrTitle: string): V {
+  const byName = visuals.find((v) => v.name === nameOrTitle);
+  if (byName) return byName;
+  const matches = visuals.filter((v) => sameTitle(v.title, nameOrTitle));
+  if (matches.length > 1) throw new Error(`${matches.length} visuals are titled "${nameOrTitle}": give the name (id) of the one you mean: ${matches.map((v) => `name=${v.name}`).join(", ")}.`);
+  if (!matches.length) throw new Error(`Visual "${nameOrTitle}" not on the current page. Visuals: ${visuals.map((v) => `"${v.title ?? ""}" (name=${v.name})`).join(", ")}. Use the name.`);
+  return matches[0];
+}
+
+/** One visual for the AI: kind, fields, filters, slicer state, and (optionally) its data. `shared`: its title is not unique. */
+export async function visualText(visual: Visual, withData: boolean, shared = false) {
   const { pbi: p } = await load();
   const { x = 0, y = 0, width = 0, height = 0 } = visual.layout;
   const box = `x=${Math.round(x)} y=${Math.round(y)} w=${Math.round(width)} h=${Math.round(height)} z=${Math.round(visual.layout.z ?? 0)}`;
-  const lines = [`- ${visual.type} "${visual.title ?? ""}" name=${visual.name} ${box}${visual.layout.displayState?.mode === 1 ? " (hidden)" : ""}`];
+  const lines = [`- ${visual.type} "${visual.title ?? ""}" name=${visual.name} ${box}${visual.layout.displayState?.mode === 1 ? " (hidden)" : ""}${shared ? " ⚠ SAME TITLE AS ANOTHER VISUAL: refer to it ONLY by name=" + visual.name : ""}`];
   const fields = await visualFields(visual);
   if (fields) lines.push(`  fields: ${fields}`);
   const filters = active(await visual.getFilters().catch(() => []));
@@ -166,7 +223,8 @@ export async function pageText(report: Report, withData = true) {
   const page = pages.find((p) => p.isActive) ?? pages[0];
   const visuals = await page.getVisuals();
   const [reportFilters, pageFilters] = (await Promise.all([report.getFilters().catch(() => []), page.getFilters().catch(() => [])])).map(active);
-  const parts = await Promise.all(visuals.map((v) => visualText(v, withData)));
+  const shared = (v: Visual) => visuals.filter((x) => sameTitle(x.title, v.title)).length > 1 && !!v.title;
+  const parts = await Promise.all(visuals.map((v) => visualText(v, withData, shared(v))));
   return [
     `pages: ${pages.map((p) => `${p.displayName} (name=${p.name}${p.isActive ? ", current" : ""}${p.visibility === 1 ? ", hidden" : ""})`).join(", ")}`,
     `report filters: ${reportFilters.map(filterText).join("; ") || "none"}`,

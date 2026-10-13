@@ -1,10 +1,11 @@
 /**
  * The agent loop for a plain-text LLM: every reply is one JSON object listing tool calls
  * (`{"tools":[{"name","args"}]}`), parsed tolerantly; the application runs them and sends the results.
- * The page context (what the user sees) is sent with the request and again whenever it changes.
+ * One LLM conversation per app conversation: the protocol, tools and context are sent once, then each
+ * user message only brings what changed (the page state, the context when it changed).
  */
 import { z } from "zod";
-import { openSession } from "./llm";
+import { openSession, type Session } from "./llm";
 import { ReplyError, parseReply } from "./reply";
 
 export type Tool = {
@@ -22,8 +23,10 @@ export type Agent = {
   /** What this screen is and how to work in it. */
   instructions: string;
   tools: Tool[];
-  /** What the user sees now (re-read before each model call). */
+  /** What the AI works on (model, file, notes…): sent at the start of a conversation, again only when it changes. */
   context: () => Promise<string>;
+  /** What the user sees now (page, filters, editor…): re-read before each model call, sent when it changed. */
+  state?: () => Promise<string>;
 };
 
 export type Step = { id: string; name: string; args: Record<string, unknown>; result?: string; error?: boolean; ms?: number };
@@ -42,11 +45,14 @@ export function describeError(error: unknown): string {
   return String(error);
 }
 
-const LIMITS = { steps: 20, retries: 2, resultChars: 6_000, historyChars: 12_000 };
+/** sessionChars: past this size the LLM conversation is restarted (with a summary of the app conversation). */
+const LIMITS = { steps: 20, retries: 2, resultChars: 6_000, historyChars: 12_000, sessionChars: 150_000 };
 
 const tag = (name: string, body: string, attrs = "") => `<${name}${attrs ? ` ${attrs}` : ""}>\n${body.trim()}\n</${name}>`;
 
 const PROTOCOL = `You are the engine of an AI assistant embedded in an application. Messages are written by the APPLICATION: it gives you the context and the user's request, runs the tools you call and sends you their results. The user only sees what you pass to "answer".
+
+YOU HAVE TOOLS. Calling them is the ONLY way to read data or change anything in the application: you never act by describing an action in text. To use a tool, reply with its name and arguments in JSON (format below); the application runs it and sends you the result in its next message.
 
 1. Every reply is ONE raw JSON object and nothing else (no prose, no markdown fences): {"tools": [{"name": "<tool>", "args": {…}}]}
 2. Several independent tools may be called in one reply; you get all results in the next message.
@@ -55,7 +61,22 @@ const PROTOCOL = `You are the engine of an AI assistant embedded in an applicati
 5. When a tool fails, read the error, fix the arguments and retry, or explain the problem.
 6. Answer in the user's language, concise, in markdown.`;
 
-const FORMAT = tag("reply_format", `Reply now with ONE raw JSON object: {"tools": [{"name": …, "args": {…}}]}. Final reply: {"tools": [{"name": "answer", "args": {"text": "…"}}]}`);
+/** End of EVERY message: weak models forget that they can (and must) call tools. */
+const format = (names: string[]) =>
+  tag(
+    "reply_format",
+    `IMPORTANT — reply with ONE raw JSON object and NOTHING else (no text before or after it, no markdown fences):
+{"tools": [{"name": "<tool name>", "args": {…}}]}
+Tool names: ${names.join(", ")}.
+Need data, or must change something? Call the tool(s) NOW, e.g. {"tools": [{"name": "${names.find((n) => n !== "answer") ?? "answer"}", "args": {…}}]}
+Done (everything was done through tools)? {"tools": [{"name": "answer", "args": {"text": "your reply to the user, in markdown"}}]}`,
+  );
+
+/** Live LLM conversation of each app conversation, with what it was last told (context, state). */
+type Live = { session: Session; model: string; context?: string; state?: string };
+const live = new Map<string, Live>();
+/** Drops the LLM conversation of an app conversation (deleted). */
+export const forgetSession = (conversationId: string) => void live.delete(conversationId);
 
 /** `name(a: string, b?: number)` + descriptions, from the zod schema. */
 function signature(t: Tool) {
@@ -76,33 +97,57 @@ const ANSWER: Tool = tool({ name: "answer", description: "Final reply to the use
 export async function* runAgent({
   agent,
   model,
+  conversationId,
   history,
   request,
   signal,
 }: {
   agent: Agent;
   model: string;
+  /** App conversation: its LLM conversation is reused from one user message to the next. */
+  conversationId: string;
+  /** The app conversation so far, as text: only used to start a new LLM conversation (e.g. after a reload). */
   history: string;
   request: string;
   signal: AbortSignal;
 }): AsyncGenerator<Update> {
   const tools = [ANSWER, ...agent.tools];
   const byName = new Map(tools.map((t) => [t.name, t]));
+  const FORMAT = format(tools.map((t) => t.name));
   const steps: Step[] = [];
   const llm: LlmCall[] = [];
-  let context = await agent.context().catch((e) => `Context unavailable: ${e}`);
+  const read = async () => ({
+    context: await agent.context().catch((e) => `Context unavailable: ${e}`),
+    state: agent.state ? await agent.state().catch((e) => `Page state unavailable: ${e}`) : undefined,
+  });
+  let current = live.get(conversationId);
+  if (current && (current.model !== model || current.session.chars > LIMITS.sessionChars)) current = undefined;
+  const fresh = !current;
+  if (!current) live.set(conversationId, (current = { session: openSession(model, "agent"), model }));
+  const conv = current;
+  const now = await read();
+  /** What changed since the LLM was last told, as tags (both on a new conversation). */
+  const changes = (next: typeof now, first = false) => {
+    const parts = [
+      (first || next.context !== conv.context) && tag(first ? "context" : "context_now", next.context),
+      next.state !== undefined && (first || next.state !== conv.state) && tag(first ? "page_state" : "page_state_now", next.state),
+    ];
+    conv.context = next.context;
+    conv.state = next.state;
+    return parts;
+  };
+  const unchanged = !fresh && now.state !== undefined && now.state === conv.state;
   let prompt = [
-    tag("protocol", PROTOCOL),
-    tag("app_instructions", agent.instructions),
-    tag("tools", tools.map(signature).join("\n")),
-    tag("context", context),
-    history && tag("conversation_so_far", history.slice(-LIMITS.historyChars)),
+    ...(fresh ? [tag("protocol", PROTOCOL), tag("app_instructions", agent.instructions), tag("tools", tools.map(signature).join("\n"))] : []),
+    ...changes(now, fresh),
+    fresh && history && tag("conversation_so_far", history.slice(-LIMITS.historyChars)),
+    unchanged && tag("note", "The page state has not changed since your last message."),
     tag("user_message", request),
     FORMAT,
   ]
     .filter(Boolean)
     .join("\n\n");
-  const session = openSession(model, "agent");
+  const session = conv.session;
   let remote: string | undefined;
   let retries = 0;
   let reminded = false;
@@ -170,18 +215,14 @@ export async function* runAgent({
         results.push(tag("result", step.result || "(done)", `tool="${call.name}" status="${step.error ? "error" : "ok"}"`));
         yield { steps, llm, remote };
       }
-      const now = await agent.context().catch(() => context);
-      prompt = [
-        tag("tool_results", results.join("\n")),
-        answer && tag("note", `"answer" was ignored: it must be alone in its reply.`),
-        now !== context && tag("context_now", now),
-        FORMAT,
-      ]
+      prompt = [tag("tool_results", results.join("\n")), answer && tag("note", `"answer" was ignored: it must be alone in its reply.`), ...changes(await read()), FORMAT]
         .filter(Boolean)
         .join("\n\n");
-      context = now;
     }
-  } finally {
-    // Remote conversations are kept: deleted with the app conversation (see Chat).
+  } catch (error) {
+    // A failed exchange may have left the LLM conversation incomplete: the next message starts a new one.
+    if (live.get(conversationId) === conv) live.delete(conversationId);
+    throw error;
   }
+  // Remote conversations are kept: deleted with the app conversation (see Chat).
 }

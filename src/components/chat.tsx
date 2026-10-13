@@ -14,9 +14,9 @@ import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
 import { ArrowUpIcon, CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DownloadIcon, PlusIcon, SearchIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { Popover } from "./popover";
-import { runAgent, type Agent, type Update } from "@/agent/loop";
+import { forgetSession, runAgent, type Agent, type Update } from "@/agent/loop";
 import { AI_MODELS, deleteRemoteConversation } from "@/agent/llm";
-import { put, remove, settings, useCollection, type Conversation } from "@/lib/store";
+import { find, put, remove, settings, useCollection, type Conversation } from "@/lib/store";
 import { last } from "@/lib/last";
 
 const textOf = (m: ThreadMessage) => m.content.map((p) => (p.type === "text" ? p.text : "")).join("");
@@ -32,7 +32,7 @@ function historyOf(m: ThreadMessage) {
   return `${m.role}: ${textOf(m)}${actions.length ? `\n  actions:\n${actions.join("\n")}` : ""}`;
 }
 
-function adapter(agent: { current: Agent }): ChatModelAdapter {
+function adapter(agent: { current: Agent }, conversationId: string): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
       const previous = messages.slice(0, -1).map(historyOf).join("\n\n");
@@ -48,7 +48,7 @@ function adapter(agent: { current: Agent }): ChatModelAdapter {
       });
       let last: Update = { steps: [], llm: [] };
       try {
-        for await (const update of runAgent({ agent: agent.current, model: model ?? AI_MODELS[0], history: previous, request: textOf(messages.at(-1)!), signal: abortSignal })) {
+        for await (const update of runAgent({ agent: agent.current, model: model ?? AI_MODELS[0], conversationId, history: previous, request: textOf(messages.at(-1)!), signal: abortSignal })) {
           last = update;
           yield parts(update, update.answer);
         }
@@ -75,6 +75,7 @@ async function deleteConversation(c: Conversation) {
   const remotes = new Set(
     (c.messages as { metadata?: { custom?: { trace?: { remote?: string } } } }[]).map((m) => m.metadata?.custom?.trace?.remote).filter((id): id is string => !!id),
   );
+  forgetSession(c.id);
   for (const id of remotes) await deleteRemoteConversation(id).catch((e) => console.warn("Remote conversation not deleted", id, e));
   await remove("conversations", c.id);
 }
@@ -135,7 +136,8 @@ function ConversationPicker({ conversations, current, onSelect, onNew, onDelete 
   );
 }
 
-export function Chat({ scope, agent, placeholder = "Ask anything…" }: { scope: string; agent: Agent; placeholder?: string }) {
+/** `onConversation`: told which conversation is open (the screen can keep its own state with it). */
+export function Chat({ scope, agent, placeholder = "Ask anything…", onConversation }: { scope: string; agent: Agent; placeholder?: string; onConversation?: (id: string) => void }) {
   const conversations = useCollection("conversations")
     .filter((c) => c.scope === scope)
     .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -147,6 +149,7 @@ export function Chat({ scope, agent, placeholder = "Ask anything…" }: { scope:
   };
   useEffect(() => setCurrent(last.get(`chat:${scope}`) ?? crypto.randomUUID()), [scope]);
   const current = conversations.find((c) => c.id === currentId);
+  useEffect(() => onConversation?.(currentId), [currentId]); // eslint-disable-line react-hooks/exhaustive-deps
   const agentRef = useRef(agent);
   agentRef.current = agent;
 
@@ -173,7 +176,7 @@ export function Chat({ scope, agent, placeholder = "Ask anything…" }: { scope:
 }
 
 function Runtime({ id, scope, initial, agent, placeholder }: { id: string; scope: string; initial?: Conversation; agent: { current: Agent }; placeholder: string }) {
-  const chatModel = useMemo(() => adapter(agent), [agent]);
+  const chatModel = useMemo(() => adapter(agent, id), [agent, id]);
   const runtime = useLocalRuntime(chatModel, { initialMessages: (initial?.messages ?? []) as never });
 
   // Saves the conversation when a run ends.
@@ -190,7 +193,8 @@ function Runtime({ id, scope, initial, agent, placeholder }: { id: string; scope
           content: content.filter((p) => p.type === "text" || p.type === "tool-call"),
           ...(metadata?.custom && Object.keys(metadata.custom).length ? { metadata: { custom: metadata.custom } } : {}),
         }));
-        void put("conversations", { id, scope, title, messages: stored, updatedAt: Date.now() });
+        // What the screen keeps with the conversation (e.g. the viewer's report state) is kept.
+        void find("conversations", id).then((old) => put("conversations", { ...old, id, scope, title, messages: stored, updatedAt: Date.now() }));
       }),
     [runtime, id, scope],
   );
