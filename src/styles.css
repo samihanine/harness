@@ -11,6 +11,8 @@
   --color-primary: #18181b;
   --color-primary-foreground: #fafafa;
   --color-destructive: #dc2626;
+  /* Selected item of a list (e.g. the row open in the dataset builder's detail view). */
+  --color-accent: #eaf1fb;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 

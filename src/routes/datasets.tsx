@@ -62,13 +62,16 @@ type View = {
   selected?: number;
   /** Fields shown per layout (table columns, card content); missing = the layout's default. */
   shown?: Partial<Record<View["layout"], string[]>>;
+  /** Table column widths (px) set by the user, by field. */
+  widths?: Record<string, number>;
 };
 const INITIAL: View = { layout: "table", search: "", filters: {}, where: {}, sort: [] };
 const isActive = (c?: Cond) => !!c && Object.values(c).some((v) => v !== undefined && v !== "");
 
 /** Default fields of a layout: every column in the table; title + first two option fields on cards (+ image on kanban). */
 function defaultShown(fields: Field[], layout: View["layout"]) {
-  if (layout === "table") return fields.map((f) => f.name);
+  // The first five columns (the others: Fields shown).
+  if (layout === "table") return fields.slice(0, 5).map((f) => f.name);
   const options = fields.filter((f) => f.type === "option").slice(0, 2);
   const image = layout === "kanban" ? fields.find((f) => f.type === "image") : undefined;
   return [titleField(fields), ...options, image].filter((f): f is Field => !!f).map((f) => f.name);
@@ -153,7 +156,10 @@ function Datasets() {
   );
   // Hidden table columns keep their filters (visibility, not removal).
   const tableShown = view.shown?.table;
-  const columnVisibility = useMemo(() => Object.fromEntries((table?.fields ?? []).map((f) => [f.name, !tableShown || tableShown.includes(f.name)])), [table?.fields, tableShown]);
+  const columnVisibility = useMemo(() => {
+    const shown = tableShown ?? defaultShown(table?.fields ?? [], "table");
+    return Object.fromEntries((table?.fields ?? []).map((f) => [f.name, shown.includes(f.name)]));
+  }, [table?.fields, tableShown]);
   const grid = useReactTable({
     data: table?.rows ?? NO_ROWS,
     columns,
@@ -394,13 +400,14 @@ function cardFields(fields: Field[], shown: string[], layout: "detail" | "kanban
   return { title, image, tags: list.filter((f) => f.type === "option"), lines: list.filter((f) => f !== title && f !== image && f.type !== "option") };
 }
 
-function CardBody({ row, card }: { row: Row; card: Card }) {
+/** `small`: the detail view's list (denser text). */
+function CardBody({ row, card, small = false }: { row: Row; card: Card; small?: boolean }) {
   return (
     <>
-      {card.title && <span className="truncate font-medium">{String(row[card.title.name] ?? "") || <span className="font-normal text-muted-foreground">Untitled</span>}</span>}
+      {card.title && <span className={`truncate font-medium ${small ? "text-[12px]" : ""}`}>{String(row[card.title.name] ?? "") || <span className="font-normal text-muted-foreground">Untitled</span>}</span>}
       {card.lines.map((f) =>
         row[f.name] === null || row[f.name] === undefined || row[f.name] === "" ? null : (
-          <span key={f.name} className="truncate text-[12px] text-muted-foreground">
+          <span key={f.name} className={`truncate text-muted-foreground ${small ? "text-[11px]" : "text-[12px]"}`}>
             {labelOf(f)}: {f.type === "boolean" ? (row[f.name] ? "yes" : "no") : String(row[f.name])}
           </span>
         ),
@@ -622,6 +629,30 @@ function TableLayout({ table, rows, grid, upload, onChange, view, setView, onEdi
   // Drag a column header onto another to move it there.
   const [dragged, setDragged] = useState<string>();
   const [over, setOver] = useState<string>();
+  // Drag a header's right edge to resize the column (saved with the view when released).
+  const [resizing, setResizing] = useState<{ name: string; width: number }>();
+  const widthOf = (f: Field) => (resizing?.name === f.name ? resizing.width : view.widths?.[f.name]);
+  const sized = (f: Field) => {
+    const w = widthOf(f);
+    return w ? { style: { width: w, minWidth: w, maxWidth: w }, className: "" } : { style: undefined, className: width(f) };
+  };
+  const resize = (f: Field, e: React.PointerEvent<HTMLElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const th = (e.currentTarget as HTMLElement).closest("th")!;
+    const start = e.clientX;
+    const from = th.getBoundingClientRect().width;
+    let current = from;
+    const move = (m: PointerEvent) => setResizing({ name: f.name, width: (current = Math.max(48, Math.round(from + m.clientX - start))) });
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setResizing(undefined);
+      setView({ widths: { ...view.widths, [f.name]: current } });
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   const width = (f: Field) => (isIdField(f) ? "w-24" : f.type === "text" ? "min-w-72 max-w-96" : f.type === "string" ? "min-w-44" : f.type === "image" ? "w-16" : "min-w-28");
   return (
     <div className="min-h-0 flex-1 overflow-auto bg-card">
@@ -640,14 +671,15 @@ function TableLayout({ table, rows, grid, upload, onChange, view, setView, onEdi
                 return (
                   <th
                     key={header.id}
-                    draggable
+                    draggable={!resizing}
                     title="Drag to move the column"
+                    style={sized(f).style}
                     onDragStart={(e) => (e.dataTransfer.setData("text/plain", f.name), (e.dataTransfer.effectAllowed = "move"), setDragged(f.name))}
                     onDragOver={(e) => dragged && (e.preventDefault(), setOver(f.name))}
                     onDragLeave={() => setOver((o) => (o === f.name ? undefined : o))}
                     onDrop={(e) => (e.preventDefault(), dragged && onMoveField(dragged, f.name), setDragged(undefined), setOver(undefined))}
                     onDragEnd={() => (setDragged(undefined), setOver(undefined))}
-                    className={`group/th cursor-grab border-r border-b p-0 text-left font-medium active:cursor-grabbing ${width(f)} ${dragged === f.name ? "opacity-40" : ""} ${over === f.name && dragged !== f.name ? (table.fields.findIndex((x) => x.name === dragged) < table.fields.findIndex((x) => x.name === f.name) ? "shadow-[inset_-2px_0_0_var(--color-blue-600)]" : "shadow-[inset_2px_0_0_var(--color-blue-600)]") : ""}`}
+                    className={`group/th relative cursor-grab border-r border-b p-0 text-left font-medium active:cursor-grabbing ${sized(f).className} ${dragged === f.name ? "opacity-40" : ""} ${over === f.name && dragged !== f.name ? (table.fields.findIndex((x) => x.name === dragged) < table.fields.findIndex((x) => x.name === f.name) ? "shadow-[inset_-2px_0_0_var(--color-blue-600)]" : "shadow-[inset_2px_0_0_var(--color-blue-600)]") : ""}`}
                   >
                     <div className="flex h-8 items-center pr-1">
                       <button type="button" title={f.description} onClick={header.column.getToggleSortingHandler()} className="flex h-full min-w-0 flex-1 items-center gap-1 px-2 text-[12px] text-muted-foreground hover:text-foreground">
@@ -657,6 +689,15 @@ function TableLayout({ table, rows, grid, upload, onChange, view, setView, onEdi
                       </button>
                       <ColumnMenu field={f} view={view} setView={setView} onEdit={() => onEditField(f.name)} />
                     </div>
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      title="Drag to resize the column"
+                      draggable={false}
+                      onPointerDown={(e) => resize(f, e)}
+                      onDragStart={(e) => e.preventDefault()}
+                      className={`absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize hover:bg-ring/40 ${resizing?.name === f.name ? "bg-ring/50" : ""}`}
+                    />
                   </th>
                 );
               })}
@@ -675,7 +716,7 @@ function TableLayout({ table, rows, grid, upload, onChange, view, setView, onEdi
               {row.getVisibleCells().map((cell) => {
                 const f = table.fields.find((x) => x.name === cell.column.id)!;
                 return (
-                  <td key={cell.id} className={`border-r border-b p-0 align-top ${width(f)}`}>
+                  <td key={cell.id} style={sized(f).style} className={`border-r border-b p-0 align-top ${sized(f).className}`}>
                     <FieldInput variant="cell" field={f} value={row.original[f.name]} upload={upload} validate={(v) => idError(table, row.index, v)} onChange={(v) => onChange(row.index, f.name, v)} />
                   </td>
                 );
@@ -706,15 +747,16 @@ function DetailLayout({ table, rows, selected, onSelect, shown, upload, onChange
   const current = rows.find((r) => r.index === selected) ?? rows[0];
   return (
     <div className="flex min-h-0 flex-1">
-      <ul className="flex w-80 shrink-0 flex-col gap-1.5 overflow-y-auto border-r bg-muted/40 p-2">
+      {/* A plain list: rows side by side (no gap, no shadow), the open one on the accent background. */}
+      <ul className="flex w-80 shrink-0 flex-col overflow-y-auto border-r bg-card text-[12px]">
         {rows.map((r) => (
-          <li key={r.index}>
-            <div role="button" tabIndex={0} onClick={() => onSelect(r.index)} onKeyDown={(e) => e.key === "Enter" && onSelect(r.index)} className={`flex w-full cursor-pointer items-start gap-2 rounded-lg border p-2 text-left shadow-sm hover:border-ring ${checked.includes(r.index) ? "bg-blue-500/5" : "bg-card"} ${r.index === current?.index ? "border-ring ring-2 ring-ring/20" : ""}`}>
+          <li key={r.index} className="border-b">
+            <div role="button" tabIndex={0} onClick={() => onSelect(r.index)} onKeyDown={(e) => e.key === "Enter" && onSelect(r.index)} className={`flex w-full cursor-pointer items-start gap-2 px-3 py-2 text-left ${r.index === current?.index ? "bg-accent" : checked.includes(r.index) ? "bg-blue-500/5 hover:bg-muted/60" : "hover:bg-muted/60"}`}>
               <span className="pt-0.5">
                 <Check on={checked.includes(r.index)} onChange={() => onCheck(r.index)} title="Select this row" />
               </span>
-              <span className="flex min-w-0 flex-1 flex-col gap-1">
-                <CardBody row={r.original} card={card} />
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <CardBody row={r.original} card={card} small />
               </span>
             </div>
           </li>
@@ -723,18 +765,21 @@ function DetailLayout({ table, rows, selected, onSelect, shown, upload, onChange
       </ul>
       <div className="min-w-0 flex-1 overflow-y-auto bg-card">
         {current && (
-          <div key={current.index} className="mx-auto flex max-w-3xl flex-col gap-4 px-8 py-6">
+          <div key={current.index} className="mx-auto flex max-w-5xl flex-col gap-4 px-8 py-6">
             <div className="flex items-center gap-2">
               <h2 className="min-w-0 flex-1 truncate text-[16px] font-semibold">{String(current.original[title.name] ?? "") || "Untitled"}</h2>
               <button type="button" className="btn text-destructive" onClick={() => confirm("Delete this row from the Excel file?") && onDelete(current.index)}>
                 <Trash2Icon /> Delete
               </button>
             </div>
-            {table.fields.map((f) => (
-              <FormField key={f.name} field={f}>
-                <FieldInput variant="form" field={f} value={current.original[f.name]} upload={upload} validate={(v) => idError(table, current.index, v)} onChange={(v) => onChange(current.index, f.name, v)} />
-              </FormField>
-            ))}
+            {/* Three columns for short values (option, date, number, yes / no, id); text and images take the whole width. */}
+            <div className="grid grid-cols-3 gap-x-4 gap-y-4">
+              {table.fields.map((f) => (
+                <FormField key={f.name} field={f} wide={(f.type === "text" || f.type === "string" || f.type === "image") && !isIdField(f)}>
+                  <FieldInput variant="form" field={f} value={current.original[f.name]} upload={upload} validate={(v) => idError(table, current.index, v)} onChange={(v) => onChange(current.index, f.name, v)} />
+                </FormField>
+              ))}
+            </div>
             <p className="text-[11px] text-muted-foreground/70">Row {current.index + 1} of the Excel table</p>
           </div>
         )}
@@ -744,8 +789,8 @@ function DetailLayout({ table, rows, selected, onSelect, shown, upload, onChange
 }
 
 // A <div>, not a <label>: a label forwards clicks to its first button (e.g. the editor's Bold).
-const FormField = ({ field, children }: { field: Field; children: ReactNode }) => (
-  <div className="flex flex-col gap-1.5">
+const FormField = ({ field, children, wide = false }: { field: Field; children: ReactNode; wide?: boolean }) => (
+  <div className={`flex min-w-0 flex-col gap-1.5 ${wide ? "col-span-3" : ""}`}>
     <span className="text-[12px] font-medium">
       {labelOf(field)}
       {field.required && <span className="text-destructive/70"> *</span>}

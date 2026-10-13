@@ -1,6 +1,6 @@
 /** Agent tools on an embedded report (viewer: navigation & filters; builder: authoring) and on DAX. */
 import { z } from "zod";
-import { basicFilter, checkValues, dax, findVisual, models, rowsText, settled, type Ref, type Report } from "@/lib/pbi";
+import { basicFilter, checkValues, columnValues, dax, findVisual, models, rowsText, settled, type Ref, type Report } from "@/lib/pbi";
 import { checkName, resolveField, type ModelInfo } from "@/lib/model";
 import { describeError, tool, type Tool } from "./loop";
 import type { VisualDescriptor as PbiVisual } from "powerbi-client";
@@ -75,6 +75,44 @@ const pageOf = async (report: Report, name?: string) => {
 const visualOf = async (report: Report, name: string) => findVisual(await (await pageOf(report)).getVisuals(), name);
 /** One value or a list. */
 const values = z.preprocess((v) => (Array.isArray(v) ? v : v === undefined || v === null || v === "" ? [] : [v]), z.array(z.union([z.string(), z.number(), z.boolean()])));
+
+/**
+ * Selection of a hierarchy slicer (several levels: a hierarchy, or several columns) from paths
+ * "top > sub > …": each part is checked against its level's values (case fixed), then the paths become
+ * the slicer's tree — the last part of a path selected, the parts above it "inherited".
+ */
+async function hierarchyFilter(levels: { table: string; column?: string; hierarchy?: string; hierarchyLevel?: string }[], paths: string[], dataset?: Ref) {
+  type Node = { operator: "Selected" | "Inherited"; value: unknown; children?: Node[] };
+  const roots: Node[] = [];
+  for (const path of paths) {
+    const parts = path.split(/\s*>\s*/).filter(Boolean);
+    if (parts.length > levels.length) throw new Error(`"${path}" has ${parts.length} parts; this slicer has ${levels.length} levels.`);
+    let siblings = roots;
+    for (const [i, part] of parts.entries()) {
+      const level = levels[i];
+      const column = level.column ?? level.hierarchyLevel ?? "";
+      // The value as the model holds it (a year is a number, not "2024"), else checked (refused with the valid ones).
+      const known = dataset ? await columnValues(dataset, level.table, column).catch(() => undefined) : undefined;
+      let value = known?.values.find((v) => String(v).toLowerCase() === part.toLowerCase());
+      if (value === undefined) [value] = await checkValues(dataset, level.table, column, [/^-?\d+(\.\d+)?$/.test(part) ? Number(part) : part]);
+      let node = siblings.find((n) => String(n.value).toLowerCase() === String(value).toLowerCase());
+      if (!node) siblings.push((node = { operator: "Inherited", value }));
+      if (i === parts.length - 1) {
+        node.operator = "Selected";
+        delete node.children;
+        break;
+      }
+      if (node.operator === "Selected") break; // already selected whole
+      siblings = node.children ??= [];
+    }
+  }
+  return {
+    $schema: "http://powerbi.com/product/schema#hierarchy",
+    target: levels.map((l) => (l.column ? { table: l.table, column: l.column } : { table: l.table, hierarchy: l.hierarchy, hierarchyLevel: l.hierarchyLevel })),
+    filterType: (await models()).FilterType.Hierarchy,
+    hierarchyData: roots,
+  };
+}
 
 /**
  * Viewer: navigate and filter (works with view-only rights). With the model (`dataset`), filter values
@@ -170,16 +208,25 @@ export function viewTools(report: () => Report | undefined, dataset: () => Ref |
     }),
     tool({
       name: "set_slicer",
-      description: "Selects values in a slicer of the current page (empty values clears it). Values as listed in the slicer's options (page state); unknown values are refused with the valid ones.",
+      description: 'Selects values in a slicer of the current page (empty values clears it). Values as listed in the slicer\'s options (page state); unknown values are refused with the valid ones. Hierarchy slicer (several levels, e.g. Year > Month): give paths "top > sub" (e.g. "2024 > Jan"); a top value alone ("2024") selects it whole.',
       args: z.object({ visual: z.string().describe("Slicer name (its id, name=… in the context); a title only when no other visual has it"), values }),
       run: async ({ visual, values }) => {
         const slicer = await visualOf(r(), visual);
         const { targets } = await slicer.getSlicerState();
-        const t = targets?.[0] as { table: string; column: string } | undefined;
-        if (!t) throw new Error("This visual is not a slicer on a column.");
-        const kept = await checkValues(dataset(), t.table, t.column, values);
-        await slicer.setSlicerState({ filters: kept.length ? [basicFilter(t.table, t.column, kept) as never] : [] });
-        return kept.length ? `Slicer set to ${kept.map((v) => JSON.stringify(v)).join(", ")}.` : "Slicer cleared.";
+        const levels = (targets ?? []) as { table: string; column?: string; hierarchy?: string; hierarchyLevel?: string }[];
+        if (!levels.length) throw new Error("This visual is not a slicer on a field.");
+        if (!values.length) {
+          await slicer.setSlicerState({ filters: [] });
+          return "Slicer cleared.";
+        }
+        if (levels.length === 1 && levels[0].column) {
+          const t = levels[0] as { table: string; column: string };
+          const kept = await checkValues(dataset(), t.table, t.column, values);
+          await slicer.setSlicerState({ filters: [basicFilter(t.table, t.column, kept) as never] });
+          return `Slicer set to ${kept.map((v) => JSON.stringify(v)).join(", ")}.`;
+        }
+        await slicer.setSlicerState({ filters: [(await hierarchyFilter(levels, values.map(String), dataset())) as never] });
+        return `Slicer set to ${values.map((v) => JSON.stringify(String(v))).join(", ")}.`;
       },
     }),
   ].map(after);

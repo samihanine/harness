@@ -1,7 +1,8 @@
 /// <reference types="vite/client" />
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { HeadContent, Link, Navigate, Outlet, Scripts, createRootRoute, useLocation } from "@tanstack/react-router";
-import { SettingsIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronUpIcon, SettingsIcon } from "lucide-react";
+import { last } from "@/lib/last";
 import { authStatus } from "@/server/ms";
 import { loadHubConfig } from "@/lib/hub-config";
 import { APP_TITLE, PRIMARY_COLOR, SCREENS, SCREEN_PATHS, SHOW_HEADER, firstScreen, onConfigChange } from "@/config";
@@ -63,10 +64,17 @@ function Layout() {
   useEffect(() => onConfigChange(() => setVersion((v) => v + 1)), []);
   useEffect(() => void loadHubConfig().catch((e) => console.warn("Config file not read", e)), []);
   useEffect(() => document.body.style.setProperty("--color-primary-foreground", readableOn(PRIMARY_COLOR)), [version]);
+  // The user can fold the header (remembered in this browser); a small button brings it back.
+  const [folded, setFolded] = useState(() => last.get("header") === "folded");
+  const fold = (next: boolean) => {
+    last.set("header", next ? "folded" : "open");
+    setFolded(next);
+  };
   // A hidden screen is closed to direct links too.
   if (hiddenPaths().includes(path)) return <Navigate to={firstScreen()} search={{} as never} replace />;
   // Hidden header: still shown while the user has to sign in.
-  const header = SHOW_HEADER || (status !== undefined && !status.signedIn);
+  const mustSignIn = status !== undefined && !status.signedIn;
+  const header = (SHOW_HEADER && !folded) || mustSignIn;
 
   return (
     <div className="flex h-full flex-col">
@@ -91,8 +99,18 @@ function Layout() {
             <Link to="/settings" search={{ tab: undefined }} className="icon-btn" title="Settings (config, AI, Microsoft account)" activeProps={{ className: "bg-muted" }}>
               <SettingsIcon />
             </Link>
+            {SHOW_HEADER && !mustSignIn && (
+              <button type="button" className="icon-btn" title="Hide the top bar" onClick={() => fold(true)}>
+                <ChevronUpIcon />
+              </button>
+            )}
           </div>
         </header>
+      )}
+      {SHOW_HEADER && folded && !header && (
+        <button type="button" title="Show the top bar" onClick={() => fold(false)} className="fixed top-0 left-1/2 z-50 flex h-4 w-10 -translate-x-1/2 items-center justify-center rounded-b-md border border-t-0 bg-card text-muted-foreground shadow-sm hover:h-5 hover:text-foreground [&_svg]:size-3.5">
+          <ChevronDownIcon />
+        </button>
       )}
       <main key={version} className="min-h-0 flex-1">
         <Outlet />

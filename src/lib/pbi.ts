@@ -136,7 +136,8 @@ export async function embedReport(element: HTMLElement, ref: Ref, mode: EmbedMod
     permissions: mode === "edit" ? p.models.Permissions.All : p.models.Permissions.Read,
     viewMode: mode === "edit" ? p.models.ViewMode.Edit : p.models.ViewMode.View,
     settings: {
-      panes: { filters: { visible: mode === "edit" } },
+      // The filter pane is there in both modes, folded when viewing (the user opens it if needed).
+      panes: { filters: { visible: true, expanded: mode === "edit" } },
       background: p.models.BackgroundType.Transparent,
       // Whole page visible by default (zoom buttons for more).
       layoutType: p.models.LayoutType.Custom,
@@ -211,8 +212,12 @@ const loaded = (embed: PbiClient.Embed) =>
 
 const fieldName = (t: Record<string, any>) => (t.measure ? `[${t.measure}]` : `'${t.table}'[${t.column ?? t.hierarchyLevel ?? t.hierarchy}]`);
 /** Active filters only ("All" / empty ones are noise for the AI). */
-const active = (filters: any[]) => filters.filter((f) => (f.values?.length && f.operator !== "All") || f.conditions?.length);
+const active = (filters: any[]) => filters.filter((f) => (f.values?.length && f.operator !== "All") || f.conditions?.length || f.hierarchyData?.length);
+/** Selected paths of a hierarchy filter ("2024 > Jan"): a node is selected whole, or through its children. */
+const paths = (nodes: any[] = [], prefix: unknown[] = []): string[] =>
+  nodes.flatMap((n) => (n.operator === "Selected" ? [[...prefix, n.value].join(" > ")] : n.children ? paths(n.children, [...prefix, n.value]) : []));
 const filterText = (f: any) => {
+  if (f.hierarchyData) return `${(Array.isArray(f.target) ? f.target : [f.target]).map(fieldName).join(" > ")} = ${JSON.stringify(paths(f.hierarchyData))}`;
   const target = f.target ? fieldName(f.target) : "?";
   if (f.values) return `${target} ${f.operator ?? "In"} ${JSON.stringify(f.values)}`;
   if (f.conditions) return `${target} ${f.conditions.map((c: any) => `${c.operator} ${c.value ?? ""}`).join(` ${f.logicalOperator} `)}`;
@@ -260,9 +265,13 @@ export async function visualText(visual: Visual, withData: boolean, shared = fal
   if (visual.type === "slicer") {
     const state = await visual.getSlicerState().catch(() => null);
     if (state) lines.push(`  slicer on ${state.targets?.map((t) => fieldName(t as never)).join(", ")}: ${active(state.filters).length ? active(state.filters).map(filterText).join("; ") : "nothing selected"}`);
-    const t = state?.targets?.[0] as { table?: string; column?: string } | undefined;
-    const options = dataset && t?.table && t.column ? await columnValues(dataset, t.table, t.column).catch(() => undefined) : undefined;
-    if (options?.values.length) lines.push(`  options${options.more ? ` (first ${options.values.length})` : ""}: ${options.values.map((v) => JSON.stringify(v)).join(", ")}`);
+    const levels = (state?.targets ?? []) as { table?: string; column?: string; hierarchyLevel?: string }[];
+    if (levels.length > 1) lines.push(`  hierarchy slicer (${levels.length} levels): select with paths "top > sub" (e.g. "${levels.map((_, i) => `level${i + 1}`).join(" > ")}"); a top value alone selects it whole`);
+    // Options of the first (or only) level.
+    const t = levels[0];
+    const column = t?.column ?? t?.hierarchyLevel;
+    const options = dataset && t?.table && column ? await columnValues(dataset, t.table, column).catch(() => undefined) : undefined;
+    if (options?.values.length) lines.push(`  options${levels.length > 1 ? " (top level)" : ""}${options.more ? ` (first ${options.values.length})` : ""}: ${options.values.map((v) => JSON.stringify(v)).join(", ")}`);
   }
   if (withData && !["slicer", "textbox", "image", "shape", "actionButton", "basicShape"].includes(visual.type)) {
     const exported = await visual.exportData(p.models.ExportDataType.Summarized, 30).catch(() => null);

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { icons, ArrowDownIcon, ArrowUpIcon, CheckIcon, DownloadIcon, ChevronRightIcon, ChevronsUpDownIcon, FileTextIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, SearchIcon, Settings2Icon, SparklesIcon, Trash2Icon, XIcon } from "lucide-react";
+import { icons, BookOpenIcon, ChartColumnIcon, ArrowDownIcon, ArrowUpIcon, CheckIcon, DownloadIcon, ChevronRightIcon, ChevronsUpDownIcon, FileTextIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, SearchIcon, Settings2Icon, SparklesIcon, Trash2Icon, XIcon } from "lucide-react";
 import { Popover } from "@/components/popover";
 import { Drawer } from "@/components/drawer";
 import { Markdown } from "@/components/markdown";
@@ -94,7 +94,7 @@ ${DAX_RULES}`,
       <SidePanel
         tabs={visible([
           { id: "info", label: "Info", content: <InfoTab excel={excels.find((e) => e.id === entry?.infoExcelId)} reportId={entry?.id} /> },
-          { id: "guide", label: "Guides", content: <GuideTab excel={excels.find((e) => e.id === entry?.guidesExcelId)} reportId={entry?.id} reportRef={entry} report={report} selection={selection} context={libraryContext(entry, dataset)} /> },
+          { id: "guide", label: "Guides", content: <GuideTab excel={excels.find((e) => e.id === entry?.guidesExcelId)} reportId={entry?.id} reportRef={entry} report={report} selection={selection} context={libraryContext(entry, dataset)} dataset={dataset} /> },
           { id: "ai", label: "AI", content: entry ? <Chat scope={`viewer:${entry.id}`} agent={agent} placeholder="Ask about this page…" onConversation={setConversationId} /> : <Empty>Choose a report.</Empty> },
         ], VIEWER_TABS)}
       />
@@ -399,9 +399,12 @@ function IconPicker({ value, onChange }: { value: string; onChange: (name: strin
 }
 
 type Selection = { page?: string; visual?: string };
-type PageInfo = { name: string; displayName: string; visuals: { name: string; title: string }[] };
+/** Visuals without data of their own (decoration, navigation): no guide, no preview, clicks ignored. */
+const DECORATIONS = new Set(["textbox", "shape", "basicShape", "image", "actionButton", "pageNavigator", "bookmarkNavigator", "visualGroup", "group"]);
+type VisualInfo = { name: string; title: string; type: string };
+type PageInfo = { name: string; displayName: string; visuals: VisualInfo[] };
 
-/** Pages of the embedded report with their visuals (names and titles), for the guides. */
+/** Pages of the embedded report with their data visuals, in reading order (top to bottom, then left to right). */
 function usePages(report?: Report) {
   const [pages, setPages] = useState<PageInfo[]>([]);
   useEffect(() => {
@@ -414,8 +417,10 @@ function usePages(report?: Report) {
           name: p.name,
           displayName: p.displayName,
           visuals: (await p.getVisuals().catch(() => []))
-            .filter((v) => v.layout.displayState?.mode !== 1 && !["shape", "basicShape", "image", "actionButton"].includes(v.type))
-            .map((v) => ({ name: v.name, title: v.title || v.type })),
+            .filter((v) => v.layout.displayState?.mode !== 1 && !DECORATIONS.has(v.type))
+            // Same band of 20 px = same line: read left to right.
+            .sort((a, b) => Math.round((a.layout.y ?? 0) / 20) - Math.round((b.layout.y ?? 0) / 20) || (a.layout.x ?? 0) - (b.layout.x ?? 0))
+            .map((v) => ({ name: v.name, title: v.title || v.type, type: v.type })),
         })),
       );
       if (live) setPages(out);
@@ -425,157 +430,130 @@ function usePages(report?: Report) {
   return pages;
 }
 
-type GuideView = { kind: "home" } | { kind: "page"; page: string } | { kind: "guide"; index: number };
-const linksOf = (row?: Record<string, unknown>) => String(row?.links ?? "").split(/\s*;\s*/).filter(Boolean);
+type GuideView = { kind: "pages" } | { kind: "page"; page: string } | { kind: "visual"; page: string; visual: string };
+/** The visual a guide is about ("pageName/visualName"). One visual per guide: older rows listing several keep the first. */
+const linkOf = (row?: Record<string, unknown>) => String(row?.links ?? "").split(/\s*;\s*/).filter(Boolean)[0] ?? "";
 
 /**
- * Guides in an Excel table (title, content in markdown, links = "pageName" or "pageName/visualName",
- * separated by ;). Home: the report pages, then every guide. A clicked visual opens its guide. The tab
- * only reads: ⚙ opens the drawer where guides are written, linked and deleted.
+ * Guides, one per visual, in an Excel table (title, content in markdown, links = "pageName/visualName").
+ * Pages, then a page's data visuals in reading order (a book icon on those with a guide), then a
+ * visual: its preview, PDF / PNG / Explain, and its guide. A click on a data visual of the report opens
+ * it here, guide or not. ⚙ writes the guide of the open visual.
  */
-function GuideTab({ excel, reportId, reportRef, report, selection, context = "" }: { excel?: ExcelEntry; reportId?: string; reportRef?: Ref; report?: Report; selection: Selection; context?: string }) {
+function GuideTab({ excel, reportId, reportRef, report, selection, context = "", dataset }: { excel?: ExcelEntry; reportId?: string; reportRef?: Ref; report?: Report; selection: Selection; context?: string; dataset?: DatasetEntry }) {
   const { table, error, write } = useTable(excel);
   const pages = usePages(report);
-  const [view, setView] = useState<GuideView>({ kind: "home" });
-  /** Drawer: open, with the guide being edited (undefined = none chosen). */
-  const [editor, setEditor] = useState<{ index?: number } | null>(null);
-  const rows = table?.rows ?? [];
-  const here = selection.visual ? `${selection.page}/${selection.visual}` : undefined;
-  /** The preview of the clicked visual, used by the downloads when it is ready. */
+  const [view, setView] = useState<GuideView>({ kind: "pages" });
+  const [editing, setEditing] = useState(false);
+  /** The preview of the open visual, used by the downloads when it is ready. */
   const preview = useRef<PreviewHandle>(undefined);
+  const rows = table?.rows ?? [];
 
-  // Follows the visual clicked in the report.
+  // A click on a data visual of the report opens it here (guide or not); decorations are ignored.
   useEffect(() => {
-    if (!selection.visual) {
-      if (selection.page) setView((v) => (v.kind === "page" ? { kind: "page", page: selection.page! } : v));
-      return;
-    }
-    const index = rows.findIndex((r) => linksOf(r).includes(`${selection.page}/${selection.visual}`));
-    setView(index >= 0 ? { kind: "guide", index } : { kind: "page", page: selection.page ?? "" });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selection.page, selection.visual]);
+    const { page, visual } = selection;
+    if (page && visual && pages.find((p) => p.name === page)?.visuals.some((v) => v.name === visual)) setView({ kind: "visual", page, visual });
+  }, [selection.page, selection.visual, pages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!reportId) return <Empty>Choose a report.</Empty>;
 
-  const pageTitle = (name?: string) => pages.find((p) => p.name === name)?.displayName ?? name ?? "";
-  const visualTitle = (link: string) => {
-    const [page, visual] = link.split("/");
-    if (!visual) return pageTitle(page);
-    return pages.find((p) => p.name === page)?.visuals.find((v) => v.name === visual)?.title ?? visual;
+  const page = view.kind === "pages" ? undefined : pages.find((p) => p.name === view.page);
+  const visual = view.kind === "visual" ? page?.visuals.find((v) => v.name === view.visual) : undefined;
+  const guideOf = (pageName: string, visualName: string) => rows.findIndex((r) => linkOf(r) === `${pageName}/${visualName}`);
+  const openPage = (name: string) => {
+    setView({ kind: "page", page: name });
+    void report?.getPages().then((ps) => ps.find((p) => p.name === name)?.setActive());
   };
-  const goTo = (link: string) => void report?.getPages().then((ps) => ps.find((p) => p.name === link.split("/")[0])?.setActive());
-  const onPage = (page: string) => rows.map((row, index) => ({ row, index, links: linksOf(row) })).filter((g) => g.links.some((l) => l === page || l.startsWith(`${page}/`)));
-
-  const crumbs = (
-    <div className="flex h-10 min-w-0 shrink-0 items-center gap-1 border-b pr-2 pl-3 text-[12px] text-muted-foreground">
-      <button type="button" className="truncate hover:text-foreground" onClick={() => setView({ kind: "home" })}>
-        Guides
-      </button>
-      {view.kind === "page" && (
-        <>
-          <ChevronRightIcon className="size-3 shrink-0" />
-          <span className="truncate text-foreground">{pageTitle(view.page)}</span>
-        </>
+  const crumb = (label: string, onClick?: () => void) => (
+    <>
+      <ChevronRightIcon className="size-3 shrink-0" />
+      {onClick ? (
+        <button type="button" className="truncate hover:text-foreground" onClick={onClick}>
+          {label}
+        </button>
+      ) : (
+        <span className="truncate text-foreground">{label}</span>
       )}
-      {view.kind === "guide" && (
-        <>
-          <ChevronRightIcon className="size-3 shrink-0" />
-          <span className="truncate text-foreground">{String(rows[view.index]?.title ?? "")}</span>
-        </>
-      )}
-      <span className="ml-auto" />
-      <SettingsButton title="Edit the guides" onClick={() => setEditor({ index: view.kind === "guide" ? view.index : undefined })} />
-    </div>
+    </>
   );
-  const item = (key: string | number, label: string, hint: string, onClick: () => void, icon = <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />) => (
+  const item = (key: string, label: string, onClick: () => void, icon: ReactNode, hint?: ReactNode) => (
     <li key={key}>
       <button type="button" onClick={onClick} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
         {icon}
         <span className="truncate">{label}</span>
-        <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{hint}</span>
+        <span className="ml-auto flex shrink-0 items-center text-[11px] text-muted-foreground">{hint}</span>
       </button>
     </li>
   );
 
   let body: ReactNode;
-  if (!excel) body = <Empty>No guides for this report yet{REPORT_VIEWER_EDITOR ? ": write some with ⚙" : ""}.</Empty>;
-  else if (!table) body = <Empty>{error ?? "Loading…"}</Empty>;
-  else if (view.kind === "guide") {
-    const row = rows[view.index];
-    const links = linksOf(row);
-    body = row && (
-      <div className="flex flex-col gap-3 p-3">
-        {row.content ? <Markdown>{String(row.content)}</Markdown> : null}
-        {links.length > 0 && (
-          <div className="hidden flex-col gap-1.5 border-t pt-3">
-            <span className="label">Linked to</span>
-            <div className="flex flex-wrap gap-1">
-              {links.map((l) => (
-                <button key={l} type="button" onClick={() => goTo(l)} className="inline-flex h-6 max-w-48 items-center truncate rounded-md border bg-card px-2 text-[12px] hover:bg-muted">
-                  {visualTitle(l)}
-                </button>
-              ))}
-            </div>
-          </div>
+  if (view.kind === "pages")
+    body = (
+      <ul className="p-1.5">
+        {pages.map((p) => item(p.name, p.displayName, () => openPage(p.name), <LayoutPanelTopIcon className="size-3.5 shrink-0 text-muted-foreground" />, `${p.visuals.filter((v) => guideOf(p.name, v.name) >= 0).length} guide(s)`))}
+        {pages.length === 0 && <li className="px-2 py-1.5 text-[12px] text-muted-foreground">Loading the report…</li>}
+      </ul>
+    );
+  else if (view.kind === "page")
+    body = (
+      <ul className="p-1.5">
+        {page?.visuals.map((v) =>
+          item(v.name, v.title, () => setView({ kind: "visual", page: page.name, visual: v.name }), <ChartColumnIcon className="size-3.5 shrink-0 text-muted-foreground" />, guideOf(page.name, v.name) >= 0 ? <BookOpenIcon className="size-3.5 text-blue-600" aria-label="Has a guide" /> : null),
+        )}
+        {page && page.visuals.length === 0 && <li className="px-2 py-1.5 text-[12px] text-muted-foreground">No data visual on this page.</li>}
+      </ul>
+    );
+  else {
+    const row = rows[guideOf(view.page, view.visual)];
+    body = (
+      <div className="p-3">
+        {!excel ? (
+          <p className="text-[12px] text-muted-foreground">No guides file for this report{REPORT_VIEWER_EDITOR ? ": connect one with ⚙" : ""}.</p>
+        ) : !table ? (
+          <p className="text-[12px] text-muted-foreground">{error ?? "Loading…"}</p>
+        ) : row?.content ? (
+          <Markdown>{String(row.content)}</Markdown>
+        ) : (
+          <p className="text-[12px] text-muted-foreground">No guide written for this visual{REPORT_VIEWER_EDITOR ? ": write one with ⚙" : ""}.</p>
         )}
       </div>
     );
-  } else if (view.kind === "page") {
-    const guides = onPage(view.page);
-    const unmatched = here && selection.page === view.page && !rows.some((r) => linksOf(r).includes(here));
-    body = (
-      <>
-        <ul className="p-1.5">{guides.map((g) => item(g.index, String(g.row.title ?? ""), `${g.links.length} item(s)`, () => setView({ kind: "guide", index: g.index })))}</ul>
-        {guides.length === 0 && !unmatched && <Empty>No guide on this page.</Empty>}
-      </>
-    );
-  } else
-    body = (
-      <>
-        <p className="label px-3 pt-3">Pages</p>
-        <ul className="p-1.5">
-          {pages.map((p) =>
-            item(p.name, p.displayName, `${onPage(p.name).length} guide(s)`, () => {
-              setView({ kind: "page", page: p.name });
-              goTo(p.name);
-            }, <LayoutPanelTopIcon className="size-3.5 shrink-0 text-muted-foreground" />),
-          )}
-          {pages.length === 0 && <li className="px-2 py-1.5 text-[12px] text-muted-foreground">Loading the report…</li>}
-        </ul>
-        <p className="label border-t px-3 pt-3">All guides</p>
-        <ul className="p-1.5">
-          {rows.map((r, i) => item(i, String(r.title ?? ""), `${linksOf(r).length} item(s)`, () => setView({ kind: "guide", index: i })))}
-          {rows.length === 0 && <li className="px-2 py-1.5 text-[12px] text-muted-foreground">No guide yet.</li>}
-        </ul>
-      </>
-    );
+  }
 
   return (
     <div className="flex flex-col">
-      {crumbs}
-      {VISUAL_PREVIEW && report && reportRef && <VisualPreview report={report} reportRef={reportRef} page={selection.page} visual={selection.visual} handle={preview} />}
-      {(EXPORT.visualPdf || EXPORT.visualPng || VISUAL_EXPLAIN) && here && report && selection.page && selection.visual && (
-        <VisualDownload key={here} report={report} page={selection.page} visual={selection.visual} title={visualTitle(here)} preview={preview} context={context} />
+      <div className="flex h-10 min-w-0 shrink-0 items-center gap-1 border-b pr-2 pl-3 text-[12px] text-muted-foreground">
+        <button type="button" className="truncate hover:text-foreground" onClick={() => setView({ kind: "pages" })}>
+          Guides
+        </button>
+        {page && crumb(page.displayName, view.kind === "visual" ? () => setView({ kind: "page", page: page.name }) : undefined)}
+        {visual && crumb(visual.title)}
+        <span className="ml-auto" />
+        <SettingsButton title={view.kind === "visual" ? "Write the guide of this visual" : "Guides file and list"} onClick={() => setEditing(true)} />
+      </div>
+      {VISUAL_PREVIEW && report && reportRef && <VisualPreview report={report} reportRef={reportRef} page={view.kind === "visual" ? view.page : undefined} visual={view.kind === "visual" ? view.visual : undefined} handle={preview} />}
+      {view.kind === "visual" && report && (EXPORT.visualPdf || EXPORT.visualPng || VISUAL_EXPLAIN) && (
+        <VisualDownload key={`${view.page}/${view.visual}`} report={report} page={view.page} visual={view.visual} title={visual?.title ?? view.visual} preview={preview} context={context} dataset={dataset} />
       )}
       {body}
       {error && table && <p className="px-3 py-2 text-[12px] text-destructive">{error}</p>}
-      {editor && (
-        <TabDrawer title="Guides" excel={excel} reportId={reportId} kind="guides" table={table} error={error} onClose={() => setEditor(null)}>
-          {() => (
-            <GuidesEditor
-              excel={excel!}
-              rows={rows}
-              write={write}
-              index={editor.index}
-              onSelect={(index) => setEditor({ index })}
-              onDeleted={() => (setEditor({}), setView({ kind: "home" }))}
-              pages={pages}
-              here={here}
-              page={selection.page}
-              pageTitle={pageTitle}
-              visualTitle={visualTitle}
-            />
-          )}
+      {editing && (
+        <TabDrawer title="Guides" excel={excel} reportId={reportId} kind="guides" table={table} error={error} onClose={() => setEditing(false)}>
+          {() =>
+            view.kind === "visual" ? (
+              <GuideEditor key={`${view.page}/${view.visual}`} excel={excel!} rows={rows} write={write} link={`${view.page}/${view.visual}`} title={visual?.title ?? view.visual} />
+            ) : (
+              <GuideList
+                rows={rows}
+                pages={pages}
+                onOpen={(link) => {
+                  const [p, v] = link.split("/");
+                  setView({ kind: "visual", page: p, visual: v });
+                  setEditing(false);
+                }}
+              />
+            )
+          }
         </TabDrawer>
       )}
     </div>
@@ -667,11 +645,11 @@ function VisualPreview({ report, reportRef, page, visual, handle }: { report: Re
 }
 
 /** The clicked visual's buttons (guide or not): PDF, PNG, Explain, above its guide. */
-function VisualDownload({ report, page, visual, title, preview, context }: { report: Report; page: string; visual: string; title: string; preview: { current?: PreviewHandle }; context: string }) {
+function VisualDownload({ report, page, visual, title, preview, context, dataset }: { report: Report; page: string; visual: string; title: string; preview: { current?: PreviewHandle }; context: string; dataset?: DatasetEntry }) {
   const [state, setState] = useState<{ busy?: "pdf" | "png" | "explain"; error?: string; explanation?: string }>({});
   const explain = () => {
     setState({ busy: "explain" });
-    explainVisual(report, page, visual, context).then((explanation) => setState({ explanation }), (e) => setState({ error: describeError(e) }));
+    explainVisual(report, page, visual, context, dataset).then((explanation) => setState({ explanation }), (e) => setState({ error: describeError(e) }));
   };
   const run = (kind: "pdf" | "png") => {
     setState({ busy: kind });
@@ -712,134 +690,83 @@ function VisualDownload({ report, page, visual, title, preview, context }: { rep
   );
 }
 
-/** Drawer of the guides: pick or create one, then edit its title, content and links, or delete it. */
-function GuidesEditor({ excel, rows, write, index, onSelect, onDeleted, pages, here, page, pageTitle, visualTitle }: {
-  excel: ExcelEntry;
-  rows: Record<string, unknown>[];
-  write: Write;
-  index?: number;
-  onSelect: (index?: number) => void;
-  onDeleted: () => void;
-  pages: PageInfo[];
-  here?: string;
-  page?: string;
-  pageTitle: (name?: string) => string;
-  visualTitle: (link: string) => string;
-}) {
-  const quiet = (p: Promise<unknown>) => void p.catch(() => undefined); // errors are shown by the drawer
-  const update = (i: number, values: Record<string, unknown>) => {
-    const changes = [{ index: i, values }];
-    quiet(write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) }));
+/** Drawer, no visual open: every guide with its visual (opens it); guides are written from a visual. */
+function GuideList({ rows, pages, onOpen }: { rows: Record<string, unknown>[]; pages: PageInfo[]; onOpen: (link: string) => void }) {
+  const where = (link: string) => {
+    const [p, v] = link.split("/");
+    const page = pages.find((x) => x.name === p);
+    const visual = page?.visuals.find((x) => x.name === v);
+    return page && visual ? `${page.displayName} › ${visual.title}` : undefined;
   };
-  const create = (links: string, title: string) => {
-    const values = { title, content: "", links };
-    quiet(write((t) => addRows(excel, t, [values]), { refetch: true, optimistic: (t) => withRows(t, [values]) }));
-    onSelect(rows.length);
-  };
-  const row = index === undefined ? undefined : rows[index];
-  const hereFree = here && !rows.some((r) => linksOf(r).includes(here));
   return (
-    <>
-      <div className="flex flex-col gap-2">
-        <select className="input" value={index ?? ""} onChange={(e) => onSelect(e.target.value === "" ? undefined : Number(e.target.value))}>
-          <option value="">Choose a guide…</option>
-          {rows.map((r, i) => (
-            <option key={i} value={i}>
-              {String(r.title ?? "") || "Untitled"}
-            </option>
-          ))}
-        </select>
-        <div className="flex flex-wrap gap-1.5">
-          {here && hereFree && (
-            <button type="button" className="btn h-7" onClick={() => create(here, `About ${visualTitle(here)}`)}>
-              <PlusIcon /> Guide for the selected visual
-            </button>
-          )}
-          {page && (
-            <button type="button" className="btn h-7" onClick={() => create(page, `${pageTitle(page)} guide`)}>
-              <PlusIcon /> Guide for this page
-            </button>
-          )}
-          {!page && (
-            <button type="button" className="btn h-7" onClick={() => create("", "New guide")}>
-              <PlusIcon /> New guide
-            </button>
-          )}
-        </div>
-      </div>
-      {row && index !== undefined && (
-        <GuideForm
-          key={index}
-          row={row}
-          onSave={(values) => update(index, values)}
-          links={linksOf(row)}
-          setLinks={(next) => update(index, { links: next.join("; ") })}
-          here={here}
-          candidates={pages.flatMap((p) => [{ value: p.name, label: `${p.displayName} (page)` }, ...p.visuals.map((v) => ({ value: `${p.name}/${v.name}`, label: `${p.displayName} › ${v.title}` }))])}
-          visualTitle={visualTitle}
-          onDelete={() => {
-            if (!confirm("Delete this guide?")) return;
-            quiet(write(() => deleteRows(excel, [index]), { optimistic: (t) => withoutRows(t, [index]) }));
-            onDeleted();
-          }}
-        />
-      )}
-    </>
+    <div className="flex flex-col gap-2">
+      <p className="text-[12px] text-muted-foreground">One guide per visual. To write one, open the visual (click it in the report, or choose it in a page), then ⚙.</p>
+      <ul className="flex flex-col divide-y rounded-lg border">
+        {rows.map((r, i) => {
+          const link = linkOf(r);
+          const label = link.includes("/") ? where(link) : undefined;
+          return (
+            <li key={i}>
+              <button type="button" disabled={!label} onClick={() => onOpen(link)} className="flex w-full flex-col items-start px-3 py-2 text-left hover:bg-muted disabled:opacity-60">
+                <span className="font-medium">{String(r.title ?? "") || "Untitled"}</span>
+                <span className="text-[11px] text-muted-foreground">{label ?? "Not linked to a visual of this report"}</span>
+              </button>
+            </li>
+          );
+        })}
+        {rows.length === 0 && <li className="p-3 text-[12px] text-muted-foreground">No guide yet.</li>}
+      </ul>
+    </div>
   );
 }
 
-function GuideForm({ row, onSave, links, setLinks, here, candidates, visualTitle, onDelete }: {
-  row: Record<string, unknown>;
-  onSave: (values: { title: string; content: string }) => void;
-  links: string[];
-  setLinks: (links: string[]) => void;
-  here?: string;
-  candidates: { value: string; label: string }[];
-  visualTitle: (link: string) => string;
-  onDelete: () => void;
-}) {
+/** Drawer, a visual open: write its guide (created on demand), or delete it. */
+function GuideEditor({ excel, rows, write, link, title }: { excel: ExcelEntry; rows: Record<string, unknown>[]; write: Write; link: string; title: string }) {
+  const quiet = (p: Promise<unknown>) => void p.catch(() => undefined); // errors are shown by the drawer
+  const index = rows.findIndex((r) => linkOf(r) === link);
+  const row = rows[index];
+  if (!row) {
+    const values = { title, content: "", links: link };
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-[12px] text-muted-foreground">No guide for "{title}" yet.</p>
+        <button type="button" className="btn-primary w-fit" onClick={() => quiet(write((t) => addRows(excel, t, [values]), { refetch: true, optimistic: (t) => withRows(t, [values]) }))}>
+          <PlusIcon /> Write its guide
+        </button>
+      </div>
+    );
+  }
+  return (
+    <GuideForm
+      key={index}
+      row={row}
+      onSave={(values) => {
+        const changes = [{ index, values }];
+        quiet(write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) }));
+      }}
+      onDelete={() => {
+        if (!confirm("Delete this guide?")) return;
+        quiet(write(() => deleteRows(excel, [index]), { optimistic: (t) => withoutRows(t, [index]) }));
+      }}
+    />
+  );
+}
+
+function GuideForm({ row, onSave, onDelete }: { row: Record<string, unknown>; onSave: (values: { title: string; content: string }) => void; onDelete: () => void }) {
   const [draft, setDraft] = useState({ title: String(row.title ?? ""), content: String(row.content ?? "") });
   const changed = draft.title !== String(row.title ?? "") || draft.content !== String(row.content ?? "");
-  const others = candidates.filter((c) => !links.includes(c.value));
   return (
-    <div className="flex flex-col gap-3 border-t pt-4">
+    <div className="flex flex-col gap-3">
       <input className="input font-medium" placeholder="Title" value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
       <RichText value={draft.content} onChange={(content) => setDraft((d) => ({ ...d, content }))} />
-      <button type="button" className="btn-primary w-fit" disabled={!changed} onClick={() => onSave(draft)}>
-        <CheckIcon /> Save
-      </button>
-      <div className="flex flex-col gap-1.5 border-t pt-3">
-        <span className="label">Linked to</span>
-        <div className="flex flex-wrap gap-1">
-          {links.map((l) => (
-            <span key={l} className="inline-flex h-6 items-center gap-1 rounded-md border bg-card pl-2 text-[12px]">
-              <span className="max-w-48 truncate">{visualTitle(l)}</span>
-              <button type="button" aria-label="Unlink" onClick={() => setLinks(links.filter((x) => x !== l))} className="px-1 text-muted-foreground hover:text-foreground">
-                <XIcon className="size-3" />
-              </button>
-            </span>
-          ))}
-          {links.length === 0 && <span className="text-[12px] text-muted-foreground">Nothing.</span>}
-        </div>
-        {here && !links.includes(here) && (
-          <button type="button" className="btn h-7 w-fit" onClick={() => setLinks([...links, here])}>
-            <LinkIcon /> Link the selected visual
-          </button>
-        )}
-        {others.length > 0 && (
-          <select className="input" value="" onChange={(e) => e.target.value && setLinks([...links, e.target.value])}>
-            <option value="">Link a page or visual…</option>
-            {others.map((c) => (
-              <option key={c.value} value={c.value}>
-                {c.label}
-              </option>
-            ))}
-          </select>
-        )}
+      <div className="flex gap-2">
+        <button type="button" className="btn-primary" disabled={!changed} onClick={() => onSave(draft)}>
+          <CheckIcon /> Save
+        </button>
+        <button type="button" className="btn ml-auto text-destructive" onClick={onDelete}>
+          <Trash2Icon /> Delete guide
+        </button>
       </div>
-      <button type="button" className="btn w-fit text-destructive" onClick={onDelete}>
-        <Trash2Icon /> Delete guide
-      </button>
     </div>
   );
 }
