@@ -86,7 +86,7 @@ How to work:
 ${DAX_RULES}`,
     tools: [...viewTools(() => report, () => datasetRef, () => dataset?.info), daxTool(() => datasetRef), ...modelTools(() => dataset)],
     context: async () => libraryContext(entry, dataset),
-    state: async () => (report ? `What the user sees now:\n${await pageText(report, true, datasetRef)}` : "The report is not loaded."),
+    state: async (progress?: (done: number, total: number) => void) => (report ? `What the user sees now:\n${await pageText(report, true, datasetRef, progress)}` : "The report is not loaded."),
   };
 
   return (

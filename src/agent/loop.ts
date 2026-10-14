@@ -26,13 +26,22 @@ export type Agent = {
   /** What the AI works on (model, file, notes…): sent at the start of a conversation, again only when it changes. */
   context: () => Promise<string>;
   /** What the user sees now (page, filters, editor…): re-read before each model call, sent when it changed. */
-  state?: () => Promise<string>;
+  state?: (progress?: Progress) => Promise<string>;
+  /**
+   * Run when the AI has finished its answer (e.g. saving the changes it made to a draft); the text it
+   * returns is added to the answer, and so is its error.
+   */
+  finish?: () => Promise<string | undefined>;
 };
 
 export type Step = { id: string; name: string; args: Record<string, unknown>; result?: string; error?: boolean; ms?: number };
 /** One exchange with the model, exactly as sent and received. */
 export type LlmCall = { at: string; prompt: string; reply?: string; error?: string; ms?: number };
-export type Update = { steps: Step[]; llm: LlmCall[]; answer?: string; /** Remote conversation id (stateful APIs). */ remote?: string };
+/** Reports how far a long read is (e.g. visuals of the page read so far / all of them). */
+export type Progress = (done: number, total: number) => void;
+/** What the agent is doing between visible steps (reading the page, waiting for the model), with progress when known. */
+export type Status = { label: string; done?: number; total?: number };
+export type Update = { steps: Step[]; llm: LlmCall[]; answer?: string; /** Remote conversation id (stateful APIs). */ remote?: string; status?: Status };
 
 /** Readable error, also for the plain objects the Power BI client rejects with ({ message, detailedMessage }). */
 export function describeError(error: unknown): string {
@@ -117,16 +126,28 @@ export async function* runAgent({
   const FORMAT = format(tools.map((t) => t.name));
   const steps: Step[] = [];
   const llm: LlmCall[] = [];
-  const read = async () => ({
+  let remote: string | undefined;
+  const read = async (progress?: Progress) => ({
     context: await agent.context().catch((e) => `Context unavailable: ${e}`),
-    state: agent.state ? await agent.state().catch((e) => `Page state unavailable: ${e}`) : undefined,
+    state: agent.state ? await agent.state(progress).catch((e) => `Page state unavailable: ${e}`) : undefined,
   });
+  /** `read`, telling the user what is happening (with its progress) when it takes more than a moment. */
+  const readShown = async function* (label: string): AsyncGenerator<Update, Awaited<ReturnType<typeof read>>> {
+    let progress: { done: number; total: number } | undefined;
+    let result: Awaited<ReturnType<typeof read>> | undefined;
+    const task = read((done, total) => (progress = { done, total })).then((r) => (result = r));
+    for (;;) {
+      await Promise.race([task, new Promise((r) => setTimeout(r, 200))]);
+      if (result) return result;
+      yield { steps, llm, remote, status: { label, ...progress } };
+    }
+  };
   let current = live.get(conversationId);
   if (current && (current.model !== model || current.session.chars > LIMITS.sessionChars)) current = undefined;
   const fresh = !current;
   if (!current) live.set(conversationId, (current = { session: openSession(model, "agent"), model }));
   const conv = current;
-  const now = await read();
+  const now = yield* readShown("Reading what you see");
   /** What changed since the LLM was last told, as tags (both on a new conversation). */
   const changes = (next: typeof now, first = false) => {
     const parts = [
@@ -149,7 +170,15 @@ export async function* runAgent({
     .filter(Boolean)
     .join("\n\n");
   const session = conv.session;
-  let remote: string | undefined;
+  /** The final answer, after the agent's own finishing step (e.g. saving its changes). */
+  const done = async function* (answer: string): AsyncGenerator<Update, void> {
+    if (agent.finish) {
+      yield { steps, llm, remote, status: { label: "Saving the changes" } };
+      const note = await agent.finish().catch((e) => `⚠️ Not saved: ${describeError(e)}`);
+      if (note) answer = `${answer}\n\n${note}`;
+    }
+    yield { steps, llm, remote, answer };
+  };
   let retries = 0;
   let reminded = false;
   try {
@@ -157,6 +186,7 @@ export async function* runAgent({
       signal.throwIfAborted();
       const call: LlmCall = { at: new Date().toISOString(), prompt: turn === LIMITS.steps ? `${tag("note", "No tool turns left: answer now.")}\n\n${FORMAT}` : prompt };
       llm.push(call);
+      yield { steps, llm, remote, status: { label: steps.length ? "Thinking about the results" : "Thinking" } };
       const started = performance.now();
       const reply = await session.send(call.prompt, signal).catch((error: unknown) => {
         call.error = error instanceof Error ? error.message : String(error);
@@ -172,8 +202,8 @@ export async function* runAgent({
         retries = 0;
       } catch (error) {
         // Plain prose (no JSON at all) is the model answering: taken as the final answer, no extra round trip.
-        if (error instanceof ReplyError && !reply.includes("{") && reply.trim()) return yield { steps, llm, remote, answer: reply.trim() };
-        if (!(error instanceof ReplyError) || ++retries > LIMITS.retries) return yield { steps, llm, remote, answer: reply.trim() };
+        if (error instanceof ReplyError && !reply.includes("{") && reply.trim()) return yield* done(reply.trim());
+        if (!(error instanceof ReplyError) || ++retries > LIMITS.retries) return yield* done(reply.trim());
         prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\nSend the corrected JSON only.`)}\n\n${FORMAT}`;
         turn--;
         continue;
@@ -194,7 +224,7 @@ export async function* runAgent({
           ].join("\n\n");
           continue;
         }
-        return yield { steps, llm, remote, answer: String(answer.args.text ?? "") };
+        return yield* done(String(answer.args.text ?? ""));
       }
 
       const results: string[] = [];
@@ -216,7 +246,7 @@ export async function* runAgent({
         results.push(tag("result", step.result || "(done)", `tool="${call.name}" status="${step.error ? "error" : "ok"}"`));
         yield { steps, llm, remote };
       }
-      prompt = [tag("tool_results", results.join("\n")), answer && tag("note", `"answer" was ignored: it must be alone in its reply.`), ...changes(await read()), FORMAT]
+      prompt = [tag("tool_results", results.join("\n")), answer && tag("note", `"answer" was ignored: it must be alone in its reply.`), ...changes(yield* readShown("Reading the page again")), FORMAT]
         .filter(Boolean)
         .join("\n\n");
     }

@@ -10,8 +10,11 @@ const clamp = (w: number) => Math.round(Math.min(Math.max(w, MIN), Math.min(MAX,
  * Left panel with tabs, which can be folded and resized (drag its right edge; width remembered in this
  * browser); every tab stays mounted (the chat keeps its state).
  */
-export function SidePanel({ tabs, width: initial = 380 }: { tabs: { id: string; label: string; content: ReactNode }[]; width?: number }) {
-  const [active, setActive] = useState(tabs[0]?.id);
+/** `active` / `onActive`: the screen chooses the tab (e.g. a click on a row shows the Row tab); otherwise the panel does. */
+export function SidePanel({ tabs, width: initial = 380, active: chosen, onActive }: { tabs: { id: string; label: string; content: ReactNode }[]; width?: number; active?: string; onActive?: (id: string) => void }) {
+  const [own, setOwn] = useState(tabs[0]?.id);
+  const active = chosen && tabs.some((t) => t.id === chosen) ? chosen : own;
+  const setActive = (id: string) => (onActive ? onActive(id) : setOwn(id));
   const [open, setOpen] = useState(() => last.get("panel") !== "closed");
   const [width, setWidth] = useState(() => Number(last.get("panel-width")) || initial);
   const [dragging, setDragging] = useState(false);

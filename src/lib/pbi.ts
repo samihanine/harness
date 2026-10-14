@@ -281,13 +281,16 @@ export async function visualText(visual: Visual, withData: boolean, shared = fal
 }
 
 /** The page the user is looking at: name, filters, visuals with their data (and slicer options: `dataset`). */
-export async function pageText(report: Report, withData = true, dataset?: Ref) {
+export async function pageText(report: Report, withData = true, dataset?: Ref, progress?: (done: number, total: number) => void) {
   const pages = await report.getPages();
   const page = pages.find((p) => p.isActive) ?? pages[0];
   const visuals = await page.getVisuals();
   const [reportFilters, pageFilters] = (await Promise.all([report.getFilters().catch(() => []), page.getFilters().catch(() => [])])).map(active);
   const shared = (v: Visual) => visuals.filter((x) => sameTitle(x.title, v.title)).length > 1 && !!v.title;
-  const parts = await Promise.all(visuals.map((v) => visualText(v, withData, shared(v), dataset)));
+  // Exporting each visual's data is what takes time: reported visual by visual.
+  let done = 0;
+  progress?.(0, visuals.length);
+  const parts = await Promise.all(visuals.map((v) => visualText(v, withData, shared(v), dataset).finally(() => progress?.(++done, visuals.length))));
   return [
     `pages: ${pages.map((p) => `${p.displayName} (name=${p.name}${p.isActive ? ", current" : ""}${p.visibility === 1 ? ", hidden" : ""})`).join(", ")}`,
     `report filters: ${reportFilters.map(filterText).join("; ") || "none"}`,

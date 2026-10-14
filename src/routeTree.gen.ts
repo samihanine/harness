@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ViewerRouteImport } from './routes/viewer'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as SandboxRouteImport } from './routes/sandbox'
 import { Route as PivotRouteImport } from './routes/pivot'
 import { Route as DaxRouteImport } from './routes/dax'
 import { Route as DatasetsRouteImport } from './routes/datasets'
@@ -25,6 +26,11 @@ const ViewerRoute = ViewerRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SandboxRoute = SandboxRouteImport.update({
+  id: '/sandbox',
+  path: '/sandbox',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PivotRoute = PivotRouteImport.update({
@@ -59,6 +65,7 @@ export interface FileRoutesByFullPath {
   '/datasets': typeof DatasetsRoute
   '/dax': typeof DaxRoute
   '/pivot': typeof PivotRoute
+  '/sandbox': typeof SandboxRoute
   '/settings': typeof SettingsRoute
   '/viewer': typeof ViewerRoute
 }
@@ -68,6 +75,7 @@ export interface FileRoutesByTo {
   '/datasets': typeof DatasetsRoute
   '/dax': typeof DaxRoute
   '/pivot': typeof PivotRoute
+  '/sandbox': typeof SandboxRoute
   '/settings': typeof SettingsRoute
   '/viewer': typeof ViewerRoute
 }
@@ -78,16 +86,31 @@ export interface FileRoutesById {
   '/datasets': typeof DatasetsRoute
   '/dax': typeof DaxRoute
   '/pivot': typeof PivotRoute
+  '/sandbox': typeof SandboxRoute
   '/settings': typeof SettingsRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/builder' | '/datasets' | '/dax' | '/pivot' | '/settings' | '/viewer'
+    | '/'
+    | '/builder'
+    | '/datasets'
+    | '/dax'
+    | '/pivot'
+    | '/sandbox'
+    | '/settings'
+    | '/viewer'
   fileRoutesByTo: FileRoutesByTo
   to:
-    '/' | '/builder' | '/datasets' | '/dax' | '/pivot' | '/settings' | '/viewer'
+    | '/'
+    | '/builder'
+    | '/datasets'
+    | '/dax'
+    | '/pivot'
+    | '/sandbox'
+    | '/settings'
+    | '/viewer'
   id:
     | '__root__'
     | '/'
@@ -95,6 +118,7 @@ export interface FileRouteTypes {
     | '/datasets'
     | '/dax'
     | '/pivot'
+    | '/sandbox'
     | '/settings'
     | '/viewer'
   fileRoutesById: FileRoutesById
@@ -105,6 +129,7 @@ export interface RootRouteChildren {
   DatasetsRoute: typeof DatasetsRoute
   DaxRoute: typeof DaxRoute
   PivotRoute: typeof PivotRoute
+  SandboxRoute: typeof SandboxRoute
   SettingsRoute: typeof SettingsRoute
   ViewerRoute: typeof ViewerRoute
 }
@@ -123,6 +148,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sandbox': {
+      id: '/sandbox'
+      path: '/sandbox'
+      fullPath: '/sandbox'
+      preLoaderRoute: typeof SandboxRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pivot': {
@@ -169,6 +201,7 @@ const rootRouteChildren: RootRouteChildren = {
   DatasetsRoute: DatasetsRoute,
   DaxRoute: DaxRoute,
   PivotRoute: PivotRoute,
+  SandboxRoute: SandboxRoute,
   SettingsRoute: SettingsRoute,
   ViewerRoute: ViewerRoute,
 }

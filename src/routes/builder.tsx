@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { CheckIcon, CopyIcon, DownloadIcon, RefreshCwIcon } from "lucide-react";
 import { Chat } from "@/components/chat";
 import { BUILDER_TABS, visible } from "@/config";
 import { Picker } from "@/components/picker";
@@ -9,12 +10,14 @@ import { Empty, SidePanel } from "@/components/side-panel";
 import { DAX_RULES, authorTools, daxTool } from "@/agent/pbi-tools";
 import { modelTools } from "@/agent/model-tools";
 import { reportModelTools, rewrite } from "@/agent/report-model-tools";
-import { fixExtensionRefs, readExtension } from "@/lib/report-def";
+import { jsonTools } from "@/agent/json-tools";
+import { pendingFiles, saveDraft } from "@/lib/report-draft";
+import { definition, definitionJson, fixExtensionRefs, legacyDefinition, readExtension } from "@/lib/report-def";
 import { measureNames } from "@/lib/model";
 import { addDataset, addReport } from "@/lib/library";
 import { errorText } from "@/lib/ms";
-import { embedNewReport, pageText, resetEmbed } from "@/lib/pbi";
-import { useCollection } from "@/lib/store";
+import { embedNewReport, pageText, resetEmbed, type Report } from "@/lib/pbi";
+import { useCollection, type ReportEntry } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
 import { useLast } from "@/lib/last";
 import { ReportPicker, libraryContext } from "./viewer";
@@ -38,7 +41,6 @@ function Builder() {
   // (the embed can be recreated during a turn, e.g. after a reload).
   const reportRef = useRef(report);
   reportRef.current = report;
-  const [inspiration, setInspiration] = useState<string[]>([]);
   // Report measures (stored in the report): known to the AI and usable as visual fields.
   const [extension, setExtension] = useState<{ names: string[]; list: { table: string; name: string }[]; text: string }>({ names: [], list: [], text: "" });
   // The agent keeps the closures of the turn's start: it reads the latest report measures from this ref.
@@ -98,16 +100,31 @@ Power BI facts to rely on:
 - Master / detail ("click a row to see all its fields, most recent shown by default"): a table of a few key fields (sorted by date, descending); the detail = a multiRowCard with all the item's fields; set_visual_filter kind "top" on each detail visual (column = the item id, order_by = the date, n = 1); set_interactions source = table: detail visuals → filter, slicers → none.
 - An image of the item (a column holding an image link, e.g. on SharePoint): add_report_measure with category "ImageUrl" (expression: VAR u = SELECTEDVALUE('T'[image column]) RETURN IF(CONTAINSSTRING(u, "/:i:/"), u & IF(CONTAINSSTRING(u, "?"), "&", "?") & "download=1", u) — a SharePoint sharing link "/:i:/" opens a page, download=1 gives the image itself), shown in a tableEx with that measure only, with the same top filter and interaction as the detail; format_table image_height. Images on SharePoint show for users signed in to it in their browser.
 - Build a whole dashboard in this order: header, filter panel and slicers, table, detail and image, then interactions, sorting, filters and formatting; save at the end. Check the layout (no overlap, inside the page) before answering.
+- Any formatting the other tools cannot set (series colors, axes, data labels, borders, shadows, conditional formatting, page background, report settings…): read_json the visual / page / report, then patch_json. Several patches are fine: your JSON changes are saved all together, automatically, when you give your answer (then the editor reloads).
 ${DAX_RULES}`,
-    tools: [...authorTools(() => reportRef.current, measures, fixReportMeasures, () => dataset?.info), daxTool(() => dataset && { id: dataset.id, groupId: dataset.groupId }), ...modelTools(() => dataset), ...reportModelTools({ report: () => reportRef.current, entry: () => entry, dataset: () => dataset, changed: loadExtension })],
+    tools: [...authorTools(() => reportRef.current, measures, fixReportMeasures, () => dataset?.info), daxTool(() => dataset && { id: dataset.id, groupId: dataset.groupId }), ...modelTools(() => dataset), ...reportModelTools({ report: () => reportRef.current, entry: () => entry, dataset: () => dataset, changed: loadExtension }), ...jsonTools({ report: () => reportRef.current, entry: () => entry })],
     context: async () =>
       [
         libraryContext(entry, dataset),
-        ...reports.filter((r) => inspiration.includes(r.id)).map((r) => `Report given as inspiration: "${r.name}"\n${r.context}\n${r.snapshot ?? ""}`),
         extensionRef.current.text ? `Report measures (stored in this report):\n${extensionRef.current.text}` : "",
         `Model write access: ${dataset?.info?.source === "tmdl" ? "yes (parameters possible)" : "no (use report measures; parameters impossible)"}`,
       ].join("\n\n"),
-    state: async () => (reportRef.current ? `Report being edited, current state:\n${await pageText(reportRef.current, false)}` : "No report open."),
+    state: async (progress?: (done: number, total: number) => void) => {
+      if (!reportRef.current) return "No report open.";
+      const pending = entry ? pendingFiles(entry) : [];
+      return [
+        `Report being edited, current state:\n${await pageText(reportRef.current, false, undefined, progress)}`,
+        pending.length ? `Your unsaved JSON changes (saved when you answer): ${pending.map((f) => f.replace(/^definition\//, "")).join(", ")}` : "",
+      ].filter(Boolean).join("\n\n");
+    },
+    // The JSON changes of the turn are saved once the answer is done, then the editor reloads them.
+    finish: async () => {
+      const r = reportRef.current;
+      if (!entry || !r || !pendingFiles(entry).length) return undefined;
+      const text = await rewrite(r, async () => (await saveDraft(entry, () => r.save())) ?? "");
+      await loadExtension();
+      return text;
+    },
   };
 
   return (
@@ -115,23 +132,7 @@ ${DAX_RULES}`,
       <SidePanel
         tabs={visible([
           { id: "ai", label: "AI", content: entry ? <Chat scope={`builder:${entry.id}`} agent={agent} placeholder="Describe the visuals you want…" /> : <Empty>Open or create a report.</Empty> },
-          {
-            id: "inspiration",
-            label: `Inspiration${inspiration.length ? ` (${inspiration.length})` : ""}`,
-            content: (
-              <div className="flex flex-col gap-1 p-3">
-                <p className="label mb-1">Reports of the library given to the AI as examples</p>
-                {reports
-                  .filter((r) => r.id !== reportId)
-                  .map((r) => (
-                    <label key={r.id} className="flex items-center gap-2 rounded-md px-1 py-1 hover:bg-muted">
-                      <input type="checkbox" checked={inspiration.includes(r.id)} onChange={(e) => setInspiration(e.target.checked ? [...inspiration, r.id] : inspiration.filter((id) => id !== r.id))} />
-                      {r.name}
-                    </label>
-                  ))}
-              </div>
-            ),
-          },
+          { id: "structure", label: "Structure", content: entry ? <StructureTab key={entry.id} entry={entry} report={report} /> : <Empty>Open a report.</Empty> },
         ], BUILDER_TABS)}
       />
       <div className="flex min-w-0 flex-1 flex-col">
@@ -197,6 +198,81 @@ function NewReport({ dataset, onSaved }: { dataset: { id: string; groupId?: stri
       {state.error && <p className="text-[12px] text-destructive">{state.error}</p>}
       {/* The blank report is embedded off screen only to be saved. */}
       <div ref={element} style={{ position: "fixed", left: -10000, top: 0, width: 1280, height: 720 }} />
+    </div>
+  );
+}
+
+/** The structure readable through the embedded report alone (any rights): pages, visuals, positions, fields. */
+async function embedStructure(report: Report) {
+  const pages = await report.getPages();
+  return {
+    pages: await Promise.all(
+      pages.map(async (p) => ({
+        name: p.name,
+        displayName: p.displayName,
+        size: p.defaultSize,
+        hidden: p.visibility === 1,
+        visuals: await Promise.all(
+          (await p.getVisuals().catch(() => [])).map(async (v) => {
+            const roles = (await v.getCapabilities().catch(() => null))?.dataRoles ?? [];
+            const fields = Object.fromEntries((await Promise.all(roles.map(async (r) => [r.name, await v.getDataFields(r.name).catch(() => [])] as const))).filter(([, f]) => f.length));
+            return { name: v.name, type: v.type, title: v.title, layout: v.layout, fields };
+          }),
+        ),
+      })),
+    ),
+  };
+}
+
+/**
+ * The report's structure as JSON, to copy or download: its definition in PBIR (the format the app
+ * edits) — or, for a report still saved in the older format, its definition in that format — or, when
+ * no definition is readable (view rights only), what the embedded report shows (pages, visuals,
+ * fields). The definitions are the saved version: save the report first to see the latest changes.
+ */
+function StructureTab({ entry, report }: { entry: ReportEntry; report?: Report }) {
+  const [state, setState] = useState<{ json?: string; source?: string; note?: string; busy?: boolean; copied?: boolean }>({ busy: true });
+  const load = async () => {
+    setState({ busy: true });
+    const head = { report: entry.name, id: entry.id };
+    const pbir = await definition(entry).then((parts) => ({ parts }), (e) => ({ error: errorText(e) }));
+    if ("parts" in pbir) return setState({ source: "PBIR definition (saved version)", json: JSON.stringify({ ...head, format: "PBIR", definition: definitionJson(pbir.parts) }, null, 2) });
+    const legacy = await legacyDefinition(entry).then((parts) => ({ parts }), (e) => ({ error: errorText(e) }));
+    if ("parts" in legacy)
+      return setState({ source: "Definition in the older format (PBIR-Legacy, saved version)", note: "This report is still saved in the older Power BI format: the app cannot edit it through its definition (formatting, report measures). Saving it once from Power BI Desktop in PBIR moves it to the new format.", json: JSON.stringify({ ...head, format: "PBIR-Legacy", definition: definitionJson(legacy.parts) }, null, 2) });
+    if (report)
+      return setState({ source: "Read through the embedded report", note: `No definition readable (${legacy.error}). This structure comes from the embedded report: pages, visuals, positions, fields (no formatting).`, json: JSON.stringify({ ...head, format: "embed", ...(await embedStructure(report).catch(() => ({}))) }, null, 2) });
+    setState({ note: `No definition readable: ${pbir.error}` });
+  };
+  useEffect(() => void load(), [entry.id, !!report]); // eslint-disable-line react-hooks/exhaustive-deps
+  const copy = () => void navigator.clipboard.writeText(state.json ?? "").then(() => (setState((s) => ({ ...s, copied: true })), setTimeout(() => setState((s) => ({ ...s, copied: false })), 1500)));
+  const download = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([state.json ?? ""], { type: "application/json" }));
+    a.download = `${entry.name.replace(/[^\w\- ]+/g, "").trim() || "report"}.structure.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
+      <div className="flex items-center gap-1.5">
+        <span className="label">{state.source ?? "Structure"}</span>
+        <button type="button" className="icon-btn ml-auto" title="Read it again (after saving the report)" disabled={state.busy} onClick={() => void load()}>
+          <RefreshCwIcon />
+        </button>
+      </div>
+      <div className="flex gap-1.5">
+        <button type="button" className="btn h-7" disabled={!state.json} onClick={copy}>
+          {state.copied ? <CheckIcon /> : <CopyIcon />} {state.copied ? "Copied" : "Copy JSON"}
+        </button>
+        <button type="button" className="btn h-7" disabled={!state.json} onClick={download}>
+          <DownloadIcon /> Download JSON
+        </button>
+        {state.json && <span className="ml-auto self-center text-[11px] text-muted-foreground">{Math.round(state.json.length / 1024)} KB</span>}
+      </div>
+      {state.busy && <p className="text-[12px] text-muted-foreground">Reading the structure…</p>}
+      {state.note && <p className="rounded-md bg-amber-500/10 p-2 text-[12px] break-words text-amber-900">{state.note}</p>}
+      {state.json && <pre className="min-h-40 flex-1 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px] leading-relaxed">{state.json}</pre>}
     </div>
   );
 }

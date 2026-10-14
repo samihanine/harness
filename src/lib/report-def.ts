@@ -7,7 +7,7 @@ import { dax, type Ref } from "./pbi";
 import type { ModelInfo } from "./model";
 import { workspaceId } from "./tmdl";
 
-type Part = { path: string; payload: string; payloadType: string };
+export type Part = { path: string; payload: string; payloadType: string };
 type Extension = { $schema: string; name: string; entities?: { name: string; measures?: ExtensionMeasure[] }[] };
 export type ExtensionMeasure = {
   name: string;
@@ -32,6 +32,48 @@ export async function definition(report: Ref): Promise<Part[]> {
     throw new Error(`The report definition is not readable in PBIR format (${e instanceof Error ? e.message : e}). Save the report once from the editor, and check you can edit it.`);
   });
   return result.definition.parts.filter((p: Part) => p.path !== ".platform");
+}
+
+/**
+ * The definition in the report's own format when PBIR is refused (reports still saved in the older
+ * "PBIR-Legacy" format: one report.json, which the API does not convert).
+ */
+export async function legacyDefinition(report: Ref): Promise<Part[]> {
+  const ws = await workspaceId(report.groupId);
+  const result = await fabric(`/workspaces/${ws}/reports/${report.id}/getDefinition`, "POST");
+  return result.definition.parts.filter((p: Part) => p.path !== ".platform");
+}
+
+/** JSON written as text inside JSON (the legacy report.json does it everywhere: config, filters…), parsed. */
+const unnest = (v: unknown): unknown => {
+  if (typeof v === "string" && /^\s*[[{]/.test(v)) {
+    try {
+      return unnest(JSON.parse(v));
+    } catch {
+      return v;
+    }
+  }
+  if (Array.isArray(v)) return v.map(unnest);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, unnest(x)]));
+  return v;
+};
+
+/**
+ * The definition as one readable JSON object: each part's path → its content (JSON parsed, other text
+ * as is; images and other binary files only named, with their size).
+ */
+export function definitionJson(parts: Part[]) {
+  return Object.fromEntries(
+    parts.map((p) => {
+      if (/\.(png|jpe?g|gif|svg|webp|ico|bmp|ttf|woff2?)$/i.test(p.path)) return [p.path, `(binary file, ${Math.round((p.payload.length * 3) / 4 / 1024)} KB)`];
+      const text = decode(p.payload);
+      try {
+        return [p.path, unnest(JSON.parse(text))];
+      } catch {
+        return [p.path, text];
+      }
+    }),
+  );
 }
 
 export async function readExtension(report: Ref): Promise<Extension> {
@@ -106,6 +148,15 @@ export async function deleteReportMeasure(report: Ref, name: string) {
   return `Report measure [${name}] deleted.`;
 }
 
+
+/** A part's text, and a text as a part's payload. */
+export const partText = (p: Part) => decode(p.payload);
+export const textPayload = (text: string) => encode(text);
+
+/** Writes a whole definition (all its parts) back to the report. */
+export async function writeDefinition(report: Ref, parts: Part[]) {
+  await fabric(`/workspaces/${await workspaceId(report.groupId)}/reports/${report.id}/updateDefinition`, "POST", { definition: { parts } });
+}
 
 /** Edits JSON files of the report definition (PBIR), then writes it back. `edit` returns a summary. */
 async function editJson(report: Ref, edit: (read: (path: string) => any, write: (path: string, value: unknown) => void, paths: string[]) => string) {

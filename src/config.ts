@@ -47,12 +47,13 @@ export const VIEWER_TABS = {
 
 export const BUILDER_TABS = {
   ai: true,
-  inspiration: true,
+  structure: true,
 };
 
 export const DATASET_TABS = {
   ai: true,
-  schema: true,
+  row: true,
+  column: true,
 };
 
 export const DAX_TABS = {
