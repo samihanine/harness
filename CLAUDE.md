@@ -1,0 +1,72 @@
+# Instructions for Claude
+
+TanStack Start app for Power BI work, with an AI assistant in the left panel of each screen:
+Report viewer, Report editor, Dataset editor, Researcher, Schema editor, Excel editor, Library,
+Settings. Run with `bun dev` (http://localhost:3300), check with `bun run typecheck`.
+
+## Never modify
+
+- **`src/agent/llm.ts`**: access to the client's private LLM API (provider settings, request format,
+  key handling). Never edit it, even to fix or extend something: work around its limits elsewhere
+  (`src/agent/loop.ts`, tools, prompts). If a change there seems truly needed, stop and ask. (The
+  user once allowed one addition there: file uploads, `uploadAiFile` and `addFileToConversation`.)
+
+## Constraints of every change
+
+- **Generic Microsoft sign-in, any tenant.** One device-code sign-in with the Microsoft Office public
+  client (`src/server/ms.ts`): no app registration, no admin consent, no per-tenant setup. Other
+  Microsoft resources (Power BI, Fabric, Graph, SharePoint, Forms…) are reached by asking the same
+  refresh token for their scope. Never add a solution that needs an app registration, a client secret
+  or a tenant-specific setting.
+- **Front end only.** All the logic lives in the browser. Server functions (`src/server/`) stay thin
+  pass-throughs for Microsoft calls (tokens, CORS, binary files); no business logic, no background
+  jobs, no other backend service. The LLM is called from the browser only (no server relay).
+- **Limited LLM: build around it.** Plain text in, plain text out: no native tool use, no JSON mode,
+  limited context. Structure comes from the harness (`src/agent/loop.ts`: JSON tool-call protocol,
+  tools, page state). Keep prompts and contexts short; prefer deterministic code to free-form
+  generation: the AI fills a structured spec and code writes the result (new visuals:
+  `src/lib/visual-spec.ts`; Power Query steps: `src/lib/tmdl-edit.ts`; pivots: `src/lib/workbook.ts`).
+- **No database, no blob storage.** Files live on SharePoint / OneDrive; data lives in Excel tables
+  (`.xlsx`) read and written through the Graph workbook API (`src/lib/excel.ts`). Local state only in
+  the browser: IndexedDB (`src/lib/store.ts`: the library, researches, conversations — every library
+  entry can be downloaded and imported again) and localStorage (views, last choices). No S3, no SQL,
+  no extra storage service. The Researcher's workbooks are files on the user's OneDrive
+  (`Hub/Researcher`).
+- **Power BI Pro by default.** Do not rely on a Premium / Fabric capacity or on tenant settings that
+  are off by default (e.g. the Export To File API). Prefer the client SDKs (`powerbi-client`,
+  `powerbi-report-authoring`) and the Fabric definition API (PBIR, TMDL). Model refreshes by API are
+  limited (about 8 per day per model): they are started by the user from the UI, never by the AI. When
+  a feature depends on something a tenant may not allow, show the service's error clearly instead of
+  failing silently or faking a result.
+- **Microsoft Forms has no public API.** Forms are read and written through the endpoints the Forms
+  designer uses (`readForm` / `formsApi` in `src/server/ms.ts`, `src/lib/forms.ts`): writes only from
+  the Schema editor's "Update the form", after the user reviewed the plan. Fragile: show its errors.
+
+## Conventions
+
+- **Everything can be switched off.** Each screen, panel tab and feature button has a flag in
+  `src/config.ts` (`SCREENS`, `VIEWER_TABS`, `EXPORT`, `AI_PANEL`, `VISUAL_PREVIEW`…). A new screen, tab
+  or feature comes with its flag. Options are read at render time (never copied into module-level
+  constants): an admin changes them at runtime from Settings (JSON file on SharePoint, see
+  `src/lib/hub-config.ts`). A new option goes into `HubConfig` and the Settings form too. The Settings
+  page itself can never be hidden.
+- **Agents**: each screen's agent gives the AI its context once (with the library's context files
+  linked to the entries, `src/agent/context.ts`) and its lists (`list_*`: pages, visuals, tables,
+  rows…) as the page state before every model call, so the AI never has to ask for them. Changes go
+  to a draft saved when the answer is done (`finish`), with `discard_changes` / `undo_last_save`.
+  `run_dax` is a thinking tool on every screen that has a model.
+- **Schemas**: a schema is an Excel table (required) + an optional form + the definition of its
+  columns, with Forms-compatible types (`src/lib/schema.ts`), and the form's sections and branches.
+  It generates both: the form (question title = column name, as Forms names the Excel columns;
+  `form: false` keeps a column out of the form) and the Excel file (columns, `_schema` sheet, dropdowns
+  and colors), which must keep working as the table receiving the form's answers (new columns only at
+  the end). The Schema editor owns the structure; the Excel editor only changes the data. The Graph
+  workbook API has no conditional formats and no data validation: those rules are written into the
+  file itself (`src/lib/xlsx-rules.ts`, sent back only if the file did not change: eTag). Built-in schemas (guides, links of the report viewer) have fixed
+  fields and one Excel file for every report (`report_id` column).
+- **Row ids** (`id` column, e.g. `TASK_001`) are given by the app; a user may rename one, always
+  checked unique (`idError` in `src/lib/excel.ts`). The AI changes an id only when explicitly asked.
+- UI: icon rail, breadcrumb header (`PageHeader`), pill tabs (`tab`), choices as badges with a dot
+  (`Badge`), plain table headers (`th`): reuse the utilities of `src/styles.css`.
+- Write code like the surrounding code: short doc comments saying why, same naming and idioms.
+- Verify UI changes in the browser preview (dev server on port 3300) before saying they work.

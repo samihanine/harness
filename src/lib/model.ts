@@ -129,7 +129,7 @@ const columnRef = (s: string) => {
   return m ? { table: unquote(m[1]), column: unquote(m[2]) } : { table: "", column: s };
 };
 
-function fromTmdl(files: { path: string; text: string }[]): ModelInfo {
+export function fromTmdl(files: { path: string; text: string }[]): ModelInfo {
   const nodes = files.filter((f) => f.path.endsWith(".tmdl")).flatMap((f) => parseTmdl(f.text));
   const tables: TableInfo[] = nodes
     .filter((n) => n.kind === "table" && !AUTO_DATE.test(n.name))
@@ -412,26 +412,4 @@ export function resolveField(info: ModelInfo | undefined, spec: string) {
     .slice(0, 5)
     .map((c) => c.label);
   throw new Error(`No column or measure "${name}" in the model.${near.length ? ` Closest: ${near.join(", ")}.` : ""}`);
-}
-
-export const measureNames = (info?: ModelInfo) => new Set(info?.tables.flatMap((t) => t.measures.map((m) => `${t.name}[${m.name}]`)) ?? []);
-
-/** The whole structure as markdown: summary, then every table in detail (columns with sample values, measures with DAX, relationships). */
-export function fullModelText(info: ModelInfo, name: string) {
-  return [
-    `# ${name}`,
-    `Read ${info.readAt} (${info.source === "tmdl" ? "full definition" : "partial, with Build rights"})`,
-    "",
-    "## Summary",
-    modelSummary(info),
-    "",
-    ...info.tables.flatMap((t) => [`## ${t.name}`, describeTable(info, t.name), ""]),
-  ].join("\n");
-}
-
-/** Saves a text file in the browser. */
-export function downloadText(name: string, text: string, type = "text/markdown") {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  Object.assign(document.createElement("a"), { href: url, download: name.replace(/[^\p{L}\p{N}.-]+/gu, "-") }).click();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }

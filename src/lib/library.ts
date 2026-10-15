@@ -1,42 +1,34 @@
-/** Library entries: what is read from Power BI / SharePoint when a link is added or refreshed. */
-import { readTable, resolveExcel, saveFields, styleSheet } from "./excel";
-import { readFormSchema } from "./forms";
-import { COLORS, type Field } from "./schema";
-import { graph, pbi } from "./ms";
-import { addSamples, readModel, modelSummary } from "./model";
-import { embedReport, parseDatasetUrl, parseReportUrl, reportText, resetEmbed, scope, type Ref } from "./pbi";
-import { definition, definitionText } from "./report-def";
-import { all, find, patch, put, type DatasetEntry, type ExcelEntry, type ReportEntry } from "./store";
-
-/** Rejects when a promise has not settled in time (a hidden embed may never fire "loaded"). */
-const timeout = <T>(promise: Promise<T>, seconds: number, what: string) =>
-  Promise.race([promise, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${what}: no answer after ${seconds} s`)), seconds * 1000))]);
-
 /**
- * What is stored to rebuild a report: its full definition (formatting, shapes, text, theme,
- * interactions…) when it can be read (edit rights), otherwise the embed summary (Viewer rights:
- * pages, visual types, positions, fields, filters only).
+ * Library entries: what is read from Power BI / SharePoint / Forms when a link is added or read again,
+ * and what the user may do with each (access). Kept in this browser (IndexedDB); every entry can be
+ * downloaded as JSON and imported again.
  */
-async function snapshot(ref: Ref) {
-  if (ref.appId) return `Report of a Power BI app: its definition is not readable (only the workspace report is). Summary only (no formatting, text or theme):\n${await embedSnapshot(ref)}`;
-  try {
-    return definitionText(await definition(ref));
-  } catch (e) {
-    const why = e instanceof Error ? e.message : String(e);
-    return `Full definition not readable (${why}). Summary only (no formatting, text or theme):\n${await embedSnapshot(ref)}`;
-  }
-}
+import { applySchemaToExcel, createTable, detectFields, resolveExcel, type Progress } from "./excel";
+import { fieldsFromQuestions, layoutFromQuestions, readFormRef, withFormTypes } from "./forms";
+import { fabric, pbi } from "./ms";
+import { addSamples, readModel } from "./model";
+import { parseDatasetUrl, parseReportUrl, scope, type Ref } from "./pbi";
+import { definition, legacyDefinition } from "./report-def";
+import { COLORS, ID_FIELD, fieldsErrors, isIdField, type Field, type FormSection } from "./schema";
+import { all, find, patch, put, type ContextEntry, type DatasetEntry, type ExcelRef, type Name, type ReportEntry, type SchemaEntry } from "./store";
+import { workspaceId } from "./tmdl";
 
-/** Reads a report through a hidden embed: works with Viewer / Build rights. */
-async function embedSnapshot(ref: Ref) {
-  const element = document.createElement("div");
-  element.style.cssText = "position:fixed;left:-10000px;top:0;width:1280px;height:720px";
-  document.body.append(element);
+const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/* --------------------------------- Reports --------------------------------- */
+
+/** What the user may do with a report: edit when its PBIR definition is readable (the editor needs it). */
+async function reportAccess(ref: Ref): Promise<Pick<ReportEntry, "access" | "accessNote">> {
+  if (ref.appId) return { access: "view", accessNote: "Report of a Power BI app: view only." };
   try {
-    return await timeout(embedReport(element, ref).then(reportText), 90, "Hidden embed");
-  } finally {
-    await resetEmbed(element);
-    element.remove();
+    await definition(ref);
+    return { access: "edit", accessNote: undefined };
+  } catch (e) {
+    // Readable in the older format: editable in Power BI, not by the editor's JSON tools.
+    const legacy = await legacyDefinition(ref).then(() => true, () => false);
+    return legacy
+      ? { access: "view", accessNote: "Saved in the older PBIR-Legacy format: open it once in the Power BI editor and save it to convert it, then read it again." }
+      : { access: "view", accessNote: `Definition not readable (${message(e).slice(0, 160)}): view only.` };
   }
 }
 
@@ -44,154 +36,297 @@ export async function addReport(link: string): Promise<ReportEntry> {
   const ref = parseReportUrl(link);
   const r = await pbi(ref.appId ? `/apps/${ref.appId}/reports/${ref.id}` : `${scope(ref.groupId)}/reports/${ref.id}`);
   const old = await find("reports", ref.id);
-  const entry: ReportEntry = {
+  const entry = await put("reports", {
     ...old,
     id: ref.id,
     groupId: ref.groupId,
     appId: ref.appId,
-    name: r.name,
+    name: old?.renamed ? old.name : r.name,
     url: r.webUrl ?? link,
     datasetId: r.datasetId,
     datasetGroupId: r.datasetWorkspaceId ?? ref.groupId,
-    editable: ref.appId ? false : (r.isOwnedByMe ?? undefined),
-    context: old?.context ?? "",
-  };
-  await put("reports", entry);
-  // The slow part (definition or hidden embed, then its model) completes the entry in the background:
-  // awaiting it kept the "Add" button busy for minutes (or for ever when the hidden embed never loaded).
-  void completeReport(entry, ref, r.datasetId, r.name);
+    contextIds: old?.contextIds ?? [],
+    ...(await reportAccess(ref)),
+  });
+  // Its semantic model comes with it (in the background: reading a model takes a while).
+  if (!(await find("datasets", r.datasetId))) void addDataset(r.datasetId, entry.datasetGroupId, `${r.name} (model)`).catch(() => undefined);
   return entry;
 }
 
-async function completeReport(entry: ReportEntry, ref: Ref, datasetId: string, name: string) {
-  const text = await snapshot(ref).catch((e) => `Not readable: ${e instanceof Error ? e.message : e}`);
-  await patch("reports", entry.id, { snapshot: text });
-  if (!(await find("datasets", datasetId))) {
-    // The report is kept even when its model cannot be read; the reason is shown in the library.
-    const error = await addDataset(datasetId, entry.datasetGroupId, {}, `${name} (model)`).then(
-      (d) => (d.groupId !== entry.datasetGroupId ? patch("reports", entry.id, { datasetGroupId: d.groupId }) : undefined, undefined),
-      (e) => (e instanceof Error ? e.message : String(e)),
-    );
-    await patch("reports", entry.id, { datasetError: error });
-  }
+export async function refreshReport(entry: ReportEntry) {
+  return addReport(entry.appId ? `https://app.powerbi.com/groups/me/apps/${entry.appId}/reports/${entry.id}` : `https://app.powerbi.com/groups/${entry.groupId ?? "me"}/reports/${entry.id}`);
 }
 
+/* -------------------------------- Datasets -------------------------------- */
+
 /**
- * Adds a semantic model. Without access to its workspace (a model shared through an app, Build right
- * only), it is read with DAX queries, which only need the Build right; `fallbackName` names it then.
+ * Adds a semantic model. Access: edit when its definition (TMDL) is readable, build when DAX queries
+ * work (a model shared through an app), view otherwise (kept, with the reason). Value samples are
+ * read in the background.
  */
-export async function addDataset(linkOrId: string, groupId?: string, values: Partial<DatasetEntry> = {}, fallbackName?: string): Promise<DatasetEntry> {
+export async function addDataset(linkOrId: string, groupId?: string, fallbackName?: string): Promise<DatasetEntry> {
   const ref = groupId ? { id: linkOrId, groupId } : parseDatasetUrl(linkOrId);
   const old = await find("datasets", ref.id);
   const d = await pbi(`${scope(ref.groupId)}/datasets/${ref.id}`).catch(() => null);
   const target: Ref = d ? ref : { id: ref.id };
-  const info = await readModel(target, false).catch((e) => {
-    throw new Error(`Semantic model not readable: no access to its workspace, and DAX queries fail (${e instanceof Error ? e.message : e}). You need the Build permission on it.`);
-  });
-  // Value samples (many DAX queries) are added in the background.
-  void addSamples(target, info).then(() => patch("datasets", ref.id, { info, model: modelSummary(info) }), () => undefined);
-  return put("datasets", {
-    ...old,
-    id: ref.id,
-    groupId: target.groupId,
-    name: d?.name ?? old?.name ?? fallbackName ?? `Semantic model ${ref.id.slice(0, 8)}`,
-    context: old?.context ?? "",
-    ...values,
-    info,
-    model: modelSummary(info),
-  });
+  const base = { ...old, id: ref.id, groupId: target.groupId, name: old?.renamed ? old.name : (d?.name ?? old?.name ?? fallbackName ?? `Semantic model ${ref.id.slice(0, 8)}`), contextIds: old?.contextIds ?? [] };
+  try {
+    const info = await readModel(target, false);
+    const entry = await put("datasets", { ...base, info, access: info.source === "tmdl" ? "edit" : "build", error: undefined });
+    void addSamples(target, info).then(() => patch("datasets", ref.id, { info }), () => undefined);
+    return entry;
+  } catch (e) {
+    return put("datasets", { ...base, access: "view", error: `Structure not readable: ${message(e)} (you need the Build permission on the model).` });
+  }
 }
 
-export async function refreshDatasetText(entry: DatasetEntry) {
-  const info = await readModel(entry);
-  await patch("datasets", entry.id, { info, model: modelSummary(info) });
+export const refreshDataset = (entry: DatasetEntry) => addDataset(entry.id, entry.groupId, entry.name);
+
+const q = (name: string) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `'${name.replace(/'/g, "''")}'`);
+/** Field type → TMDL dataType and Power Query type (choices, long text and file links are text). */
+const TYPES: Record<Field["type"], [string, string]> = {
+  string: ["string", "type text"],
+  text: ["string", "type text"],
+  option: ["string", "type text"],
+  url: ["string", "type text"],
+  image: ["string", "type text"],
+  file: ["string", "type text"],
+  number: ["double", "type number"],
+  rating: ["int64", "Int64.Type"],
+  date: ["dateTime", "type date"],
+};
+
+/** An Excel table as a TMDL table: typed columns read from the file (Power Query), and a row count measure. */
+function excelTableTmdl(name: string, excel: ExcelRef, fields: Field[]) {
+  const columns = fields.map((f) =>
+    [
+      f.description && `\t/// ${f.description.replace(/\n/g, " ")}`,
+      `\tcolumn ${q(f.name)}`,
+      `\t\tdataType: ${TYPES[f.type][0]}`,
+      f.type === "date" && "\t\tformatString: Short Date",
+      `\t\tsummarizeBy: ${f.type === "number" && !isIdField(f) ? "sum" : "none"}`,
+      `\t\tsourceColumn: ${f.name}`,
+      (f.type === "image" || f.type === "file") && "\t\tdataCategory: ImageUrl",
+      f.type === "url" && "\t\tdataCategory: WebUrl",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
+  const types = fields.map((f) => `{"${f.name.replace(/"/g, '""')}", ${TYPES[f.type][1]}}`).join(", ");
+  return `table ${q(name)}
+
+${columns.join("\n\n")}
+
+\tmeasure 'Rows of ${name.replace(/'/g, "''")}' = COUNTROWS(${q(name)})
+
+\tpartition ${q(name)} = m
+\t\tmode: import
+\t\tsource =
+\t\t\t\tlet
+\t\t\t\t    Source = Excel.Workbook(Web.Contents("${excel.fileUrl}"), null, true),
+\t\t\t\t    Data = Source{[Item="${excel.table}",Kind="Table"]}[Data],
+\t\t\t\t    Typed = Table.TransformColumnTypes(Data, {${types}})
+\t\t\t\tin
+\t\t\t\t    Typed
+`;
 }
 
 /**
- * Adds an Excel table: its columns are detected, written as its schema and the sheet is styled after them.
- * `required`: fields the file must have (missing columns are added; a file without table gets one).
- * `formLink`: the Microsoft Form filling it (optional), whose questions are read and kept with it.
+ * A new semantic model (in My workspace) reading Excel tables of SharePoint / OneDrive: one model
+ * table per Excel table, typed after its columns. Its data comes with its first refresh (from the
+ * Dataset editor or the library).
  */
-export async function addExcel(link: string, table?: string, required: Field[] = [], formLink?: string): Promise<ExcelEntry> {
-  // Read first: a wrong form link fails the add before anything is written.
-  const form = formLink?.trim() ? await readFormSchema(formLink) : undefined;
-  let file = await resolveExcel(link);
-  if (file.tables.length === 0 && required.length) {
-    await createTable(file, required.map((f) => f.name));
-    file = await resolveExcel(link);
+export async function createDatasetFromExcel(name: string, sources: { link: string; table?: string }[]) {
+  const tables: { name: string; tmdl: string }[] = [];
+  for (const s of sources) {
+    const file = await resolveExcel(s.link);
+    const table = s.table && file.tables.includes(s.table) ? s.table : file.tables[0];
+    if (!table) throw new Error(`"${file.name}" has no Excel table: select the data in Excel and use Insert › Table.`);
+    const excel: ExcelRef = { link: s.link, driveId: file.driveId, itemId: file.itemId, name: file.name, table, fileUrl: file.fileUrl };
+    let tableName = table;
+    for (let i = 2; tables.some((t) => t.name.toLowerCase() === tableName.toLowerCase()); i++) tableName = `${table} ${i}`;
+    tables.push({ name: tableName, tmdl: excelTableTmdl(tableName, excel, await detectFields(excel)) });
   }
-  if (file.tables.length === 0) throw new Error("This file has no Excel table: select the data in Excel and use Insert › Table.");
-  const name = table && file.tables.includes(table) ? table : file.tables[0];
-  // The same file and table again: the existing entry is kept (no duplicate).
-  const old = (await all("excels")).find((x) => x.itemId === file.itemId && x.table === name);
-  const entry = await put("excels", {
-    ...old,
-    id: old?.id ?? crypto.randomUUID(),
-    name: file.name.replace(/\.xlsx$/i, ""),
-    link,
-    driveId: file.driveId,
-    itemId: file.itemId,
-    fileUrl: file.fileUrl,
-    table: name,
-    context: old?.context ?? "",
-    form: form ?? old?.form,
-  });
-  await ensureFields(entry, required).catch(() => undefined);
-  return entry;
+  const encode = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+  const parts = [
+    { path: "definition.pbism", text: JSON.stringify({ version: "4.2", settings: {} }) },
+    { path: "definition/database.tmdl", text: "database\n\tcompatibilityLevel: 1567\n" },
+    { path: "definition/model.tmdl", text: `model Model\n\tculture: en-US\n\tdefaultPowerBIDataSourceVersion: powerBI_V3\n\tsourceQueryCulture: en-US\n\n${tables.map((t) => `ref table ${q(t.name)}`).join("\n")}\n` },
+    ...tables.map((t) => ({ path: `definition/tables/${t.name}.tmdl`, text: t.tmdl })),
+  ].map((p) => ({ path: p.path, payload: encode(p.text), payloadType: "InlineBase64" }));
+  const ws = await workspaceId();
+  const created = await fabric(`/workspaces/${ws}/semanticModels`, "POST", { displayName: name, definition: { parts } });
+  const id = (created?.id as string | undefined) ?? (await fabric(`/workspaces/${ws}/semanticModels`)).value.find((m: { displayName: string }) => m.displayName === name)?.id;
+  if (!id) throw new Error("The model was created but could not be found in My workspace.");
+  return addDataset(id, ws, name);
 }
 
-/** A table on the first sheet of an empty workbook, with the given header. */
-async function createTable(file: { driveId: string; itemId: string }, header: string[]) {
-  const book = `/drives/${file.driveId}/items/${file.itemId}/workbook`;
-  const { value } = await graph(`${book}/worksheets?$select=name`);
-  const sheet = `${book}/worksheets('${encodeURIComponent(value[0].name)}')`;
-  const address = `A1:${String.fromCharCode(64 + header.length)}1`;
-  await graph(`${sheet}/range(address='${address}')`, "PATCH", { values: [header] });
-  await graph(`${sheet}/tables/add`, "POST", { address, hasHeaders: true });
-}
+/* --------------------------------- Schemas --------------------------------- */
 
-/** Fields of the viewer's Excel files. */
-export const INFO_FIELDS: Field[] = [
+/** Built-in schemas of the report viewer: fixed fields; one Excel file holds the rows of every report (report_id). */
+export const GUIDE_FIELDS: Field[] = [
+  ID_FIELD,
+  { name: "report_id", type: "string", required: true, description: "Id of the Power BI report" },
+  { name: "page", type: "string", required: true, description: "Page name (id) of the report" },
+  { name: "visual", type: "string", required: true, description: "Visual name (id) on that page" },
+  { name: "title", type: "string", required: true },
+  { name: "content", type: "text", description: "The guide, in markdown" },
+];
+export const LINK_FIELDS: Field[] = [
+  ID_FIELD,
+  { name: "report_id", type: "string", required: true, description: "Id of the Power BI report" },
   { name: "label", type: "string", required: true },
-  { name: "url", type: "string", required: true },
+  { name: "url", type: "url", required: true },
   { name: "icon", type: "string", description: "Lucide icon name (e.g. book-open, mail, video)" },
   { name: "color", type: "option", options: COLORS.map((c) => ({ value: c, color: c })) },
   { name: "description", type: "string" },
 ];
-export const GUIDE_FIELDS: Field[] = [
-  { name: "title", type: "string", required: true },
-  { name: "content", type: "text" },
-  { name: "links", type: "string", description: "pageName or pageName/visualName, separated by ;" },
+const BUILT_INS: SchemaEntry[] = [
+  { id: "guides", builtIn: "guides", title: "Guides (report viewer)", fields: GUIDE_FIELDS, contextIds: [] },
+  { id: "links", builtIn: "links", title: "Links (report viewer)", fields: LINK_FIELDS, contextIds: [] },
 ];
 
-/** Gives a report its info links or guides Excel file (from a link, or one of the library). */
-export async function connectReportExcel(reportId: string, kind: "info" | "guides", linkOrId: string) {
-  const known = await find("excels", linkOrId);
-  const fields = kind === "info" ? INFO_FIELDS : GUIDE_FIELDS;
-  const excel = known ? await ensureFields(known, fields) : await addExcel(linkOrId, undefined, fields);
-  await patch("reports", reportId, kind === "info" ? { infoExcelId: excel.id } : { guidesExcelId: excel.id });
+/** The built-in schemas exist in every library, with their current fields. */
+export async function ensureBuiltIns() {
+  const schemas = await all("schemas");
+  for (const b of BUILT_INS) {
+    const old = schemas.find((s) => s.id === b.id);
+    if (!old) await put("schemas", b);
+    else if (JSON.stringify(old.fields) !== JSON.stringify(b.fields)) await patch("schemas", b.id, { fields: b.fields });
+  }
+}
+
+/** An Excel table of a link: the given table, else the first one. */
+async function excelOf(link: string, table?: string): Promise<ExcelRef & { tables: string[] }> {
+  const file = await resolveExcel(link);
+  const name = table && file.tables.includes(table) ? table : file.tables[0];
+  return { link, driveId: file.driveId, itemId: file.itemId, name: file.name, table: name ?? "", fileUrl: file.fileUrl, webUrl: file.webUrl, tables: file.tables };
 }
 
 /**
- * Writes the schema when the file has none or misses required fields. The sheet styling (dozens of
- * slow, best-effort requests) runs in the background: awaiting it is what kept the first add busy.
+ * Adds a schema from an Excel table (its columns are detected, typed from the data or its "_schema"
+ * sheet) and, optionally, the Microsoft Form filling it (its questions give the types and choices).
  */
-async function ensureFields(excel: ExcelEntry, required: Field[]) {
-  const data = await readTable(excel);
-  const missing = required.filter((r) => !data.fields.some((f) => f.name.toLowerCase() === r.name.toLowerCase()));
-  if (!data.hasSchema || missing.length) {
-    const fields = await saveFields(excel, data, [...data.fields, ...missing], { style: false });
-    void styleSheet(excel, fields).catch(() => undefined);
-  }
-  return excel;
+export async function addSchema({ excel: link, table, form: formLink, title }: { excel: string; table?: string; form?: string; title?: string }) {
+  // Read first: a wrong form link fails the add before anything is kept.
+  const form = formLink?.trim() ? await readFormRef(formLink) : undefined;
+  const { tables, ...excel } = await excelOf(link, table);
+  if (!excel.table) throw new Error(`"${excel.name}" has no Excel table: select the data in Excel and use Insert › Table.`);
+  let fields = await detectFields(excel);
+  let sections: FormSection[] = [];
+  if (form) ({ fields, sections } = layoutFromQuestions(form.questions, withFormTypes(fields, form.questions)));
+  const old = (await all("schemas")).find((s) => s.excel?.itemId === excel.itemId && s.excel.table === excel.table);
+  return put("schemas", {
+    ...old,
+    id: old?.id ?? crypto.randomUUID(),
+    title: title?.trim() || old?.title || (tables.length > 1 ? `${excel.name} › ${excel.table}` : excel.name),
+    excel,
+    form: form ? { url: form.url, id: form.id, title: form.title } : old?.form,
+    fields: old?.fields ?? fields,
+    sections: old?.sections ?? (sections.length ? sections : undefined),
+    contextIds: old?.contextIds ?? [],
+  });
 }
 
-/** Copy of a report in My workspace (needs edit rights on the source). */
-export async function cloneReport(entry: ReportEntry) {
-  const copy = await pbi(`${scope(entry.groupId)}/reports/${entry.id}/Clone`, "POST", {
-    name: `${entry.name} (copy)`,
-    targetWorkspaceId: "00000000-0000-0000-0000-000000000000",
-    targetModelId: entry.datasetId,
-  });
-  return addReport(copy.webUrl ?? copy.id);
+/** Links a form to a schema; its questions give the types of the matching columns when `retype`. */
+export async function linkForm(schema: SchemaEntry, link: string, retype = false) {
+  const form = await readFormRef(link);
+  // Retyped: the matching columns take the questions' types, and the form's sections and branches.
+  const layout = retype ? layoutFromQuestions(form.questions, withFormTypes(schema.fields, form.questions)) : undefined;
+  await patch("schemas", schema.id, { form: { url: form.url, id: form.id, title: form.title }, ...(layout && { fields: layout.fields, sections: layout.sections.length ? layout.sections : undefined }) });
+  return form;
+}
+
+/** Fields of a form alone (one per question), to compare or start from. */
+export const fieldsOfForm = async (link: string) => fieldsFromQuestions((await readFormRef(link)).questions);
+
+/**
+ * The Excel file of a built-in schema: a file without table gets one (header = the fields), and the
+ * missing columns are added (with the "_schema" sheet and the styling).
+ */
+export async function setBuiltInExcel(schema: SchemaEntry, link: string, progress?: Progress) {
+  let excel = await excelOf(link);
+  if (!excel.table) {
+    progress?.("Creating the table", 0, 1);
+    await createTable(excel, schema.fields.map((f) => f.name));
+    excel = await excelOf(link);
+  }
+  const { tables: _, ...ref } = excel;
+  await applySchemaToExcel(ref, schema.fields, progress);
+  await patch("schemas", schema.id, { excel: ref });
+}
+
+/** Saves a schema's fields (and its form's sections) after checking them (names, types, choices, branches). */
+export async function saveFields(schema: SchemaEntry, fields: Field[], sections: FormSection[] | undefined = schema.sections) {
+  if (schema.builtIn) throw new Error("The fields of a built-in schema cannot change.");
+  const list = fields.some(isIdField) ? fields : [ID_FIELD, ...fields];
+  const errors = fieldsErrors(list, sections);
+  if (errors.length) throw new Error(errors.join(" "));
+  await patch("schemas", schema.id, { fields: list, sections: sections?.length ? sections : undefined });
+  return list;
+}
+
+/* -------------------------------- Contexts -------------------------------- */
+
+/** Markdown files from the computer (one context each; a file with the same name replaces it). */
+export async function addContexts(files: FileList | File[]) {
+  const existing = await all("contexts");
+  const added: ContextEntry[] = [];
+  for (const file of Array.from(files)) {
+    if (file.size > 500_000) throw new Error(`${file.name}: a context is a markdown file up to 500 KB.`);
+    const name = file.name.replace(/\.(md|markdown|txt)$/i, "");
+    const old = existing.find((c) => c.name === name);
+    added.push(await put("contexts", { id: old?.id ?? crypto.randomUUID(), name, text: await file.text(), updatedAt: Date.now() }));
+  }
+  return added;
+}
+
+/** Contexts linked to an entry, as one text for the AI (each with its name). Long contexts are cut. */
+export async function contextsText(ids: string[] = [], max = 24_000) {
+  const contexts = (await all("contexts")).filter((c) => ids.includes(c.id));
+  let left = max;
+  return contexts
+    .map((c) => {
+      const text = c.text.length > left ? `${c.text.slice(0, Math.max(0, left))}\n…[cut: the contexts are too long]` : c.text;
+      left -= text.length;
+      return `### Context "${c.name}"\n${text}`;
+    })
+    .join("\n\n");
+}
+
+/* ------------------------------ Download / import ------------------------------ */
+
+export type Kind = "reports" | "datasets" | "schemas" | "contexts";
+const KINDS: Kind[] = ["reports", "datasets", "schemas", "contexts"];
+
+/** Saves a file in the browser. */
+export function downloadText(name: string, text: string, type = "application/json") {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  Object.assign(document.createElement("a"), { href: url, download: name.replace(/[^\p{L}\p{N}._ -]+/gu, "-") }).click();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}
+
+/** One entry as a JSON file (a context also as its markdown file). */
+export function downloadEntry(kind: Kind, entry: { id: string; name?: string; title?: string }) {
+  if (kind === "contexts") return downloadText(`${(entry as ContextEntry).name}.md`, (entry as ContextEntry).text, "text/markdown");
+  downloadText(`${entry.name ?? entry.title ?? entry.id}.${kind.slice(0, -1)}.json`, JSON.stringify({ hub: kind, entry }, null, 2));
+}
+
+/** Entries downloaded before (one per file, or a whole collection), put back in the library. */
+export async function importEntries(files: FileList | File[]) {
+  let count = 0;
+  for (const file of Array.from(files)) {
+    if (/\.(md|markdown|txt)$/i.test(file.name)) {
+      count += (await addContexts([file])).length;
+      continue;
+    }
+    const data = JSON.parse(await file.text());
+    const items: { hub: Kind; entry: { id: string } }[] = Array.isArray(data) ? data : [data];
+    for (const item of items) {
+      if (!KINDS.includes(item?.hub) || typeof item.entry?.id !== "string") throw new Error(`${file.name}: not an entry downloaded from the library.`);
+      await put(item.hub as Name, { contextIds: [], ...item.entry } as never);
+      count++;
+    }
+  }
+  return count;
 }

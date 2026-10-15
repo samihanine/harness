@@ -11,11 +11,11 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ViewerRouteImport } from './routes/viewer'
 import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as SandboxRouteImport } from './routes/sandbox'
-import { Route as PivotRouteImport } from './routes/pivot'
-import { Route as DaxRouteImport } from './routes/dax'
-import { Route as DatasetsRouteImport } from './routes/datasets'
-import { Route as BuilderRouteImport } from './routes/builder'
+import { Route as SchemasRouteImport } from './routes/schemas'
+import { Route as ResearchRouteImport } from './routes/research'
+import { Route as ModelRouteImport } from './routes/model'
+import { Route as ExcelRouteImport } from './routes/excel'
+import { Route as EditorRouteImport } from './routes/editor'
 import { Route as IndexRouteImport } from './routes/index'
 
 const ViewerRoute = ViewerRouteImport.update({
@@ -28,29 +28,29 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SandboxRoute = SandboxRouteImport.update({
-  id: '/sandbox',
-  path: '/sandbox',
+const SchemasRoute = SchemasRouteImport.update({
+  id: '/schemas',
+  path: '/schemas',
   getParentRoute: () => rootRouteImport,
 } as any)
-const PivotRoute = PivotRouteImport.update({
-  id: '/pivot',
-  path: '/pivot',
+const ResearchRoute = ResearchRouteImport.update({
+  id: '/research',
+  path: '/research',
   getParentRoute: () => rootRouteImport,
 } as any)
-const DaxRoute = DaxRouteImport.update({
-  id: '/dax',
-  path: '/dax',
+const ModelRoute = ModelRouteImport.update({
+  id: '/model',
+  path: '/model',
   getParentRoute: () => rootRouteImport,
 } as any)
-const DatasetsRoute = DatasetsRouteImport.update({
-  id: '/datasets',
-  path: '/datasets',
+const ExcelRoute = ExcelRouteImport.update({
+  id: '/excel',
+  path: '/excel',
   getParentRoute: () => rootRouteImport,
 } as any)
-const BuilderRoute = BuilderRouteImport.update({
-  id: '/builder',
-  path: '/builder',
+const EditorRoute = EditorRouteImport.update({
+  id: '/editor',
+  path: '/editor',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -61,32 +61,32 @@ const IndexRoute = IndexRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/builder': typeof BuilderRoute
-  '/datasets': typeof DatasetsRoute
-  '/dax': typeof DaxRoute
-  '/pivot': typeof PivotRoute
-  '/sandbox': typeof SandboxRoute
+  '/editor': typeof EditorRoute
+  '/excel': typeof ExcelRoute
+  '/model': typeof ModelRoute
+  '/research': typeof ResearchRoute
+  '/schemas': typeof SchemasRoute
   '/settings': typeof SettingsRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/builder': typeof BuilderRoute
-  '/datasets': typeof DatasetsRoute
-  '/dax': typeof DaxRoute
-  '/pivot': typeof PivotRoute
-  '/sandbox': typeof SandboxRoute
+  '/editor': typeof EditorRoute
+  '/excel': typeof ExcelRoute
+  '/model': typeof ModelRoute
+  '/research': typeof ResearchRoute
+  '/schemas': typeof SchemasRoute
   '/settings': typeof SettingsRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/builder': typeof BuilderRoute
-  '/datasets': typeof DatasetsRoute
-  '/dax': typeof DaxRoute
-  '/pivot': typeof PivotRoute
-  '/sandbox': typeof SandboxRoute
+  '/editor': typeof EditorRoute
+  '/excel': typeof ExcelRoute
+  '/model': typeof ModelRoute
+  '/research': typeof ResearchRoute
+  '/schemas': typeof SchemasRoute
   '/settings': typeof SettingsRoute
   '/viewer': typeof ViewerRoute
 }
@@ -94,42 +94,42 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/builder'
-    | '/datasets'
-    | '/dax'
-    | '/pivot'
-    | '/sandbox'
+    | '/editor'
+    | '/excel'
+    | '/model'
+    | '/research'
+    | '/schemas'
     | '/settings'
     | '/viewer'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/builder'
-    | '/datasets'
-    | '/dax'
-    | '/pivot'
-    | '/sandbox'
+    | '/editor'
+    | '/excel'
+    | '/model'
+    | '/research'
+    | '/schemas'
     | '/settings'
     | '/viewer'
   id:
     | '__root__'
     | '/'
-    | '/builder'
-    | '/datasets'
-    | '/dax'
-    | '/pivot'
-    | '/sandbox'
+    | '/editor'
+    | '/excel'
+    | '/model'
+    | '/research'
+    | '/schemas'
     | '/settings'
     | '/viewer'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  BuilderRoute: typeof BuilderRoute
-  DatasetsRoute: typeof DatasetsRoute
-  DaxRoute: typeof DaxRoute
-  PivotRoute: typeof PivotRoute
-  SandboxRoute: typeof SandboxRoute
+  EditorRoute: typeof EditorRoute
+  ExcelRoute: typeof ExcelRoute
+  ModelRoute: typeof ModelRoute
+  ResearchRoute: typeof ResearchRoute
+  SchemasRoute: typeof SchemasRoute
   SettingsRoute: typeof SettingsRoute
   ViewerRoute: typeof ViewerRoute
 }
@@ -150,39 +150,39 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/sandbox': {
-      id: '/sandbox'
-      path: '/sandbox'
-      fullPath: '/sandbox'
-      preLoaderRoute: typeof SandboxRouteImport
+    '/schemas': {
+      id: '/schemas'
+      path: '/schemas'
+      fullPath: '/schemas'
+      preLoaderRoute: typeof SchemasRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/pivot': {
-      id: '/pivot'
-      path: '/pivot'
-      fullPath: '/pivot'
-      preLoaderRoute: typeof PivotRouteImport
+    '/research': {
+      id: '/research'
+      path: '/research'
+      fullPath: '/research'
+      preLoaderRoute: typeof ResearchRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/dax': {
-      id: '/dax'
-      path: '/dax'
-      fullPath: '/dax'
-      preLoaderRoute: typeof DaxRouteImport
+    '/model': {
+      id: '/model'
+      path: '/model'
+      fullPath: '/model'
+      preLoaderRoute: typeof ModelRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/datasets': {
-      id: '/datasets'
-      path: '/datasets'
-      fullPath: '/datasets'
-      preLoaderRoute: typeof DatasetsRouteImport
+    '/excel': {
+      id: '/excel'
+      path: '/excel'
+      fullPath: '/excel'
+      preLoaderRoute: typeof ExcelRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/builder': {
-      id: '/builder'
-      path: '/builder'
-      fullPath: '/builder'
-      preLoaderRoute: typeof BuilderRouteImport
+    '/editor': {
+      id: '/editor'
+      path: '/editor'
+      fullPath: '/editor'
+      preLoaderRoute: typeof EditorRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -197,11 +197,11 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  BuilderRoute: BuilderRoute,
-  DatasetsRoute: DatasetsRoute,
-  DaxRoute: DaxRoute,
-  PivotRoute: PivotRoute,
-  SandboxRoute: SandboxRoute,
+  EditorRoute: EditorRoute,
+  ExcelRoute: ExcelRoute,
+  ModelRoute: ModelRoute,
+  ResearchRoute: ResearchRoute,
+  SchemasRoute: SchemasRoute,
   SettingsRoute: SettingsRoute,
   ViewerRoute: ViewerRoute,
 }

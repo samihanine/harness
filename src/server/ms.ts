@@ -102,7 +102,7 @@ export const getToken = createServerFn()
   .inputValidator((d: { service: Service; host?: string }) => d)
   .handler(({ data }) => accessToken(data.service, data.host));
 
-export type MsRequest = { service: keyof typeof BASES; path: string; method?: string; body?: unknown };
+export type MsRequest = { service: keyof typeof BASES | "sharepoint"; path: string; method?: string; body?: unknown };
 
 /**
  * One Microsoft API call (path relative to the service base, or absolute URL). Fabric long-running
@@ -111,8 +111,9 @@ export type MsRequest = { service: keyof typeof BASES; path: string; method?: st
 export const ms = createServerFn({ method: "POST" })
   .inputValidator((d: MsRequest) => d)
   .handler(async ({ data }) => {
-    const { token } = await accessToken(data.service);
-    const url = data.path.startsWith("http") ? data.path : `${BASES[data.service]}${data.path}`;
+    const url = data.path.startsWith("http") ? data.path : `${BASES[data.service as keyof typeof BASES]}${data.path}`;
+    // SharePoint: a token for the host of the (absolute) URL.
+    const { token } = await accessToken(data.service, data.service === "sharepoint" ? new URL(url).host : undefined);
     const send = (u: string, method = "GET", body?: unknown) =>
       fetch(u, {
         method,
@@ -178,7 +179,15 @@ export const refreshModel = createServerFn({ method: "POST" })
     const { value: sources } = await call(`${base}/datasources`);
     for (const s of sources) {
       const url = s.connectionDetails?.url ?? s.connectionDetails?.path;
-      if (!url || !/sharepoint\.com/i.test(url)) continue;
+      if (!url) continue;
+      // Public web sources (e.g. images of another site): anonymous access.
+      if (!/sharepoint\.com/i.test(url)) {
+        if (s.datasourceType === "Web")
+          await call(`${BASES.powerbi}/gateways/${s.gatewayId}/datasources/${s.datasourceId}`, "PATCH", {
+            credentialDetails: { credentialType: "Anonymous", credentials: JSON.stringify({ credentialData: "" }), encryptedConnection: "Encrypted", encryptionAlgorithm: "None", privacyLevel: "Organizational" },
+          }).catch(() => undefined);
+        continue;
+      }
       const { token } = await accessToken("sharepoint", new URL(url).host);
       await call(`${BASES.powerbi}/gateways/${s.gatewayId}/datasources/${s.datasourceId}`, "PATCH", {
         credentialDetails: {
@@ -202,18 +211,19 @@ export const refreshModel = createServerFn({ method: "POST" })
 
 /** Uploads a file (base64) to a drive folder, created when missing; returns the drive item. */
 export const uploadFile = createServerFn({ method: "POST" })
-  .inputValidator((d: { driveId: string; parentId: string; path: string; base64: string; type?: string }) => d)
+  .inputValidator((d: { driveId: string; parentId: string; path: string; base64: string; type?: string; replace?: boolean }) => d)
   .handler(async ({ data }) => {
     const { token } = await accessToken("graph");
     const path = data.path.split("/").map(encodeURIComponent).join("/");
-    const r = await fetch(`${BASES.graph}/drives/${data.driveId}/items/${data.parentId}:/${path}:/content?@microsoft.graph.conflictBehavior=rename`, {
+    // Missing folders of the path are created; an existing file is renamed, or replaced (`replace`).
+    const r = await fetch(`${BASES.graph}/drives/${data.driveId}/items/${data.parentId}:/${path}:/content?@microsoft.graph.conflictBehavior=${data.replace ? "replace" : "rename"}`, {
       method: "PUT",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": data.type || "application/octet-stream" },
       body: Buffer.from(data.base64, "base64"),
     });
     const item = await r.json();
     if (!r.ok) throw new Error(item.error?.message ?? `Upload failed (${r.status})`);
-    return { id: item.id as string };
+    return { id: item.id as string, webUrl: item.webUrl as string };
   });
 
 /**
@@ -246,6 +256,21 @@ export const downloadFile = createServerFn({ method: "POST" })
     return `data:${type};base64,${Buffer.from(await r.arrayBuffer()).toString("base64")}`;
   });
 
+/** Form id of a link (…ResponsePage.aspx?id=…, …DesignPageV2.aspx?…id=…, or the id itself) and the tenant / owner it holds. */
+function formIds(url: string) {
+  const id = url.trim().match(/[?&]id=([\w-]+(?:\.|%2E)*)/i)?.[1]?.replace(/%2E/gi, ".") ?? (/^[\w-]+\.*$/.test(url.trim()) ? url.trim() : undefined);
+  if (!id) throw new Error("No form id in this link (expected …ResponsePage.aspx?id=… or …DesignPageV2.aspx?…id=…).");
+  // The id holds the tenant and the owner (two GUIDs, little-endian, base64url).
+  const bytes = Buffer.from(id.replace(/\.+$/, ""), "base64url");
+  if (bytes.length < 32) throw new Error("This form id cannot be read.");
+  const guid = (b: Buffer) => {
+    const h = b.toString("hex");
+    const le = (x: string) => x.match(/../g)!.reverse().join("");
+    return `${le(h.slice(0, 8))}-${le(h.slice(8, 12))}-${le(h.slice(12, 16))}-${h.slice(16, 20)}-${h.slice(20)}`;
+  };
+  return { id, tenant: guid(bytes.subarray(0, 16)), owner: guid(bytes.subarray(16, 32)) };
+}
+
 /**
  * Structure of a Microsoft Form (questions, types, options) from its link. Forms has no public API:
  * this is the endpoint its own pages use, with a token of the same sign-in (may change without notice).
@@ -253,18 +278,7 @@ export const downloadFile = createServerFn({ method: "POST" })
 export const readForm = createServerFn({ method: "POST" })
   .inputValidator((d: { url: string }) => d)
   .handler(async ({ data }) => {
-    const id = data.url.trim().match(/[?&]id=([\w-]+(?:\.|%2E)*)/i)?.[1]?.replace(/%2E/gi, ".") ?? (/^[\w-]+\.*$/.test(data.url.trim()) ? data.url.trim() : undefined);
-    if (!id) throw new Error("No form id in this link (expected …ResponsePage.aspx?id=… or …DesignPageV2.aspx?…id=…).");
-    // The id holds the tenant and the owner (two GUIDs, little-endian, base64url).
-    const bytes = Buffer.from(id.replace(/\.+$/, ""), "base64url");
-    if (bytes.length < 32) throw new Error("This form id cannot be read.");
-    const guid = (b: Buffer) => {
-      const h = b.toString("hex");
-      const le = (x: string) => x.match(/../g)!.reverse().join("");
-      return `${le(h.slice(0, 8))}-${le(h.slice(8, 12))}-${le(h.slice(12, 16))}-${h.slice(16, 20)}-${h.slice(20)}`;
-    };
-    const tenant = guid(bytes.subarray(0, 16));
-    const owner = guid(bytes.subarray(16, 32));
+    const { id, tenant, owner } = formIds(data.url);
     const { token } = await accessToken("forms");
     const r = await fetch(`https://forms.cloud.microsoft/formapi/api/${tenant}/users/${owner}/light/runtimeForms('${id}')?$expand=questions($expand=choices)`, {
       headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -273,4 +287,58 @@ export const readForm = createServerFn({ method: "POST" })
     if (!r.ok) throw new Error(`Form not readable (${r.status}): ${text.slice(0, 200)}`);
     const form = JSON.parse(text);
     return { id, tenant, owner, title: form.title as string, questions: form.questions as Record<string, any>[] };
+  });
+
+/**
+ * One call to the Forms API of a form (undocumented: the one the Forms designer uses), relative to
+ * `…/formapi/api/{tenant}/users/{owner}/` (e.g. `forms('{id}')/questions`). Writes go through here:
+ * the user allowed the schema editor to change their forms this way.
+ */
+export const formsApi = createServerFn({ method: "POST" })
+  .inputValidator((d: { form: string; path: string; method?: string; body?: unknown }) => d)
+  .handler(async ({ data }) => {
+    const { id, tenant, owner } = formIds(data.form);
+    const { token } = await accessToken("forms");
+    const r = await fetch(`https://forms.cloud.microsoft/formapi/api/${tenant}/users/${owner}/${data.path.replace("{id}", id)}`, {
+      method: data.method ?? "GET",
+      headers: { Authorization: `Bearer ${token}`, Accept: "application/json", ...(data.body !== undefined ? { "Content-Type": "application/json" } : {}) },
+      body: data.body === undefined ? undefined : JSON.stringify(data.body),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`Forms ${data.method ?? "GET"} ${data.path} (${r.status}): ${text.slice(0, 400)}`);
+    return (text ? JSON.parse(text) : null) as any;
+  });
+
+/** A drive item's content (base64) and its version (eTag), to change the file and send it back. */
+export const readItem = createServerFn({ method: "POST" })
+  .inputValidator((d: { driveId: string; itemId: string }) => d)
+  .handler(async ({ data }) => {
+    const { token } = await accessToken("graph");
+    const meta = await fetch(`${BASES.graph}/drives/${data.driveId}/items/${data.itemId}?$select=eTag`, { headers: { Authorization: `Bearer ${token}` } }).then((r) => r.json());
+    const r = await fetch(`${BASES.graph}/drives/${data.driveId}/items/${data.itemId}/content`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!r.ok) throw new Error(`Cannot read the file (${r.status})`);
+    return { base64: Buffer.from(await r.arrayBuffer()).toString("base64"), eTag: meta.eTag as string };
+  });
+
+/** Replaces a drive item's content; with `eTag`, only if it did not change since it was read (else an error, nothing written). */
+export const writeItem = createServerFn({ method: "POST" })
+  .inputValidator((d: { driveId: string; itemId: string; base64: string; eTag?: string }) => d)
+  .handler(async ({ data }) => {
+    const { token } = await accessToken("graph");
+    const put = () =>
+      fetch(`${BASES.graph}/drives/${data.driveId}/items/${data.itemId}/content`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/octet-stream", ...(data.eTag && { "If-Match": data.eTag }) },
+        body: Buffer.from(data.base64, "base64"),
+      });
+    // Excel for the web keeps the file locked a little after workbook calls: waited for.
+    let r = await put();
+    for (let i = 0; i < 12 && r.status === 423; i++) {
+      await new Promise((ok) => setTimeout(ok, 5000));
+      r = await put();
+    }
+    if (r.status === 423) throw new Error("The file stays locked by Excel (open in another window?): nothing written, try again in a minute.");
+    if (r.status === 412) throw new Error("The file changed meanwhile: nothing written, try again.");
+    if (!r.ok) throw new Error(`The file was not written (${r.status}): ${(await r.text()).slice(0, 200)}`);
+    return true;
   });

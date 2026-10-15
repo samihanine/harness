@@ -54,6 +54,16 @@ export async function dax(dataset: Ref, query: string): Promise<Rows> {
   );
 }
 
+/** Refreshes on a Pro (shared) capacity: 8 a day per model, by API and scheduled together (refreshes started in Power BI itself are not counted). */
+export const REFRESH_QUOTA = 8;
+
+/** The refreshes that count in the daily quota (by API or scheduled) over the last 24 hours. */
+export async function refreshesToday(dataset: Ref) {
+  const { value } = await pbi<{ value: { refreshType: string; startTime: string }[] }>(`${scope(dataset.groupId)}/datasets/${dataset.id}/refreshes?$top=30`);
+  const since = Date.now() - 24 * 3600 * 1000;
+  return value.filter((r) => (r.refreshType === "ViaApi" || r.refreshType === "Scheduled") && Date.parse(r.startTime) >= since).length;
+}
+
 /* ----------------------------- Column values ----------------------------- */
 
 const columnRef = (table: string, column: string) => `'${table.replace(/'/g, "''")}'[${column.replace(/]/g, "]]")}]`;
@@ -101,7 +111,13 @@ export async function checkValues(dataset: Ref | undefined, table: string, colum
 export function rowsText(rows: Rows, max = 50) {
   if (rows.length === 0) return "(no rows)";
   const columns = Object.keys(rows[0]);
-  const lines = rows.slice(0, max).map((r) => columns.map((c) => String(r[c] ?? "")).join(" | "));
+  // Long values (e.g. base64 images) shown by their start and length: one would fill the AI's context.
+  const cell = (v: unknown) => {
+    const text = String(v ?? "");
+    // 32,766 = Power BI's limit for a text value: a value of exactly that length was cut.
+    return text.length > 120 ? `${text.slice(0, 60)}… (${text.length} characters${text.length === 32766 ? ", CUT at Power BI's limit" : ""})` : text;
+  };
+  const lines = rows.slice(0, max).map((r) => columns.map((c) => cell(r[c])).join(" | "));
   return [columns.join(" | "), ...lines, rows.length > max ? `… ${rows.length - max} more rows` : ""].filter(Boolean).join("\n");
 }
 
@@ -146,22 +162,6 @@ export async function embedReport(element: HTMLElement, ref: Ref, mode: EmbedMod
   }) as Report;
   await loaded(report);
   return report;
-}
-
-/** Blank report on a semantic model (native authoring UI), saved with saveAs. */
-export async function embedNewReport(element: HTMLElement, dataset: Ref) {
-  const { pbi: p, service } = await load();
-  service.reset(element);
-  const embed = service.createReport(element, {
-    type: "report",
-    datasetId: dataset.id,
-    groupId: dataset.groupId,
-    embedUrl: `https://app.powerbi.com/reportEmbed${dataset.groupId ? `?groupId=${dataset.groupId}` : ""}`,
-    accessToken: await powerBiToken(),
-    tokenType: p.models.TokenType.Aad,
-  } as PbiClient.IEmbedConfiguration);
-  await loaded(embed);
-  return embed;
 }
 
 /**
@@ -322,17 +322,6 @@ export function layoutIssues(visuals: Visual[], size?: { width?: number; height?
       if (w > 1 && h > 1) issues.push(`- ${label(front[i])} and ${label(front[j])} overlap (${Math.round(w)}×${Math.round(h)})`);
     }
   return issues.length ? ["layout problems (fix them when you change the layout):", ...issues] : ["layout: no overlap, everything inside the page"];
-}
-
-/** Every page without data: the report "snapshot" stored in the library. */
-export async function reportText(report: Report) {
-  const out: string[] = [];
-  for (const page of await report.getPages()) {
-    const visuals = await page.getVisuals().catch(() => []);
-    const lines = await Promise.all(visuals.map((v) => visualText(v, false)));
-    out.push(`## Page "${page.displayName}" (name=${page.name}${page.visibility === 1 ? ", hidden" : ""})`, ...lines);
-  }
-  return out.join("\n");
 }
 
 /** Waits until the report has rendered again after a change (max 4 s). */

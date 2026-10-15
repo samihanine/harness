@@ -13,7 +13,7 @@ import {
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUpIcon, CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DownloadIcon, PlusIcon, SearchIcon, SparklesIcon, SquareIcon, Trash2Icon, WrenchIcon, XIcon } from "lucide-react";
+import { ArrowUpIcon, CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DownloadIcon, FileTextIcon, PaperclipIcon, PlusIcon, SearchIcon, SquareIcon, Trash2Icon, WrenchIcon, XIcon } from "lucide-react";
 import { Popover } from "./popover";
 import { forgetSession, runAgent, type Agent, type Status, type Update } from "@/agent/loop";
 import { PROMPTS, withPrompts, type PromptScreen } from "@/config";
@@ -23,7 +23,7 @@ const withAdmin = (agent: Agent, scope: string): Agent => {
   const screen = SCREEN_OF[scope.split(":")[0]];
   return screen ? { ...agent, instructions: withPrompts(screen, agent.instructions) } : PROMPTS.all.trim() ? { ...agent, instructions: `${agent.instructions}\n\n${PROMPTS.all}` } : agent;
 };
-import { AI_MODELS, deleteRemoteConversation } from "@/agent/llm";
+import { AI_MODELS, addFileToConversation, deleteRemoteConversation, uploadAiFile } from "@/agent/llm";
 import { find, put, remove, settings, useCollection, type Conversation } from "@/lib/store";
 import { last } from "@/lib/last";
 
@@ -37,16 +37,20 @@ function historyOf(m: ThreadMessage) {
       const call = p as { toolName: string; argsText?: string; result?: unknown; isError?: boolean };
       return `  - ${call.toolName}(${(call.argsText ?? "").slice(0, 120)}) → ${call.isError ? "error: " : ""}${String(call.result ?? "").slice(0, 120)}`;
     });
-  return `${m.role}: ${textOf(m)}${actions.length ? `\n  actions:\n${actions.join("\n")}` : ""}`;
+  const files = m.content.filter((p) => p.type === "file").map((p) => (p as { filename?: string }).filename ?? "file");
+  return `${m.role}: ${textOf(m)}${files.length ? `[file added: ${files.join(", ")}]` : ""}${actions.length ? `\n  actions:\n${actions.join("\n")}` : ""}`;
 }
 
-/** Screen of a chat scope ("viewer:<id>", "dataset:<id>"…), for the admin's additional instructions. */
-const SCREEN_OF: Record<string, PromptScreen> = { viewer: "viewer", builder: "builder", dataset: "datasets", dax: "dax", pivot: "pivot" };
+/** Screen of a chat scope ("viewer:<id>", "excel:<id>"…), for the admin's additional instructions. */
+const SCREEN_OF: Record<string, PromptScreen> = { viewer: "viewer", editor: "editor", model: "model", research: "research", schemas: "schemas", excel: "excel" };
 
 function adapter(agent: { current: Agent }, conversationId: string, scope: string): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
       const previous = messages.slice(0, -1).map(historyOf).join("\n\n");
+      // Files added since the last answer go with this message (also after a reload of the page).
+      const since = messages.slice(messages.map((m) => m.role).lastIndexOf("assistant") + 1);
+      for (const part of since.flatMap((m) => [...m.content] as { type: string; data?: string }[])) if (part.type === "file") await addFileToConversation(conversationId, part.data ?? "");
       const { model } = await settings.get();
       const startedAt = new Date().toISOString();
       const t0 = performance.now();
@@ -112,7 +116,7 @@ function ConversationPicker({ conversations, current, onSelect, onNew, onDelete 
         full
         width={340}
         trigger={(open) => (
-          <button type="button" onClick={() => (setSearch(""), open())} className="flex h-7 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-[12px] hover:bg-muted">
+          <button type="button" onClick={() => (setSearch(""), open())} className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13.5px] hover:bg-muted">
             <span className={`min-w-0 flex-1 truncate ${current ? "" : "text-muted-foreground"}`}>{current?.title ?? "New conversation"}</span>
             <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
           </button>
@@ -171,7 +175,7 @@ export function Chat({ scope, agent, placeholder = "Ask anything…", onConversa
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
+      <div className="flex h-12 shrink-0 items-center gap-1 border-b px-3">
         <ConversationPicker
           conversations={conversations}
           current={current}
@@ -206,7 +210,7 @@ function Runtime({ id, scope, initial, agent, placeholder }: { id: string; scope
           id,
           role,
           createdAt,
-          content: content.filter((p) => p.type === "text" || p.type === "tool-call"),
+          content: content.filter((p) => p.type === "text" || p.type === "tool-call" || p.type === "file"),
           ...(metadata?.custom && Object.keys(metadata.custom).length ? { metadata: { custom: metadata.custom } } : {}),
         }));
         // What the screen keeps with the conversation (e.g. the viewer's report state) is kept.
@@ -215,25 +219,54 @@ function Runtime({ id, scope, initial, agent, placeholder }: { id: string; scope
     [runtime, id, scope],
   );
 
+  // A file: uploaded to the AI API, added to the conversation (sent with the next message), and shown
+  // as a message of its own (no answer is asked for it).
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [upload, setUpload] = useState<{ busy?: boolean; error?: string }>({});
+  const attach = (file: File) => {
+    setUpload({ busy: true });
+    uploadAiFile(file)
+      .then(async (fileId) => {
+        await addFileToConversation(id, fileId);
+        runtime.thread.append({ role: "user", content: [{ type: "file", filename: file.name, data: fileId, mimeType: file.type || "application/octet-stream", sourceType: "id" }], startRun: false });
+        setUpload({});
+      })
+      .catch((e) => setUpload({ error: e instanceof Error ? e.message : String(e) }));
+  };
+
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
-        <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto bg-zinc-50 px-3 py-4">
+        <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto bg-background px-4 py-5">
           <ThreadPrimitive.Empty>
-            <p className="m-auto max-w-60 text-center text-[12px] text-muted-foreground">{placeholder}</p>
+            <p className="m-auto max-w-72 text-center text-[13.5px] leading-relaxed text-muted-foreground">{placeholder}</p>
           </ThreadPrimitive.Empty>
           <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
         </ThreadPrimitive.Viewport>
-        <ComposerPrimitive.Root className="flex items-end gap-1 border-t bg-card p-2.5">
-          <div className="flex min-w-0 flex-1 items-end gap-1 rounded-[20px] border bg-zinc-50 py-1 pr-1 pl-4 focus-within:border-ring">
-            <ComposerPrimitive.Input placeholder={placeholder} rows={1} className="max-h-40 min-h-8 flex-1 resize-none bg-transparent py-1.5 text-[13px] outline-none" />
+        <ComposerPrimitive.Root className="flex flex-col gap-1.5 border-t bg-card p-3">
+          {upload.error && <p className="px-2 text-[12px] text-destructive">{upload.error}</p>}
+          <div className="flex min-w-0 flex-1 items-end gap-1 rounded-[22px] border bg-background py-1 pr-1 pl-1.5 focus-within:border-ring focus-within:ring-3 focus-within:ring-zinc-900/5">
+            <input
+              ref={fileInput}
+              type="file"
+              hidden
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) attach(file);
+              }}
+            />
+            <button type="button" title="Add a file to the conversation" disabled={upload.busy} className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50" onClick={() => fileInput.current?.click()}>
+              <PaperclipIcon className={`size-4 ${upload.busy ? "animate-pulse" : ""}`} />
+            </button>
+            <ComposerPrimitive.Input placeholder={placeholder} rows={1} className="max-h-40 min-h-9 flex-1 resize-none bg-transparent py-2 text-[14px] outline-none" />
             <ThreadPrimitive.If running={false}>
-              <ComposerPrimitive.Send className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40" title="Send">
+              <ComposerPrimitive.Send className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40" title="Send">
                 <ArrowUpIcon className="size-4" />
               </ComposerPrimitive.Send>
             </ThreadPrimitive.If>
             <ThreadPrimitive.If running>
-              <ComposerPrimitive.Cancel className="flex size-8 shrink-0 items-center justify-center rounded-full bg-muted text-foreground hover:bg-zinc-200" title="Stop">
+              <ComposerPrimitive.Cancel className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-foreground hover:bg-zinc-200" title="Stop">
                 <SquareIcon className="size-3.5" />
               </ComposerPrimitive.Cancel>
             </ThreadPrimitive.If>
@@ -249,20 +282,35 @@ const timeOf = (d?: Date) => (d ? new Date(d).toLocaleTimeString(undefined, { ho
 /** Your message: a solid bubble on the right, with its time. */
 const UserMessage = () => {
   const createdAt = useAuiState((s) => s.message.createdAt);
+  const isFile = useAuiState((s) => s.message.content.some((p) => p.type === "file"));
   return (
     <MessagePrimitive.Root className="flex flex-col items-end gap-1">
-      <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap text-primary-foreground shadow-sm">
-        <MessagePrimitive.Parts />
-      </div>
-      <span className="pr-1 text-[10px] text-muted-foreground">{timeOf(createdAt)}</span>
+      {isFile ? (
+        <MessagePrimitive.Parts components={{ File: FileChip }} />
+      ) : (
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap text-primary-foreground shadow-sm">
+          <MessagePrimitive.Parts />
+        </div>
+      )}
+      <span className="pr-1 text-[11px] text-muted-foreground">{timeOf(createdAt)}</span>
     </MessagePrimitive.Root>
   );
 };
 
+/** A file added to the conversation: its name, as a message of its own. */
+const FileChip = ({ filename, mimeType }: { filename?: string; mimeType: string }) => (
+  <span className="flex max-w-[85%] items-center gap-2.5 rounded-2xl rounded-br-md border bg-card px-3.5 py-2.5 text-[13.5px] shadow-sm" title={mimeType}>
+    <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+      <FileTextIcon className="size-4 text-muted-foreground" />
+    </span>
+    <span className="min-w-0 truncate font-medium">{filename ?? "File"}</span>
+  </span>
+);
+
 type Custom = { status?: Status; trace?: { ms?: number } };
 
 /**
- * The assistant: an avatar and a bordered bubble holding what it did (folded into one line), what it
+ * The assistant: a bordered bubble holding what it did (folded into one line), what it
  * is doing now (with a progress bar when known), and its answer; under it, its time and how long the
  * whole answer took (reading the page, the model, the actions).
  */
@@ -274,18 +322,15 @@ const AssistantMessage = () => {
   const hasText = useAuiState((s) => s.message.content.some((p) => p.type === "text" && p.text));
   const seconds = custom.trace?.ms !== undefined ? (custom.trace.ms / 1000).toFixed(1) : undefined;
   return (
-    <MessagePrimitive.Root className="flex items-start gap-2">
-      <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-violet-500 to-blue-500 text-white">
-        <SparklesIcon className="size-3.5" />
-      </span>
+    <MessagePrimitive.Root className="flex items-start">
       <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="w-fit max-w-full rounded-2xl rounded-tl-md border bg-white px-3.5 py-2.5 text-[13px] shadow-sm">
+        <div className="w-fit max-w-full rounded-2xl rounded-tl-md border bg-card px-4 py-3 text-[14px] shadow-sm">
           <Steps running={running} />
           {running && custom.status && <StatusLine status={custom.status} />}
           {running && !custom.status && !hasText && <Dots />}
           <MessagePrimitive.Parts components={{ Text: Markdown, tools: { Fallback: () => null } }} />
         </div>
-        <span className="pl-1 text-[10px] text-muted-foreground tabular-nums">
+        <span className="pl-1 text-[11px] text-muted-foreground tabular-nums">
           {timeOf(createdAt)}
           {seconds && ` · ${running ? "" : "answered in "}${seconds} s`}
         </span>
@@ -306,7 +351,7 @@ function Steps({ running }: { running: boolean }) {
   const failed = steps.filter((s) => s.isError).length;
   return (
     <div className="mb-2 border-b pb-2">
-      <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground">
+      <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground">
         <WrenchIcon className="size-3" />
         {steps.length} action{steps.length > 1 ? "s" : ""}
         {failed > 0 && <span className="text-red-600">· {failed} failed</span>}
@@ -316,7 +361,7 @@ function Steps({ running }: { running: boolean }) {
       {open && (
         <ul className="mt-1.5 flex flex-col gap-1">
           {steps.map((s, i) => (
-            <li key={i} className="text-[11px]">
+            <li key={i} className="text-[12px]">
               <button type="button" className="flex w-full items-start gap-1.5 text-left" onClick={() => setShown(shown === i ? undefined : i)}>
                 {s.result === undefined ? <span className="mt-1 size-2 shrink-0 animate-pulse rounded-full bg-blue-500" /> : s.isError ? <XIcon className="mt-0.5 size-3 shrink-0 text-red-500" /> : <CheckIcon className="mt-0.5 size-3 shrink-0 text-emerald-600" />}
                 <span className="min-w-0">
@@ -338,14 +383,14 @@ function StatusLine({ status }: { status: Status }) {
   const known = status.total !== undefined && status.total > 0;
   return (
     <div className="flex min-w-48 flex-col gap-1.5 py-0.5">
-      <span className="flex items-center gap-2 text-[12px] text-muted-foreground">
-        <span className="size-1.5 animate-pulse rounded-full bg-blue-500" />
+      <span className="flex items-center gap-2 text-[13px] text-muted-foreground">
+        <span className="size-1.5 animate-pulse rounded-full bg-primary" />
         {status.label}
         {known && <span className="tabular-nums">{status.done ?? 0}/{status.total}</span>}…
       </span>
       {known && (
         <span className="h-1 overflow-hidden rounded-full bg-muted">
-          <span className="block h-full rounded-full bg-blue-500 transition-[width] duration-300" style={{ width: `${Math.round(((status.done ?? 0) / status.total!) * 100)}%` }} />
+          <span className="block h-full rounded-full bg-primary transition-[width] duration-300" style={{ width: `${Math.round(((status.done ?? 0) / status.total!) * 100)}%` }} />
         </span>
       )}
     </div>

@@ -44,7 +44,7 @@ function parseJson(text: string): unknown {
   ].filter((c): c is string => !!c);
   let lastError = "";
   for (const candidate of candidates) {
-    for (const attempt of [candidate, repair(candidate)]) {
+    for (const attempt of [candidate, repair(candidate), rebalance(repair(candidate))]) {
       try {
         return JSON.parse(attempt);
       } catch (error) {
@@ -98,4 +98,50 @@ function repair(json: string) {
     out += char;
   }
   return out.replace(/,\s*([}\]])/g, "$1");
+}
+
+/**
+ * Fixes miscounted brackets, the usual slip in deeply nested JSON: an object left open before ",{" in
+ * a list (a key was expected), a closer of the wrong kind, a block never closed, text after the end.
+ */
+function rebalance(json: string) {
+  const start = json.search(/[{[]/);
+  if (start < 0) return json;
+  const stack: string[] = [];
+  let out = "";
+  let inString = false;
+  let last = ""; // last significant character outside strings
+  for (let i = start; i < json.length; i++) {
+    const char = json[i];
+    if (inString) {
+      out += char;
+      if (char === "\\") out += json[++i] ?? "";
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      out += char;
+      continue;
+    }
+    // ",{" or ",[" where an object expects a key: that object should have been closed before the comma.
+    while ((char === "{" || char === "[") && last === "," && stack.at(-1) === "}" && stack.length > 1) {
+      const comma = out.lastIndexOf(",");
+      out = `${out.slice(0, comma)}}${out.slice(comma)}`;
+      stack.pop();
+    }
+    if (char === "}" || char === "]") {
+      // A closer of the other kind: close what is open up to it.
+      while (stack.length && stack.at(-1) !== char && stack.includes(char)) out += stack.pop();
+      if (stack.at(-1) !== char) continue; // nothing open of that kind: an extra closer, dropped
+      stack.pop();
+      out += char;
+      if (!stack.length) return out; // the end: anything after it is dropped
+    } else {
+      if (char === "{" || char === "[") stack.push(char === "{" ? "}" : "]");
+      else if (char === '"') inString = true;
+      out += char;
+    }
+    last = char;
+  }
+  return out + stack.reverse().join("");
 }

@@ -1,11 +1,13 @@
 /// <reference types="vite/client" />
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { HeadContent, Link, Navigate, Outlet, Scripts, createRootRoute, useLocation } from "@tanstack/react-router";
-import { ChevronDownIcon, ChevronUpIcon, SettingsIcon } from "lucide-react";
+import { ChartPieIcon, ChevronLeftIcon, ChevronRightIcon, DatabaseIcon, FlaskConicalIcon, LibraryIcon, PencilRulerIcon, SettingsIcon, ShapesIcon, Table2Icon, type LucideIcon } from "lucide-react";
 import { last } from "@/lib/last";
+import { ensureBuiltIns } from "@/lib/library";
+import { persist } from "@/lib/store";
 import { authStatus } from "@/server/ms";
 import { loadHubConfig } from "@/lib/hub-config";
-import { APP_TITLE, PRIMARY_COLOR, SCREENS, SCREEN_PATHS, SHOW_HEADER, firstScreen, onConfigChange } from "@/config";
+import { APP_TITLE, PRIMARY_COLOR, SCREENS, SCREEN_PATHS, firstScreen, onConfigChange, type Screen } from "@/config";
 import css from "@/styles.css?url";
 
 export const Route = createRootRoute({
@@ -22,7 +24,7 @@ export function readableOn(color: string) {
   const m = color.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
   if (!m) return "#ffffff";
   const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16) / 255);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 ? "#18181b" : "#ffffff";
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 ? "#111827" : "#ffffff";
 }
 
 function Shell({ children }: { children: ReactNode }) {
@@ -39,18 +41,12 @@ function Shell({ children }: { children: ReactNode }) {
   );
 }
 
-const nav = () =>
-  (
-    [
-      [SCREEN_PATHS.viewer, "Report Viewer", SCREENS.viewer],
-      [SCREEN_PATHS.builder, "Report builder", SCREENS.builder],
-      [SCREEN_PATHS.datasets, "Dataset builder", SCREENS.datasets],
-      [SCREEN_PATHS.dax, "DAX builder", SCREENS.dax],
-      [SCREEN_PATHS.pivot, "TCD builder", SCREENS.pivot],
-      [SCREEN_PATHS.library, "Library", SCREENS.library],
-    ] as const
-  ).filter(([, , shown]) => shown);
-const hiddenPaths = () => (Object.keys(SCREENS) as (keyof typeof SCREENS)[]).filter((k) => !SCREENS[k]).map((k) => SCREEN_PATHS[k]);
+/** Labels under the icons of the rail. */
+const SHORT: Record<Screen, string> = { viewer: "Viewer", editor: "Editor", model: "Dataset", research: "Research", schemas: "Schema", excel: "Excel", library: "Library" };
+const ICONS: Record<Screen, LucideIcon> = { viewer: ChartPieIcon, editor: PencilRulerIcon, model: DatabaseIcon, research: FlaskConicalIcon, schemas: ShapesIcon, excel: Table2Icon, library: LibraryIcon };
+/** Screens in the menu, in the order of SCREENS (read at render: an admin may hide some). */
+const nav = () => (Object.keys(SCREENS) as Screen[]).filter((k) => SCREENS[k]);
+const hiddenPaths = () => (Object.keys(SCREENS) as Screen[]).filter((k) => !SCREENS[k]).map((k) => SCREEN_PATHS[k]);
 
 type Status = Awaited<ReturnType<typeof authStatus>>;
 
@@ -62,57 +58,70 @@ function Layout() {
   // Options: the SharePoint file is read at start; any change draws the screens again.
   const [version, setVersion] = useState(0);
   useEffect(() => onConfigChange(() => setVersion((v) => v + 1)), []);
-  useEffect(() => void loadHubConfig().catch((e) => console.warn("Config file not read", e)), []);
+  useEffect(() => {
+    void loadHubConfig().catch((e) => console.warn("Config file not read", e));
+    void ensureBuiltIns();
+    persist();
+  }, []);
   useEffect(() => document.body.style.setProperty("--color-primary-foreground", readableOn(PRIMARY_COLOR)), [version]);
-  // The user can fold the header (remembered in this browser); a small button brings it back.
-  const [folded, setFolded] = useState(() => last.get("header") === "folded");
+  // The menu can be hidden (remembered in this browser); a small tab brings it back.
+  const [folded, setFolded] = useState(() => last.get("sidebar") === "folded");
   const fold = (next: boolean) => {
-    last.set("header", next ? "folded" : "open");
+    last.set("sidebar", next ? "folded" : "open");
     setFolded(next);
   };
   // A hidden screen is closed to direct links too.
   if (hiddenPaths().includes(path)) return <Navigate to={firstScreen()} search={{} as never} replace />;
-  // Hidden header: still shown while the user has to sign in.
-  const mustSignIn = status !== undefined && !status.signedIn;
-  const header = (SHOW_HEADER && !folded) || mustSignIn;
+  const item = (to: string, label: string, Icon: LucideIcon, exact = false) => (
+    <Link
+      key={to}
+      to={to}
+      title={label}
+      className="flex w-[60px] flex-col items-center gap-1 rounded-xl py-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+      activeProps={{ className: "bg-muted !text-foreground" }}
+      activeOptions={{ exact }}
+    >
+      <Icon className="size-5" strokeWidth={1.7} />
+      <span className="text-[10.5px] leading-none font-medium">{label}</span>
+    </Link>
+  );
+  const shown = nav();
+  /** Groups of the rail: reports, data, schemas, library. */
+  const groups = [["viewer", "editor"], ["model", "research"], ["schemas", "excel"], ["library"]].map((g) => g.filter((k) => shown.includes(k as Screen)) as Screen[]).filter((g) => g.length);
 
   return (
-    <div className="flex h-full flex-col">
-      {header && (
-        <header className="flex h-11 shrink-0 items-center gap-1 border-b bg-card px-3">
-          <span className="mr-3 font-semibold" style={{ color: PRIMARY_COLOR }}>
-            {APP_TITLE}
-          </span>
-          {nav().map(([to, label]) => (
-            <Link key={to} to={to} className="rounded-md px-2.5 py-1 text-muted-foreground hover:text-foreground" activeProps={{ className: "bg-muted !text-foreground" }} activeOptions={{ exact: to === "/" }}>
-              {label}
-            </Link>
-          ))}
-          <div className="ml-auto flex items-center gap-2 text-[12px] text-muted-foreground">
-            {status?.signedIn ? (
-              status.account
-            ) : status ? (
-              <Link to="/settings" search={{ tab: "microsoft" }} className="btn-primary h-7">
-                Sign in with Microsoft
+    <div className="flex h-full">
+      {folded ? (
+        <button type="button" title="Show the menu" onClick={() => fold(false)} className="fixed bottom-3 left-0 z-50 flex h-9 w-4 items-center justify-center rounded-r-md border border-l-0 bg-card text-muted-foreground shadow-sm hover:w-5 hover:text-foreground">
+          <ChevronRightIcon className="size-3.5" />
+        </button>
+      ) : (
+        <aside className="flex w-[72px] shrink-0 flex-col items-center border-r bg-card py-3">
+          <nav className="flex min-h-0 flex-1 flex-col items-center overflow-y-auto">
+            {groups.map((g, i) => (
+              <div key={i} className="flex flex-col items-center gap-0.5 border-t py-2 first:border-t-0 first:pt-0">
+                {g.map((k) => item(SCREEN_PATHS[k], SHORT[k], ICONS[k], k === "library"))}
+              </div>
+            ))}
+          </nav>
+          <div className="flex flex-col items-center gap-1.5 border-t pt-2">
+            {item("/settings", "Settings", SettingsIcon)}
+            {status && !status.signedIn ? (
+              <Link to="/settings" title="Sign in with Microsoft" className="flex size-9 items-center justify-center rounded-full bg-destructive text-[11px] font-semibold text-white">
+                In
+              </Link>
+            ) : status?.account ? (
+              <Link to="/" title={`${status.account} — home`} className="flex size-9 items-center justify-center rounded-full bg-muted text-[13px] font-semibold hover:bg-zinc-200">
+                {status.account.slice(0, 1).toUpperCase()}
               </Link>
             ) : null}
-            <Link to="/settings" search={{ tab: undefined }} className="icon-btn" title="Settings (config, AI, Microsoft account)" activeProps={{ className: "bg-muted" }}>
-              <SettingsIcon />
-            </Link>
-            {SHOW_HEADER && !mustSignIn && (
-              <button type="button" className="icon-btn" title="Hide the top bar" onClick={() => fold(true)}>
-                <ChevronUpIcon />
-              </button>
-            )}
+            <button type="button" className="icon-btn size-7" title="Hide the menu" onClick={() => fold(true)}>
+              <ChevronLeftIcon />
+            </button>
           </div>
-        </header>
+        </aside>
       )}
-      {SHOW_HEADER && folded && !header && (
-        <button type="button" title="Show the top bar" onClick={() => fold(false)} className="fixed top-0 left-1/2 z-50 flex h-4 w-10 -translate-x-1/2 items-center justify-center rounded-b-md border border-t-0 bg-card text-muted-foreground shadow-sm hover:h-5 hover:text-foreground [&_svg]:size-3.5">
-          <ChevronDownIcon />
-        </button>
-      )}
-      <main key={version} className="min-h-0 flex-1">
+      <main key={version} className="min-w-0 flex-1">
         <Outlet />
       </main>
     </div>

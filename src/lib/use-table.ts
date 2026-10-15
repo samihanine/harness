@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { readTable, type Table } from "./excel";
+import { readRows, type Table } from "./excel";
 import { errorText } from "./ms";
-import type { ExcelEntry } from "./store";
+import type { SchemaEntry } from "./store";
 
 /**
- * The Excel table. Writes are optimistic: the change is shown at once, the requests run one after the
- * other (row positions stay consistent), and a failure restores the file's real content.
+ * The rows of a schema's Excel table. Writes are optimistic: the change is shown at once, the requests
+ * run one after the other (row positions stay consistent), and a failure restores the file's content.
  */
-export function useTable(excel?: ExcelEntry) {
+export function useTable(schema?: SchemaEntry) {
   const [table, setTable] = useState<Table>();
   const [error, setError] = useState<string>();
   const current = useRef<Table | undefined>(undefined);
@@ -18,20 +18,22 @@ export function useTable(excel?: ExcelEntry) {
     current.current = t;
     setTable(t);
   };
-  const id = useRef(excel?.id);
-  id.current = excel?.id;
+  const excel = schema?.excel;
+  const key = excel ? `${excel.itemId}|${excel.table}|${JSON.stringify(schema!.fields)}` : undefined;
+  const id = useRef(key);
+  id.current = key;
   const reload = useCallback(async () => {
-    if (!excel) return show(undefined);
+    if (!excel || !schema) return show(undefined);
     try {
-      const t = await readTable(excel);
+      const t = await readRows(excel, schema.fields);
       // Another file was chosen meanwhile: its own read shows it.
-      if (id.current !== excel.id) return;
+      if (id.current !== key) return;
       show(t);
       setError(undefined);
     } catch (e) {
-      if (id.current === excel.id) setError(errorText(e));
+      if (id.current === key) setError(errorText(e));
     }
-  }, [excel?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     // Not the previous file's rows (nor its error) while the new one loads.
     show(undefined);
@@ -77,3 +79,4 @@ export function useTable(excel?: ExcelEntry) {
   return { table, error, reload, write };
 }
 
+export type Write = ReturnType<typeof useTable>["write"];

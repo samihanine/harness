@@ -145,7 +145,7 @@ export async function* runAgent({
   let current = live.get(conversationId);
   if (current && (current.model !== model || current.session.chars > LIMITS.sessionChars)) current = undefined;
   const fresh = !current;
-  if (!current) live.set(conversationId, (current = { session: openSession(model, "agent"), model }));
+  if (!current) live.set(conversationId, (current = { session: openSession(model, "agent", conversationId), model }));
   const conv = current;
   const now = yield* readShown("Reading what you see");
   /** What changed since the LLM was last told, as tags (both on a new conversation). */
@@ -181,6 +181,7 @@ export async function* runAgent({
   };
   let retries = 0;
   let reminded = false;
+  let saveRetried = false;
   try {
     for (let turn = 0; turn <= LIMITS.steps; turn++) {
       signal.throwIfAborted();
@@ -203,8 +204,10 @@ export async function* runAgent({
       } catch (error) {
         // Plain prose (no JSON at all) is the model answering: taken as the final answer, no extra round trip.
         if (error instanceof ReplyError && !reply.includes("{") && reply.trim()) return yield* done(reply.trim());
-        if (!(error instanceof ReplyError) || ++retries > LIMITS.retries) return yield* done(reply.trim());
-        prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\nSend the corrected JSON only.`)}\n\n${FORMAT}`;
+        if (!(error instanceof ReplyError)) throw error;
+        // Still unreadable after the retries: said plainly (the raw JSON is no answer for the user).
+        if (++retries > LIMITS.retries) return yield* done(`⚠️ The assistant's last reply could not be read (${error.message}), so it stopped there.${steps.length ? " The steps above were done." : ""} Ask again to finish.`);
+        prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\nSend the corrected JSON only, shorter if needed (fewer calls or operations; count the closing brackets).`)}\n\n${FORMAT}`;
         turn--;
         continue;
       }
@@ -223,6 +226,22 @@ export async function* runAgent({
             FORMAT,
           ].join("\n\n");
           continue;
+        }
+        // The changes are saved before the answer is shown: a refused save goes back to the model once
+        // (its draft is kept), so it fixes the files instead of announcing changes that were not saved.
+        if (agent.finish && !saveRetried) {
+          yield { steps, llm, remote, status: { label: "Saving the changes" } };
+          let note: string | undefined;
+          try {
+            note = await agent.finish();
+          } catch (error) {
+            saveRetried = true;
+            prompt = [tag("save_failed", `Your changes could not be saved: ${describeError(error)}\nNothing was saved; your draft is kept. Fix the file named in the error (or discard_changes and redo the step), then answer.`), FORMAT].join("\n\n");
+            continue;
+          }
+          const text = String(answer.args.text ?? "");
+          yield { steps, llm, remote, answer: note ? `${text}\n\n${note}` : text };
+          return;
         }
         return yield* done(String(answer.args.text ?? ""));
       }

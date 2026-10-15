@@ -1,6 +1,6 @@
 /**
- * Views of an Excel table in the dataset builder: search, filters (field, operator, value), sorts,
- * grouping, hidden fields, column widths — applied in the browser to the rows read from the file.
+ * Views of an Excel table in the Excel editor: search, filters (field, operator, value), sorts,
+ * kanban grouping, hidden fields, column widths — applied in the browser to the rows read from the file.
  */
 import { listOf, type Field, type FieldType, type Row } from "./schema";
 
@@ -9,12 +9,13 @@ export const OPS: Record<Op, string> = { contains: "contains", is: "is", isNot: 
 export const OPS_OF: Record<FieldType, Op[]> = {
   string: ["contains", "is", "empty", "notEmpty"],
   text: ["contains", "empty", "notEmpty"],
+  url: ["contains", "is", "empty", "notEmpty"],
   image: ["empty", "notEmpty"],
+  file: ["empty", "notEmpty"],
   number: ["is", "gt", "lt", "empty", "notEmpty"],
-  integer: ["is", "gt", "lt", "empty", "notEmpty"],
+  rating: ["is", "gt", "lt", "empty", "notEmpty"],
   date: ["is", "before", "after", "empty", "notEmpty"],
   option: ["is", "isNot", "empty", "notEmpty"],
-  boolean: ["true", "false"],
 };
 export const NO_VALUE: Op[] = ["empty", "notEmpty", "true", "false"];
 
@@ -22,10 +23,11 @@ export const NO_VALUE: Op[] = ["empty", "notEmpty", "true", "false"];
 export type Filter = { field: string; op: Op; value?: string; values?: string[] };
 export type Sort = { field: string; desc?: boolean };
 /**
- * `hidden` undefined = the default columns (the first five fields); `group` = an option field;
+ * `hidden` undefined = the default columns (the first five fields); `group` = the option field giving the kanban's columns;
  * `widths` = column widths (px) set by the user.
  */
-export type TableView = { search?: string; filters: Filter[]; sorts: Sort[]; hidden?: string[]; group?: string; widths?: Record<string, number> };
+export type Layout = "table" | "detail" | "kanban";
+export type TableView = { search?: string; filters: Filter[]; sorts: Sort[]; hidden?: string[]; group?: string; widths?: Record<string, number>; layout?: Layout };
 export const EMPTY_VIEW: TableView = { filters: [], sorts: [] };
 
 /** A stored view, from this version or an older one (other shapes): only what can be read is kept. */
@@ -38,6 +40,7 @@ export function readView(v: unknown): TableView {
     hidden: Array.isArray(o.hidden) ? (o.hidden as string[]) : undefined,
     group: typeof o.group === "string" ? o.group : undefined,
     widths: o.widths && typeof o.widths === "object" ? (o.widths as Record<string, number>) : undefined,
+    layout: o.layout === "detail" || o.layout === "kanban" ? o.layout : undefined,
   };
 }
 
@@ -63,7 +66,7 @@ export function matches(row: Row, f: Filter, fields: Field[]) {
       return !f.value || String(v ?? "").toLowerCase().includes(f.value.toLowerCase());
     case "is":
       if (field.type === "option") return !f.values?.length || listOf(v).some((x) => f.values!.includes(x));
-      if (field.type === "number" || field.type === "integer") return !f.value || Number(v) === Number(f.value);
+      if (field.type === "number" || field.type === "rating") return !f.value || Number(v) === Number(f.value);
       return !f.value || String(v ?? "").toLowerCase() === f.value.toLowerCase();
     case "isNot":
       return !f.values?.length || !listOf(v).some((x) => f.values!.includes(x));
@@ -86,8 +89,7 @@ function compare(a: unknown, b: unknown, field?: Field) {
     const i = (v: unknown) => field.options?.findIndex((o) => o.value === listOf(v)[0]) ?? 0;
     return i(a) - i(b);
   }
-  if (field?.type === "number" || field?.type === "integer") return Number(a) - Number(b);
-  if (field?.type === "boolean") return Number(b === true) - Number(a === true);
+  if (field?.type === "number" || field?.type === "rating") return Number(a) - Number(b);
   return String(a).localeCompare(String(b));
 }
 
@@ -106,15 +108,6 @@ export function apply(rows: Row[], view: TableView, fields: Field[]) {
   });
 }
 
-/** Rows split by the values of an option field (options' order, then no value); one group without it. */
-export function groupRows<T extends { row: Row }>(items: T[], field: Field | undefined) {
-  if (!field) return [{ key: "", label: "", color: undefined, items }];
-  const keys = [...(field.options ?? []).map((o) => o.value), ""];
-  return keys
-    .map((key) => ({ key, label: key || "No value", color: field.options?.find((o) => o.value === key)?.color, items: items.filter(({ row }) => (listOf(row[field.name])[0] ?? "") === key) }))
-    .filter((g) => g.items.length);
-}
-
 export function filterLabel(f: Filter, fields: Field[]) {
   const field = fields.find((x) => x.name === f.field);
   const value = f.values?.length ? f.values.join(", ") : f.value;
@@ -127,7 +120,8 @@ export const viewText = (view: TableView, fields: Field[]) =>
     view.search && `search "${view.search}"`,
     view.filters.length && `filters: ${view.filters.map((f) => filterLabel(f, fields)).join("; ")}`,
     view.sorts.length && `sorted by ${view.sorts.map((s) => `${s.field}${s.desc ? " desc" : ""}`).join(", ")}`,
-    view.group && `grouped by ${view.group}`,
+    view.group && view.layout === "kanban" && `kanban columns by ${view.group}`,
+    view.layout && view.layout !== "table" && `${view.layout} layout`,
   ]
     .filter(Boolean)
     .join(", ") || "no filter";

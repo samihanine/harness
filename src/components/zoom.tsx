@@ -31,7 +31,7 @@ export function Zoom({ report }: { report?: Report }) {
         <MinusIcon />
       </button>
       <button type="button" className="h-7 w-12 text-[12px] tabular-nums hover:bg-muted" title="100 %" onClick={() => void go(1)}>
-        {Math.round((zoom ?? 1) * 100)} %
+        {Math.round((zoom || 1) * 100)} %
       </button>
       <button type="button" className="icon-btn" title="Zoom in" onClick={() => step(1)}>
         <PlusIcon />

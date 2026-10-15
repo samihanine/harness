@@ -1,33 +1,32 @@
 /**
  * "Explain this visual": one plain request to the LLM (no tools) with what the visual shows — its
  * fields, its data as exported (first rows), the filters and slicer selections of its page, and for a
- * slicer its options and the model's description of its field — and the report's notes. Short,
- * structured markdown, in English (the examples in the prompt set the length and the form).
+ * slicer its options and the model's description of its field — and the report's notes. Short
+ * markdown in English, its form adapted to the visual and to what its data shows.
  */
 import type { VisualDescriptor } from "powerbi-client";
 import { AI_MODELS, openSession } from "./llm";
 import { pageText, visualText, type Report } from "@/lib/pbi";
 import { settings, type DatasetEntry } from "@/lib/store";
 
-const PROMPT = `You explain ONE visual of a Power BI report to a business user, from the data given below only (never invent a figure).
-Reply in English, in markdown, SHORT: at most 5 bullet points and about 80 words. Round numbers (661.8M, 12.5K, +8%). Name only the figures that matter (highest, lowest, biggest change); never list every value. Mention filters only when they change the reading.
+const PROMPT = `You are a sharp data analyst. A business user clicked ONE visual of a Power BI report and asks: "what does this tell me?". Below are the visual (type, fields, filters, its data as exported), the page it sits on (other visuals, filters, slicers) and notes about the report.
 
-Example for a chart:
-**Monthly sales, this year vs last year.**
-- **Peak:** May, 661.8M (+8% vs LY).
-- **Low:** October, 214.7M.
-- **Trend:** above last year in Jan–Feb and May–Jul, below in March (−7%).
-- **Scope:** current year only; Central and Unknown zones excluded.
+Your job is to make the visual SPEAK: tell the user what they would only see after studying it for a few minutes.
+- Find what matters in the data: the leader and how far ahead it is, the concentration (e.g. "the top 3 make 72 %"), the gap between best and worst, the trend and where it breaks, outliers, what is unexpectedly low or missing, a value that changes the story once compared with the total or another visual of the page. Compute these yourself (shares, differences, ratios, averages) from the rows given.
+- Fit the form to the visual and the data — no fixed template:
+  · a time series: trend, peak, dip, turning point, the latest value vs the usual level;
+  · a ranking (bar chart, table): leader, tail, concentration, an item that stands out;
+  · a card / KPI: put the number in context (share of what, compared to what on the page);
+  · a matrix: the cell or row that breaks the pattern;
+  · a slicer: what it filters, what is selected now and what that hides, which choice is worth trying;
+  · a pie / donut: the dominant part and whether the split is balanced.
+- Say only what this data supports; when the rows are cut or a filter limits the reading, say what is missing or how the filter changes the meaning.
+- Lead with the single most useful insight in one bold sentence. Then 1 to 4 short points, only if they add something. Short: 40 to 120 words depending on how much the data says.
+- Round numbers (661.8M, 12.5K, +8 %, 3×). Never list every value, never restate the title or the axes, no generic advice ("monitor this metric"), no hedging filler.
+- Answer in English, in markdown.
 
-Example for a slicer:
-**Filters the page by season.**
-- **Options:** Fall, Winter, Summer, Cruise, Permanent, Others.
-- **Now:** nothing selected, so every season is shown.
-- **Tip:** pick one season to compare its sales with the rest.
-
-Example for a card:
-**Total revenue of the selection: 1.97B.**
-- Covers all products and regions (no filter).`;
+Good: "**Two regions make 81 % of the revenue: East (1.1B) leads West by 2×.**"
+Bad: "This chart shows revenue by region. East has the highest revenue."`;
 
 export async function explainVisual(report: Report, page: string, visual: string, context: string, dataset?: DatasetEntry) {
   const target = (await report.getPages()).find((p) => p.name === page);

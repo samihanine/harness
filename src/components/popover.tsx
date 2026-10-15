@@ -49,7 +49,7 @@ export function Popover({
       </span>
       {pos &&
         createPortal(
-          <div ref={panel} style={{ top: pos.top, left: pos.left, width }} className={`fixed z-50 flex flex-col gap-2 rounded-lg border bg-card p-2 shadow-lg ${className}`}>
+          <div ref={panel} style={{ top: pos.top, left: pos.left, width }} className={`fixed z-50 flex flex-col gap-2 rounded-xl border bg-card p-2 shadow-xl ${className}`}>
             {children(close)}
           </div>,
           document.body,

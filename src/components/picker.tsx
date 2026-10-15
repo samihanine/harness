@@ -1,99 +1,66 @@
-/** Combobox (shadcn style): searchable list of library items, with an "Add" entry that takes a link. */
-import { useState } from "react";
-import { CheckIcon, ChevronsUpDownIcon, PlusIcon, SearchIcon } from "lucide-react";
-import { errorText } from "@/lib/ms";
+/** Combobox (shadcn style): searchable list of library items, shown as the screen's title. */
+import { useState, type ReactNode } from "react";
+import { CheckIcon, ChevronsUpDownIcon, SearchIcon } from "lucide-react";
 import { Popover } from "./popover";
 
-type Item = { id: string; label: string; hint?: string };
+export type PickerItem = { id: string; label: string; hint?: string; icon?: ReactNode };
 
 export function Picker({
   items,
   value,
   onChange,
   placeholder,
-  add,
-  className = "w-60",
+  empty = "Nothing found.",
+  footer,
+  className = "",
 }: {
-  items: Item[];
+  items: PickerItem[];
   value?: string;
   onChange: (id: string) => void;
   placeholder: string;
-  /** Adds an item from a link (and an optional second value, `extra`) and returns its id. */
-  add?: { label: string; placeholder: string; extra?: { label: string; placeholder: string }; run: (link: string, extra?: string) => Promise<string> };
+  /** Shown when the list is empty (e.g. where to add items). */
+  empty?: ReactNode;
+  /** Bottom of the list (e.g. a link to the library). */
+  footer?: ReactNode;
   className?: string;
 }) {
   const [search, setSearch] = useState("");
-  const [adding, setAdding] = useState<{ link: string; extra?: string; busy?: boolean; error?: string }>();
   const current = items.find((i) => i.id === value);
   const shown = items.filter((i) => `${i.label} ${i.hint ?? ""}`.toLowerCase().includes(search.toLowerCase()));
-  const submit = async (close: () => void) => {
-    if (!add || !adding?.link.trim()) return;
-    setAdding({ ...adding, busy: true, error: undefined });
-    try {
-      onChange(await add.run(adding.link.trim(), adding.extra?.trim() || undefined));
-      setAdding(undefined);
-      close();
-    } catch (e) {
-      setAdding({ ...adding, busy: false, error: errorText(e) });
-    }
-  };
   return (
-    <span className={className}>
+    <span className={`max-w-xs min-w-24 shrink-0 ${className}`}>
       <Popover
         full
-        width={320}
+        width={380}
         trigger={(open) => (
-          <button type="button" onClick={() => (setSearch(""), setAdding(undefined), open())} className="flex h-8 w-full items-center gap-2 rounded-md border bg-card px-2.5 text-left text-[13px] shadow-xs hover:bg-muted/50">
-            <span className={`flex-1 truncate ${current ? "" : "text-muted-foreground"}`}>{current?.label ?? placeholder}</span>
-            <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
+          <button type="button" onClick={() => (setSearch(""), open())} className="-ml-1 flex h-10 w-fit max-w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-muted">
+            {current?.icon}
+            <span className={`truncate text-[15px] font-medium ${current ? "" : "text-muted-foreground"}`}>{current?.label ?? placeholder}</span>
+            {current?.hint && <span className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-[11.5px] font-medium text-muted-foreground">{current.hint}</span>}
+            <ChevronsUpDownIcon className="size-4 shrink-0 text-muted-foreground" />
           </button>
         )}
       >
-        {(close) =>
-          adding ? (
-            <div className="flex flex-col gap-2 p-1">
-              <span className="label">{add!.label}</span>
-              <input autoFocus className="input" placeholder={add!.placeholder} value={adding.link} onChange={(e) => setAdding({ ...adding, link: e.target.value })} onKeyDown={(e) => e.key === "Enter" && void submit(close)} />
-              {add!.extra && (
-                <>
-                  <span className="label">{add!.extra.label}</span>
-                  <input className="input" placeholder={add!.extra.placeholder} value={adding.extra ?? ""} onChange={(e) => setAdding({ ...adding, extra: e.target.value })} onKeyDown={(e) => e.key === "Enter" && void submit(close)} />
-                </>
-              )}
-              {adding.error && <p className="text-[11px] break-words text-destructive">{adding.error}</p>}
-              <div className="flex justify-end gap-1.5">
-                <button type="button" className="btn h-7" onClick={() => setAdding(undefined)}>
-                  Back
+        {(close) => (
+          <>
+            <label className="flex items-center gap-2 border-b px-1.5 pb-2">
+              <SearchIcon className="size-4 text-muted-foreground" />
+              <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search…" className="h-8 flex-1 bg-transparent outline-none" />
+            </label>
+            <div className="max-h-80 overflow-y-auto">
+              {shown.map((i) => (
+                <button key={i.id} type="button" onClick={() => (onChange(i.id), close())} className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-muted">
+                  <CheckIcon className={`size-4 shrink-0 text-primary ${i.id === value ? "" : "invisible"}`} />
+                  {i.icon}
+                  <span className="min-w-0 flex-1 truncate">{i.label}</span>
+                  {i.hint && <span className="shrink-0 text-[12px] text-muted-foreground">{i.hint}</span>}
                 </button>
-                <button type="button" className="btn-primary h-7" disabled={adding.busy || !adding.link.trim()} onClick={() => void submit(close)}>
-                  {adding.busy ? "Reading…" : "Add"}
-                </button>
-              </div>
+              ))}
+              {shown.length === 0 && <div className="px-2.5 py-3 text-[13px] text-muted-foreground">{items.length ? "Nothing found." : empty}</div>}
             </div>
-          ) : (
-            <>
-              <label className="flex items-center gap-2 border-b px-1 pb-1.5">
-                <SearchIcon className="size-3.5 text-muted-foreground" />
-                <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search…" className="h-7 flex-1 bg-transparent outline-none" />
-              </label>
-              <div className="max-h-72 overflow-y-auto">
-                {shown.map((i) => (
-                  <button key={i.id} type="button" onClick={() => (onChange(i.id), close())} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
-                    <CheckIcon className={`size-3.5 shrink-0 ${i.id === value ? "" : "invisible"}`} />
-                    <span className="min-w-0 flex-1 truncate">{i.label}</span>
-                    {i.hint && <span className="shrink-0 text-[11px] text-muted-foreground">{i.hint}</span>}
-                  </button>
-                ))}
-                {shown.length === 0 && <p className="px-2 py-2 text-[12px] text-muted-foreground">Nothing found.</p>}
-              </div>
-              {add && (
-                <button type="button" onClick={() => setAdding({ link: "" })} className="flex items-center gap-2 border-t px-2 pt-2 text-left text-[13px] hover:text-foreground">
-                  <PlusIcon className="size-3.5" /> {add.label}
-                </button>
-              )}
-            </>
-          )
-        }
+            {footer && <div className="border-t px-1 pt-2">{footer}</div>}
+          </>
+        )}
       </Popover>
     </span>
   );

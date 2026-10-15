@@ -1,81 +1,60 @@
 /**
- * The app's options. The values below are the defaults; an admin can change them from Settings ›
- * Config, saved in a JSON file on SharePoint (and cached in this browser), without a developer. They are
+ * The app's options. The values below are the defaults; an admin can change them from Settings
+ * (saved in a JSON file on SharePoint, and cached in this browser), without a developer. They are
  * read at render time: `applyConfig` changes them and the screens are drawn again.
  */
 
-/** Name shown in the header and the browser tab. */
+/** Name shown in the sidebar and the browser tab. */
 export let APP_TITLE = "Hub";
 /** Primary color (buttons, active states), any CSS color. */
 export let PRIMARY_COLOR = "#18181b";
 
-/** Top bar (app name, screens, account, settings). Hidden, it still appears when the user must sign in. */
-export let SHOW_HEADER = true;
-
-/** AI panel on every screen: false hides every "AI" tab (each screen's own AI flag below also applies). */
+/** AI panel on every screen: false hides every AI chat (the screens' own AI flags below also apply). */
 export let AI_PANEL = true;
+
+/** Report viewer › Guides: live preview of the clicked visual (a second, light embed of that visual alone). */
+export let VISUAL_PREVIEW = true;
+/** Report viewer › Guides: "Explain" button of the clicked visual (the AI reads its data). */
+export let VISUAL_EXPLAIN = true;
+/** Report viewer › Guides: guides written in the viewer (title, content, new guide rows, ids); false = read only. */
+export let GUIDE_EDITOR = true;
+/** Excel editor: uploading files into image / file fields (to the schema's uploads folder, set in the Schema editor). */
+export let EXCEL_UPLOAD = true;
 
 /** Export features and their buttons. */
 export const EXPORT = {
-  /** Viewer, Guides tab: "PDF" of the clicked visual alone (browser print dialog). */
+  /** Report viewer › Guides: "PDF" of the clicked visual alone (browser print dialog). */
   visualPdf: true,
-  /** Viewer, Guides tab: "PNG" of the clicked visual alone (captured from the tab: the browser asks to share it once). */
+  /** Report viewer › Guides: "PNG" of the clicked visual alone (captured from the tab: the browser asks to share it once). */
   visualPng: false,
-  /** Viewer and builder: "Export" button of the report (PDF, .pbix). */
+  /** Report viewer and editor: "Export" button of the report (PDF, .pbix). */
   report: true,
 };
 
 /**
- * Screens and panel tabs shown in the app: set one to false to hide it
- * (e.g. VIEWER_TABS.guide = false hides the Guides tab of the viewer). A hidden screen is also closed
- * to direct links (it opens the first screen shown instead). Settings can never be hidden.
+ * Screens shown in the app: set one to false to hide it. A hidden screen is also closed to direct
+ * links (it opens the first screen shown instead). Settings can never be hidden.
  */
 export const SCREENS = {
-  library: true,
   viewer: true,
-  builder: true,
-  datasets: true,
-  dax: true,
-  pivot: true,
+  editor: true,
+  model: true,
+  research: true,
+  schemas: true,
+  excel: true,
+  library: true,
 };
+export type Screen = keyof typeof SCREENS;
 
+/** Tabs of the report viewer's panel (the only panel with tabs); "ai" also needs AI_PANEL. */
 export const VIEWER_TABS = {
-  info: true,
-  guide: true,
+  guides: true,
+  links: true,
   ai: true,
 };
-
-export const BUILDER_TABS = {
-  ai: true,
-  structure: true,
-};
-
-export const DATASET_TABS = {
-  ai: true,
-  row: true,
-  column: true,
-};
-
-export const DAX_TABS = {
-  ai: true,
-};
-
-export const PIVOT_TABS = {
-  fields: true,
-  ai: true,
-};
-
-/** Viewer, Guides tab: "Explain" button of the clicked visual (the AI reads its data). */
-export let VISUAL_EXPLAIN = true;
-
-/** Viewer, Guides tab: live preview of the clicked visual (a second, light embed of that visual alone). */
-export let VISUAL_PREVIEW = true;
-
-/** Viewer: guides and info links can be added / edited / deleted (false = read only). */
-export let REPORT_VIEWER_EDITOR = true;
 
 /** Instructions added to the AI's own (company vocabulary, tone, rules): for every screen, and per screen. */
-export const PROMPTS = { all: "", viewer: "", builder: "", datasets: "", dax: "", pivot: "" };
+export const PROMPTS = { all: "", viewer: "", editor: "", model: "", research: "", schemas: "", excel: "" };
 export type PromptScreen = Exclude<keyof typeof PROMPTS, "all">;
 /** A screen's AI instructions with the admin's additions. */
 export const withPrompts = (screen: PromptScreen, instructions: string) => {
@@ -83,10 +62,11 @@ export const withPrompts = (screen: PromptScreen, instructions: string) => {
   return added ? `${instructions}\n\nAdditional instructions from the administrator (follow them):\n${added}` : instructions;
 };
 
-/** Address of each screen. */
-export const SCREEN_PATHS: Record<keyof typeof SCREENS, string> = { library: "/", viewer: "/viewer", builder: "/builder", datasets: "/datasets", dax: "/dax", pivot: "/pivot" };
+/** Address and name of each screen. */
+export const SCREEN_PATHS: Record<Screen, string> = { viewer: "/viewer", editor: "/editor", model: "/model", research: "/research", schemas: "/schemas", excel: "/excel", library: "/" };
+export const SCREEN_LABELS: Record<Screen, string> = { viewer: "Report viewer", editor: "Report editor", model: "Dataset editor", research: "Researcher", schemas: "Schema editor", excel: "Excel editor", library: "Library" };
 /** First screen shown (where a hidden screen leads). */
-export const firstScreen = () => SCREEN_PATHS[(Object.keys(SCREENS) as (keyof typeof SCREENS)[]).find((k) => SCREENS[k]) ?? "library"];
+export const firstScreen = () => SCREEN_PATHS[(Object.keys(SCREENS) as Screen[]).find((k) => SCREENS[k]) ?? "library"];
 
 /** Tabs of a panel kept by their flag (`id` = key of the flags); "ai" tabs also need AI_PANEL. */
 export const visible = <T extends { id: string }>(tabs: T[], flags: Record<string, boolean>) => tabs.filter((t) => flags[t.id] !== false && (t.id !== "ai" || AI_PANEL));
@@ -97,17 +77,13 @@ export const visible = <T extends { id: string }>(tabs: T[], flags: Record<strin
 export type HubConfig = {
   appTitle: string;
   primaryColor: string;
-  showHeader: boolean;
   aiPanel: boolean;
-  visualExplain: boolean;
   visualPreview: boolean;
-  viewerEditor: boolean;
+  visualExplain: boolean;
+  guideEditor: boolean;
+  excelUpload: boolean;
   screens: typeof SCREENS;
   viewerTabs: typeof VIEWER_TABS;
-  builderTabs: typeof BUILDER_TABS;
-  datasetTabs: typeof DATASET_TABS;
-  daxTabs: typeof DAX_TABS;
-  pivotTabs: typeof PIVOT_TABS;
   export: typeof EXPORT;
   prompts: typeof PROMPTS;
 };
@@ -116,17 +92,13 @@ export const currentConfig = (): HubConfig =>
   structuredClone({
     appTitle: APP_TITLE,
     primaryColor: PRIMARY_COLOR,
-    showHeader: SHOW_HEADER,
     aiPanel: AI_PANEL,
-    visualExplain: VISUAL_EXPLAIN,
     visualPreview: VISUAL_PREVIEW,
-    viewerEditor: REPORT_VIEWER_EDITOR,
+    visualExplain: VISUAL_EXPLAIN,
+    guideEditor: GUIDE_EDITOR,
+    excelUpload: EXCEL_UPLOAD,
     screens: SCREENS,
     viewerTabs: VIEWER_TABS,
-    builderTabs: BUILDER_TABS,
-    datasetTabs: DATASET_TABS,
-    daxTabs: DAX_TABS,
-    pivotTabs: PIVOT_TABS,
     export: EXPORT,
     prompts: PROMPTS,
   });
@@ -148,17 +120,13 @@ export function applyConfig(given: Partial<HubConfig>, { cache = true } = {}) {
   const pick = <T,>(v: unknown, current: T): T => (typeof v === typeof current ? (v as T) : current);
   APP_TITLE = pick(given.appTitle, APP_TITLE);
   PRIMARY_COLOR = pick(given.primaryColor, PRIMARY_COLOR);
-  SHOW_HEADER = pick(given.showHeader, SHOW_HEADER);
   AI_PANEL = pick(given.aiPanel, AI_PANEL);
-  VISUAL_EXPLAIN = pick(given.visualExplain, VISUAL_EXPLAIN);
   VISUAL_PREVIEW = pick(given.visualPreview, VISUAL_PREVIEW);
-  REPORT_VIEWER_EDITOR = pick(given.viewerEditor, REPORT_VIEWER_EDITOR);
+  VISUAL_EXPLAIN = pick(given.visualExplain, VISUAL_EXPLAIN);
+  GUIDE_EDITOR = pick(given.guideEditor, GUIDE_EDITOR);
+  EXCEL_UPLOAD = pick(given.excelUpload, EXCEL_UPLOAD);
   take(SCREENS, given.screens);
   take(VIEWER_TABS, given.viewerTabs);
-  take(BUILDER_TABS, given.builderTabs);
-  take(DATASET_TABS, given.datasetTabs);
-  take(DAX_TABS, given.daxTabs);
-  take(PIVOT_TABS, given.pivotTabs);
   take(EXPORT, given.export);
   take(PROMPTS, given.prompts);
   if (typeof document !== "undefined") {

@@ -1,66 +1,88 @@
-/** Local storage (IndexedDB through idb-keyval): one array per collection, with a React hook. */
+/**
+ * Local storage (IndexedDB through idb-keyval): one array per collection, with a React hook. This is
+ * the library (only in this browser: each entry can be downloaded as JSON and imported again).
+ */
 import { useEffect, useState } from "react";
 import { get, set } from "idb-keyval";
-import type { FormSchema } from "./forms";
 import type { ModelInfo } from "./model";
+import type { Field, FormSection } from "./schema";
+
+/** What the signed-in user may do: edit (definition readable and writable), build (DAX queries), view. */
+export type Access = "edit" | "build" | "view";
+
+/** A markdown file given to the AI with the entries it is linked to. */
+export type ContextEntry = { id: string; name: string; text: string; updatedAt: number };
 
 export type ReportEntry = {
   id: string;
   groupId?: string;
-  /** Report of a Power BI app (read only: no definition, no editing). */
+  /** Report of a Power BI app (view only). */
   appId?: string;
   name: string;
   url: string;
   datasetId: string;
   datasetGroupId?: string;
-  /** Why its semantic model could not be added to the library. */
-  datasetError?: string;
-  /** Free text given to the AI with this report. */
-  context: string;
-  /** What could be read of the report (pages, visuals, fields, filters), as text for the AI. */
-  snapshot?: string;
-  /** Can the signed-in user edit / clone it? */
-  editable?: boolean;
-  /** Excel files (ids of `excels`) holding the info links and the guides shown in the viewer. */
-  infoExcelId?: string;
-  guidesExcelId?: string;
+  access?: Access;
+  /** Why the definition is not readable (e.g. PBIR-Legacy format, no edit right). */
+  accessNote?: string;
+  contextIds: string[];
+  /** The name was changed in the app: reading the report again keeps it. */
+  renamed?: boolean;
 };
 
 export type DatasetEntry = {
   id: string;
   groupId?: string;
   name: string;
-  context: string;
-  /** Model structure: summary always given to the AI, details read by its model tools. */
-  model?: string;
+  /** Model structure (tables, columns, measures, relationships, sample values). */
   info?: ModelInfo;
+  access?: Access;
+  /** Why its structure could not be read. */
+  error?: string;
+  contextIds: string[];
+  /** The name was changed in the app: reading the model again keeps it. */
+  renamed?: boolean;
 };
 
-export type ExcelEntry = {
+/** An Excel table on SharePoint / OneDrive, as found from its link. */
+export type ExcelRef = { link: string; driveId: string; itemId: string; name: string; table: string; fileUrl: string; webUrl?: string };
+/** A Microsoft Form (its id holds the tenant and the owner). */
+export type FormRef = { url: string; id: string; title: string };
+
+/**
+ * A schema: an Excel table (required), the Microsoft Form filling it (optional) and the definition of
+ * its columns. `builtIn` schemas (guides, links of the report viewer) have fixed fields: only their
+ * Excel file can be set.
+ */
+export type SchemaEntry = {
   id: string;
-  name: string;
-  link: string;
-  driveId: string;
-  itemId: string;
-  /** Server-relative URL used by Power BI to read the file. */
-  fileUrl: string;
-  table: string;
-  context: string;
-  /** Folder receiving uploaded images (chosen by the user; required to upload). */
-  imagesFolder?: { link: string; driveId: string; itemId: string; name: string };
-  /** Microsoft Form filling this table (optional): its questions, read from its link. */
-  form?: FormSchema;
-  /** Named views of the dataset builder (layout, search, filters, sort, kanban column). */
-  savedViews?: { name: string; view: Record<string, unknown> }[];
+  title: string;
+  builtIn?: "guides" | "links";
+  excel?: ExcelRef;
+  form?: FormRef;
+  fields: Field[];
+  /** Sections of the form (and where each goes when done); none: one page. */
+  sections?: FormSection[];
+  /** Folder receiving uploaded files (chosen by the user; required to upload). */
+  filesFolder?: { link: string; driveId: string; itemId: string; name: string };
+  /** Named views of the Excel editor. */
+  views?: { name: string; view: Record<string, unknown> }[];
+  contextIds: string[];
 };
+
+/**
+ * A research of the Researcher (kept in this browser): the semantic models it reads and its sheets
+ * (definitions only), published as an Excel workbook on OneDrive (`file`) where Excel computes them.
+ */
+export type ResearchEntry = { id: string; name: string; datasetIds: string[]; sheets: import("./workbook").ResearchSheet[]; file?: { driveId: string; itemId: string; webUrl: string }; updatedAt: number };
 
 /** `viewState`: the report as the user left it in this conversation (filters, slicers, page: a bookmark state). */
 export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number; viewState?: string };
 /** `configLink`: the SharePoint JSON file holding the app's options (read at start). */
 export type Settings = { aiKey?: string; model?: string; configLink?: string };
 
-type Collections = { reports: ReportEntry; datasets: DatasetEntry; excels: ExcelEntry; conversations: Conversation };
-type Name = keyof Collections;
+type Collections = { contexts: ContextEntry; reports: ReportEntry; datasets: DatasetEntry; schemas: SchemaEntry; researches: ResearchEntry; conversations: Conversation };
+export type Name = keyof Collections;
 
 const cache = new Map<Name, unknown[]>();
 const loading = new Map<Name, Promise<void>>();
@@ -90,7 +112,10 @@ async function write<N extends Name>(name: N, items: Collections[N][]) {
 
 export const put = <N extends Name>(name: N, item: Collections[N]) =>
   queued(name, async () => {
-    await write(name, [...(await all(name)).filter((i) => i.id !== item.id), item]);
+    const items = await all(name);
+    const index = items.findIndex((i) => i.id === item.id);
+    // Kept in place (lists keep their order when an entry is updated).
+    await write(name, index >= 0 ? items.map((i) => (i.id === item.id ? item : i)) : [...items, item]);
     return item;
   });
 
@@ -112,6 +137,9 @@ export function useCollection<N extends Name>(name: N) {
   }, [name]);
   return items;
 }
+
+/** Asks the browser not to evict this site's data when the disk is full (the library vanished twice). */
+export const persist = () => void navigator.storage?.persist?.().catch(() => undefined);
 
 export const settings = {
   get: async (): Promise<Settings> => (await get("settings")) ?? {},
