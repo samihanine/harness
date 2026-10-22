@@ -7,7 +7,7 @@
 /** Name shown in the sidebar and the browser tab. */
 export let APP_TITLE = "Hub";
 /** Primary color (buttons, active states), any CSS color. */
-export let PRIMARY_COLOR = "#18181b";
+export let PRIMARY_COLOR = "#2563eb";
 
 /** AI panel on every screen: false hides every AI chat (the screens' own AI flags below also apply). */
 export let AI_PANEL = true;
@@ -38,23 +38,23 @@ export const EXPORT = {
 export const SCREENS = {
   viewer: true,
   editor: true,
-  model: true,
   research: true,
-  schemas: true,
+  reports: true,
+  datasets: true,
   excel: true,
-  library: true,
+  contexts: true,
+  slides: true,
 };
 export type Screen = keyof typeof SCREENS;
 
-/** Tabs of the report viewer's panel (the only panel with tabs); "ai" also needs AI_PANEL. */
+/** Tabs of the report viewer (the report itself is always there). */
 export const VIEWER_TABS = {
   guides: true,
   links: true,
-  ai: true,
 };
 
 /** Instructions added to the AI's own (company vocabulary, tone, rules): for every screen, and per screen. */
-export const PROMPTS = { all: "", viewer: "", editor: "", model: "", research: "", schemas: "", excel: "" };
+export const PROMPTS = { all: "", viewer: "", editor: "", research: "", reports: "", datasets: "", excel: "", contexts: "", slides: "" };
 export type PromptScreen = Exclude<keyof typeof PROMPTS, "all">;
 /** A screen's AI instructions with the admin's additions. */
 export const withPrompts = (screen: PromptScreen, instructions: string) => {
@@ -63,13 +63,10 @@ export const withPrompts = (screen: PromptScreen, instructions: string) => {
 };
 
 /** Address and name of each screen. */
-export const SCREEN_PATHS: Record<Screen, string> = { viewer: "/viewer", editor: "/editor", model: "/model", research: "/research", schemas: "/schemas", excel: "/excel", library: "/" };
-export const SCREEN_LABELS: Record<Screen, string> = { viewer: "Report viewer", editor: "Report editor", model: "Dataset editor", research: "Researcher", schemas: "Schema editor", excel: "Excel editor", library: "Library" };
+export const SCREEN_PATHS: Record<Screen, string> = { viewer: "/viewer", editor: "/editor", research: "/research", reports: "/reports", datasets: "/datasets", excel: "/excel", contexts: "/contexts", slides: "/slides" };
+export const SCREEN_LABELS: Record<Screen, string> = { viewer: "Viewer", editor: "Builder", research: "Research", reports: "Reports", datasets: "Datasets", excel: "Excel", contexts: "Contexts", slides: "Slides" };
 /** First screen shown (where a hidden screen leads). */
-export const firstScreen = () => SCREEN_PATHS[(Object.keys(SCREENS) as Screen[]).find((k) => SCREENS[k]) ?? "library"];
-
-/** Tabs of a panel kept by their flag (`id` = key of the flags); "ai" tabs also need AI_PANEL. */
-export const visible = <T extends { id: string }>(tabs: T[], flags: Record<string, boolean>) => tabs.filter((t) => flags[t.id] !== false && (t.id !== "ai" || AI_PANEL));
+export const firstScreen = () => SCREEN_PATHS[(Object.keys(SCREENS) as Screen[]).find((k) => SCREENS[k]) ?? "viewer"] ?? "/settings";
 
 /* ------------------------------ Runtime config ----------------------------- */
 

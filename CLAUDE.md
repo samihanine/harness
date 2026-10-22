@@ -1,8 +1,11 @@
 # Instructions for Claude
 
-TanStack Start app for Power BI work, with an AI assistant in the left panel of each screen:
-Report viewer, Report editor, Dataset editor, Researcher, Schema editor, Excel editor, Library,
-Settings. Run with `bun dev` (http://localhost:3300), check with `bun run typecheck`.
+TanStack Start app for Power BI work. Every screen is a `Workspace` (`src/components/workspace.tsx`):
+the AI assistant on the left (foldable), a header (screen / chosen item, actions) and tabs on the right.
+Screens: Viewer (Report / Guides / Links), Builder (Report / Measures), Research (Canvas / Report /
+Datasets), Reports (Schema / Context), Datasets (Schema / DAX / Context), Excel (Data / Schema /
+Context), Contexts, Slides (Preview / Content), Settings (AI / Power BI / General). There is no
+library screen: each screen adds and manages its own items (`EntityPicker`, `EntityMenu`). Run with `bun dev` (http://localhost:3300), check with `bun run typecheck`.
 
 ## Never modify
 
@@ -50,7 +53,9 @@ Settings. Run with `bun dev` (http://localhost:3300), check with `bun run typech
   constants): an admin changes them at runtime from Settings (JSON file on SharePoint, see
   `src/lib/hub-config.ts`). A new option goes into `HubConfig` and the Settings form too. The Settings
   page itself can never be hidden.
-- **Agents**: each screen's agent gives the AI its context once (with the library's context files
+- **Agents** (`src/agent/loop.ts`): two phases per request. The planner (read tools only) explores,
+  then always asks the user with `ask_user` (choices + a plan, shown as buttons in the chat) and hands
+  the approved plan to the implementer (read + change tools) with `implement`. Each screen's agent gives the AI its context once (with the library's context files
   linked to the entries, `src/agent/context.ts`) and its lists (`list_*`: pages, visuals, tables,
   rows…) as the page state before every model call, so the AI never has to ask for them. Changes go
   to a draft saved when the answer is done (`finish`), with `discard_changes` / `undo_last_save`.
@@ -66,7 +71,15 @@ Settings. Run with `bun dev` (http://localhost:3300), check with `bun run typech
   fields and one Excel file for every report (`report_id` column).
 - **Row ids** (`id` column, e.g. `TASK_001`) are given by the app; a user may rename one, always
   checked unique (`idError` in `src/lib/excel.ts`). The AI changes an id only when explicitly asked.
-- UI: icon rail, breadcrumb header (`PageHeader`), pill tabs (`tab`), choices as badges with a dot
-  (`Badge`), plain table headers (`th`): reuse the utilities of `src/styles.css`.
+- UI: shadcn components (`src/components/ui`, Tailwind v4 tokens in `src/styles.css`, light/dark via
+  `src/lib/theme.ts`), `Workspace` / `SubTabs` / `Section` / `Empty`, choices as badges with a dot
+  (`Badge` of `field-input.tsx`). Reuse them rather than new styles.
+- **Research** (`src/lib/research.ts`): a canvas (markdown + charts computed by DAX, drawn with
+  recharts) and one Power BI report per model whose pages are each a full-page matrix (PBIR written by
+  code from `{rows, columns, values, filters}`).
+- **Slides** (`src/slides`): a deck is a short JSON `{title, theme, slides: [{template, ...args}]}`;
+  each template (`hero.tsx`, `section.tsx`…) has zod args, an animated component (motion, container
+  units) and a native PowerPoint version (pptxgenjs). PDF = print of every slide (Power BI views are
+  plain `reportEmbed` iframes so they print).
 - Write code like the surrounding code: short doc comments saying why, same naming and idioms.
 - Verify UI changes in the browser preview (dev server on port 3300) before saying they work.

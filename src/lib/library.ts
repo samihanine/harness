@@ -147,6 +147,11 @@ export async function createDatasetFromExcel(name: string, sources: { link: stri
     for (let i = 2; tables.some((t) => t.name.toLowerCase() === tableName.toLowerCase()); i++) tableName = `${table} ${i}`;
     tables.push({ name: tableName, tmdl: excelTableTmdl(tableName, excel, await detectFields(excel)) });
   }
+  return createModel(name, tables);
+}
+
+/** A new semantic model in My workspace from TMDL tables; added to the app. */
+async function createModel(name: string, tables: { name: string; tmdl: string }[]) {
   const encode = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
   const parts = [
     { path: "definition.pbism", text: JSON.stringify({ version: "4.2", settings: {} }) },
@@ -159,6 +164,81 @@ export async function createDatasetFromExcel(name: string, sources: { link: stri
   const id = (created?.id as string | undefined) ?? (await fabric(`/workspaces/${ws}/semanticModels`)).value.find((m: { displayName: string }) => m.displayName === name)?.id;
   if (!id) throw new Error("The model was created but could not be found in My workspace.");
   return addDataset(id, ws, name);
+}
+
+/** The cells of a CSV text (quotes handled), with its delimiter (the one splitting the header most). */
+export function parseCsv(text: string) {
+  const firstLine = text.slice(0, text.indexOf("\n") >>> 0 || undefined);
+  const delimiter = [",", ";", "\t", "|"].sort((a, b) => firstLine.split(b).length - firstLine.split(a).length)[0];
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') (cell += '"'), i++;
+      else if (c === '"') quoted = false;
+      else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === delimiter) row.push(cell), (cell = "");
+    else if (c === "\n" || c === "\r") {
+      if (c === "\r" && text[i + 1] === "\n") i++;
+      row.push(cell);
+      if (row.some((x) => x !== "")) rows.push(row);
+      (row = []), (cell = "");
+    } else cell += c;
+  }
+  row.push(cell);
+  if (row.some((x) => x !== "")) rows.push(row);
+  return { delimiter, header: rows[0] ?? [], rows: rows.slice(1) };
+}
+
+/**
+ * A new semantic model from a CSV file: the file is put in OneDrive (Hub/Datasets), and a model table
+ * reads it (Power Query, typed from its values: numbers, dates, text). Its data comes with a refresh.
+ */
+export async function createDatasetFromCsv(name: string, file: File) {
+  if (file.size > 50 * 1024 * 1024) throw new Error("CSV files up to 50 MB.");
+  const text = await file.text();
+  const { delimiter, header, rows } = parseCsv(text);
+  if (!header.length) throw new Error("The CSV file has no header line.");
+  const sample = rows.slice(0, 200);
+  const typeOf = (i: number) => {
+    const values = sample.map((r) => (r[i] ?? "").trim()).filter(Boolean);
+    if (values.length && values.every((v) => /^-?\d+([.,]\d+)?$/.test(v))) return values.every((v) => /^-?\d+$/.test(v)) ? ["int64", "Int64.Type"] : ["double", "type number"];
+    if (values.length && values.every((v) => /^\d{4}-\d{2}-\d{2}/.test(v))) return ["dateTime", "type date"];
+    return ["string", "type text"];
+  };
+  const { uploadFile } = await import("@/server/ms");
+  const { graph } = await import("./ms");
+  const drive = await graph("/me/drive?$select=id,webUrl");
+  const root = await graph("/me/drive/root?$select=id");
+  const fileName = `${name.replace(/[^\p{L}\p{N} _-]+/gu, " ").trim() || "Data"}.csv`;
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  await uploadFile({ data: { driveId: drive.id, parentId: root.id, path: `Hub/Datasets/${fileName}`, base64: btoa(binary), type: "text/csv", replace: true } });
+  const url = `${drive.webUrl}/Hub/Datasets/${encodeURI(fileName)}`;
+  const tableName = name.trim() || "Data";
+  const types = header.map((h, i) => ({ name: h.trim() || `Column ${i + 1}`, type: typeOf(i) }));
+  const tmdl = `table ${q(tableName)}
+
+${types.map((c) => [`\tcolumn ${q(c.name)}`, `\t\tdataType: ${c.type[0]}`, c.type[0] === "dateTime" && "\t\tformatString: Short Date", `\t\tsummarizeBy: ${c.type[0] === "string" || c.type[0] === "dateTime" ? "none" : "sum"}`, `\t\tsourceColumn: ${c.name}`].filter(Boolean).join("\n")).join("\n\n")}
+
+\tmeasure 'Rows of ${tableName.replace(/'/g, "''")}' = COUNTROWS(${q(tableName)})
+
+\tpartition ${q(tableName)} = m
+\t\tmode: import
+\t\tsource =
+\t\t\t\tlet
+\t\t\t\t    Source = Csv.Document(Web.Contents("${url}"), [Delimiter="${delimiter === "\t" ? "#(tab)" : delimiter}", Encoding=65001, QuoteStyle=QuoteStyle.Csv]),
+\t\t\t\t    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
+\t\t\t\t    Typed = Table.TransformColumnTypes(Promoted, {${types.map((c) => `{"${c.name.replace(/"/g, '""')}", ${c.type[1]}}`).join(", ")}}, "en-US")
+\t\t\t\tin
+\t\t\t\t    Typed
+`;
+  return createModel(name, [{ name: tableName, tmdl }]);
 }
 
 /* --------------------------------- Schemas --------------------------------- */
@@ -296,8 +376,8 @@ export async function contextsText(ids: string[] = [], max = 24_000) {
 
 /* ------------------------------ Download / import ------------------------------ */
 
-export type Kind = "reports" | "datasets" | "schemas" | "contexts";
-const KINDS: Kind[] = ["reports", "datasets", "schemas", "contexts"];
+export type Kind = "reports" | "datasets" | "schemas" | "contexts" | "researches" | "decks";
+const KINDS: Kind[] = ["reports", "datasets", "schemas", "contexts", "researches", "decks"];
 
 /** Saves a file in the browser. */
 export function downloadText(name: string, text: string, type = "application/json") {

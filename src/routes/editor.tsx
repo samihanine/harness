@@ -1,38 +1,67 @@
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { SparklesIcon } from "lucide-react";
-import { Chat } from "@/components/chat";
+import { CopyIcon, PencilRulerIcon, SigmaIcon } from "lucide-react";
+import { ReportPicker } from "@/components/pickers";
 import { ReportActions } from "@/components/report-actions";
-import { Empty, PageHeader, SidePanel } from "@/components/side-panel";
+import { Button } from "@/components/ui/button";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Empty, Workspace } from "@/components/workspace";
 import { Zoom } from "@/components/zoom";
-import { AI_PANEL } from "@/config";
+import { reportContext } from "@/agent/context";
 import { PBIR_GUIDE, editorState, editorTools } from "@/agent/editor-tools";
 import type { Agent } from "@/agent/loop";
 import { modelTools } from "@/agent/model-tools";
 import { DAX_RULES } from "@/agent/pbi-tools";
 import { useLast } from "@/lib/last";
+import { errorText } from "@/lib/ms";
+import { definition, partText } from "@/lib/report-def";
 import { pendingFiles, saveDraft } from "@/lib/report-draft";
 import { useCollection } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
-import { ReportPicker, reportContext } from "./viewer";
 
 export const Route = createFileRoute("/editor")({
-  validateSearch: (s: Record<string, unknown>) => ({ report: (s.report as string) || undefined }),
+  validateSearch: (s: Record<string, unknown>): { report?: string; tab?: string } => ({ report: (s.report as string) || undefined, tab: (s.tab as string) || undefined }),
   component: Editor,
 });
 
+type ReportMeasure = { table: string; name: string; expression: string; formatString?: string; dataType?: string };
+
+/** The report measures (stored in the report, reportExtensions.json), read again after each save. */
+function useReportMeasures(ref: { id: string; groupId?: string } | undefined, version: number) {
+  const [measures, setMeasures] = useState<ReportMeasure[]>();
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    if (!ref) return;
+    let live = true;
+    setError(undefined);
+    definition(ref).then(
+      (parts) => {
+        const ext = parts.find((p) => p.path === "definition/reportExtensions.json");
+        const json = ext ? JSON.parse(partText(ext)) : { entities: [] };
+        const list = (json.entities ?? []).flatMap((e: { name: string; measures?: Omit<ReportMeasure, "table">[] }) => (e.measures ?? []).map((m) => ({ ...m, table: e.name })));
+        if (live) setMeasures(list);
+      },
+      (e) => live && setError(errorText(e)),
+    );
+    return () => void (live = false);
+  }, [ref?.id, version]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { measures, error };
+}
+
 /**
- * Report editor: the report in Power BI's own editor (authoring embed) and the AI, which changes its
+ * Builder: the report in Power BI's own editor (authoring embed) and the AI, which changes its
  * definition (PBIR) without limit — pages, visuals, formatting, theme, report measures — in a draft
- * saved when its answer is done; the editor is then reloaded.
+ * saved when its answer is done; the editor is then reloaded. Tabs: the report, its measures.
  */
 function Editor() {
-  const { report: reportId } = Route.useSearch();
+  const { report: reportId, tab } = Route.useSearch();
   const navigate = useNavigate({ from: "/editor" });
   useLast("editor:report", reportId, (report) => navigate({ search: { report }, replace: true }));
   const entry = useCollection("reports").find((r) => r.id === reportId && r.access === "edit");
   const dataset = useCollection("datasets").find((d) => d.id === entry?.datasetId);
   const { element, report, error } = useEmbed(entry, "edit");
+  const [version, setVersion] = useState(0);
+  const { measures, error: measuresError } = useReportMeasures(entry, version);
   // Read by the tools at call time (the agent object is made at each render).
   const live = useRef({ report, entry, dataset });
   live.current = { report, entry, dataset };
@@ -46,21 +75,18 @@ function Editor() {
   };
 
   const agent: Agent | undefined = entry && {
-    instructions: `You build and change a Power BI report without limit: pages, visuals, fields, formatting, theme, report measures. You work on its definition (PBIR JSON) through the tools; your changes go to a draft saved when your answer is done (the editor then reloads): never ask the user to save.
+    instructions: `Screen: the BUILDER. You build and change a Power BI report without limit: pages, visuals, fields, formatting, theme, report measures. You work on its definition (PBIR JSON) through the tools; your changes go to a draft saved at the end (the editor then reloads): never ask the user to save.
 How to work (few, well-filled calls; several independent calls in one reply):
 - The page state lists the pages, the visuals of the current page (with their fields) and the report measures: no need to read what it already says.
-- New page: create_page, then create_visual for each visual WITH its "format" (title, background, border, labels…) in the same call; the result needs no get_visual to check it. Then change_current_page to show it.
-- Formatting: format_visual with plain values (16, true, "#203247", "Outer"), several visuals at once when they share a style. Shared defaults (palette, fonts, background of every visual): update_theme. Unsure of a property name? get_format_options with the objects you need ("title, labels"), once per visual type. update_visual (JSON Patch) only for what format_visual cannot do (position, sort, filters, per-series colors).
+- New page: create_page, then create_visual for each visual WITH its "format" (title, background, border, labels…) in the same call. Then change_current_page to show it.
+- Formatting: format_visual with plain values (16, true, "#203247", "Outer"), several visuals at once when they share a style. Shared defaults (palette, fonts, background of every visual): update_theme. Unsure of a property name? get_format_options with the objects you need ("title, labels"). update_visual (JSON Patch) only for what format_visual cannot do (position, sort, filters, per-series colors).
 - A nice page: a light page background, white visuals with a rounded light-gray border, bold titles, readable labels, one palette.
-- Layout: keep visuals inside the page size (see the page state), without overlap, aligned on a grid with even gaps.
-- Use only fields that exist (model summary, describe_table, search_model); check values and totals with run_dax.
-- Clicks: visuals of a page already filter each other when a row or bar is clicked (no setup needed); write visualInteractions only to change that.
-- Details of the clicked row: a card shows ONE value, so give it a report measure SELECTEDVALUE('T'[col], "—") (shows "—" until a row is clicked); several values at once: multiRowCard or a tableEx.
-- Images: a column of category ImageUrl (an URL or "data:image/…" value) shows as an image in a tableEx (set grid.imageHeight / imageWidth) or a multiRowCard. The image visual cannot be bound to data with these tools: never fake it by changing a visualType.
+- Layout: keep visuals inside the page size, without overlap, aligned on a grid with even gaps.
+- Clicks: visuals of a page already filter each other when a row or bar is clicked; write visualInteractions only to change that.
+- Details of the clicked row: a card shows ONE value, so give it a report measure SELECTEDVALUE('T'[col], "—"); several values: multiRowCard or a tableEx.
+- Images: a column of category ImageUrl (URL or "data:image/…") shows as an image in a tableEx (grid.imageHeight / imageWidth) or a multiRowCard. The image visual cannot be bound to data with these tools.
 - get_visual_data shows the saved report: visuals created or changed in your draft show their data after your answer; check values with run_dax (report measures included).
-- Decide, then do it once: do not create, undo and redo the same visuals. When a tool refuses a change, read why before trying another way.
-- Keep each reply short JSON: split a long batch of operations over several replies rather than risk an invalid one.
-- Do the whole request in one go, then answer with what you changed.
+- Use only fields that exist (model summary, describe_table, search_model).
 ${PBIR_GUIDE}
 ${DAX_RULES}`,
     tools: [...editorTools(ctx, save), ...modelTools(() => live.current.dataset)],
@@ -72,27 +98,85 @@ ${DAX_RULES}`,
       if (!r || !embed || !pendingFiles(r).length) return undefined;
       const text = await saveDraft(r, save);
       await embed.reload();
+      setVersion((v) => v + 1);
       return text ? `✓ ${text}` : undefined;
     },
   };
 
   return (
-    <div className="flex h-full">
-      {AI_PANEL && <SidePanel tabs={[{ id: "ai", label: "AI assistant", icon: SparklesIcon, content: agent ? <Chat scope={`editor:${entry!.id}`} agent={agent} placeholder="Ask to add a page, build visuals, change the formatting…" /> : <Empty>Choose a report you can edit.</Empty> }]} />}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <PageHeader
-          screen="Report editor"
-          picker={<ReportPicker editable value={reportId} onChange={(report) => navigate({ search: { report } })} />}
-          actions={
+    <Workspace
+      title="Builder"
+      icon={PencilRulerIcon}
+      picker={<ReportPicker editable value={reportId} onChange={(report) => navigate({ search: { report } })} />}
+      actions={
+        <>
+          <ReportActions entry={entry} report={report} />
+          <Zoom report={report} />
+        </>
+      }
+      ai={{ scope: `editor:${entry?.id}`, agent, placeholder: "Ask to add a page, build visuals, change the formatting…", empty: "Choose a report you can edit." }}
+      tab={tab}
+      onTab={(t) => navigate({ search: (s) => ({ ...s, tab: t }), replace: true })}
+      tabs={[
+        {
+          id: "report",
+          label: "Report",
+          icon: PencilRulerIcon,
+          content: (
             <>
-              <ReportActions entry={entry} report={report} />
-              <Zoom report={report} />
+              {error && <p className="px-6 py-2 text-[13px] text-destructive">{error}</p>}
+              {!entry && <Empty icon={PencilRulerIcon}>Choose a report you can edit (its definition must be readable in PBIR format), or add one from its link.</Empty>}
+              <div ref={element} className={entry ? "min-h-0 flex-1" : "hidden"} />
             </>
-          }
-        />
-        {error && <p className="px-6 py-2 text-destructive">{error}</p>}
-        {!entry && <Empty>Choose a report you can edit (its definition must be readable in PBIR format: see its access in the Library).</Empty>}
-        <div ref={element} className={entry ? "min-h-0 flex-1" : "hidden"} />
+          ),
+        },
+        { id: "measures", label: "Measures", icon: SigmaIcon, count: measures?.length, content: <MeasuresTab measures={measures} error={measuresError} ready={!!entry} /> },
+      ]}
+    />
+  );
+}
+
+/** The measures created on the report (not in the model): name, home table, DAX, format. */
+function MeasuresTab({ measures, error, ready }: { measures?: ReportMeasure[]; error?: string; ready: boolean }) {
+  if (!ready) return <Empty icon={SigmaIcon}>Choose a report.</Empty>;
+  if (error) return <p className="p-6 text-[13px] text-destructive">{error}</p>;
+  if (!measures) return <Empty>Reading the report…</Empty>;
+  if (!measures.length) return <Empty icon={SigmaIcon}>No report measure yet. Ask the assistant to create one (e.g. "a measure for the margin rate").</Empty>;
+  return (
+    <div className="min-h-0 flex-1 overflow-auto p-6">
+      <div className="overflow-hidden rounded-xl border bg-card shadow-xs">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/50">
+              <TableHead className="w-56">Measure</TableHead>
+              <TableHead className="w-40">Table</TableHead>
+              <TableHead>DAX</TableHead>
+              <TableHead className="w-32">Format</TableHead>
+              <TableHead className="w-12" />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {measures.map((m) => (
+              <TableRow key={`${m.table}/${m.name}`}>
+                <TableCell className="font-medium">
+                  <span className="flex items-center gap-2">
+                    <SigmaIcon className="size-4 text-success" aria-hidden /> {m.name}
+                  </span>
+                </TableCell>
+                <TableCell className="text-muted-foreground">{m.table}</TableCell>
+                <TableCell>
+                  <code className="line-clamp-3 font-mono text-[12px] whitespace-pre-wrap">{m.expression}</code>
+                </TableCell>
+                <TableCell className="text-[12.5px] text-muted-foreground">{m.formatString ?? "—"}</TableCell>
+                <TableCell>
+                  <Button variant="ghost" size="icon" className="size-7" aria-label={`Copy the DAX of ${m.name}`} onClick={() => void navigator.clipboard.writeText(`${m.name} = ${m.expression}`)}>
+                    <CopyIcon />
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </div>
     </div>
   );

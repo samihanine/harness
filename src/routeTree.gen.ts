@@ -10,17 +10,23 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ViewerRouteImport } from './routes/viewer'
+import { Route as SlidesRouteImport } from './routes/slides'
 import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as SchemasRouteImport } from './routes/schemas'
 import { Route as ResearchRouteImport } from './routes/research'
-import { Route as ModelRouteImport } from './routes/model'
+import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as ExcelRouteImport } from './routes/excel'
 import { Route as EditorRouteImport } from './routes/editor'
-import { Route as IndexRouteImport } from './routes/index'
+import { Route as DatasetsRouteImport } from './routes/datasets'
+import { Route as ContextsRouteImport } from './routes/contexts'
 
 const ViewerRoute = ViewerRouteImport.update({
   id: '/viewer',
   path: '/viewer',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SlidesRoute = SlidesRouteImport.update({
+  id: '/slides',
+  path: '/slides',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -28,19 +34,14 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SchemasRoute = SchemasRouteImport.update({
-  id: '/schemas',
-  path: '/schemas',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ResearchRoute = ResearchRouteImport.update({
   id: '/research',
   path: '/research',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ModelRoute = ModelRouteImport.update({
-  id: '/model',
-  path: '/model',
+const ReportsRoute = ReportsRouteImport.update({
+  id: '/reports',
+  path: '/reports',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ExcelRoute = ExcelRouteImport.update({
@@ -53,84 +54,96 @@ const EditorRoute = EditorRouteImport.update({
   path: '/editor',
   getParentRoute: () => rootRouteImport,
 } as any)
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
+const DatasetsRoute = DatasetsRouteImport.update({
+  id: '/datasets',
+  path: '/datasets',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ContextsRoute = ContextsRouteImport.update({
+  id: '/contexts',
+  path: '/contexts',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
-  '/': typeof IndexRoute
+  '/contexts': typeof ContextsRoute
+  '/datasets': typeof DatasetsRoute
   '/editor': typeof EditorRoute
   '/excel': typeof ExcelRoute
-  '/model': typeof ModelRoute
+  '/reports': typeof ReportsRoute
   '/research': typeof ResearchRoute
-  '/schemas': typeof SchemasRoute
   '/settings': typeof SettingsRoute
+  '/slides': typeof SlidesRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRoutesByTo {
-  '/': typeof IndexRoute
+  '/contexts': typeof ContextsRoute
+  '/datasets': typeof DatasetsRoute
   '/editor': typeof EditorRoute
   '/excel': typeof ExcelRoute
-  '/model': typeof ModelRoute
+  '/reports': typeof ReportsRoute
   '/research': typeof ResearchRoute
-  '/schemas': typeof SchemasRoute
   '/settings': typeof SettingsRoute
+  '/slides': typeof SlidesRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/': typeof IndexRoute
+  '/contexts': typeof ContextsRoute
+  '/datasets': typeof DatasetsRoute
   '/editor': typeof EditorRoute
   '/excel': typeof ExcelRoute
-  '/model': typeof ModelRoute
+  '/reports': typeof ReportsRoute
   '/research': typeof ResearchRoute
-  '/schemas': typeof SchemasRoute
   '/settings': typeof SettingsRoute
+  '/slides': typeof SlidesRoute
   '/viewer': typeof ViewerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | '/'
+    | '/contexts'
+    | '/datasets'
     | '/editor'
     | '/excel'
-    | '/model'
+    | '/reports'
     | '/research'
-    | '/schemas'
     | '/settings'
+    | '/slides'
     | '/viewer'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/'
+    | '/contexts'
+    | '/datasets'
     | '/editor'
     | '/excel'
-    | '/model'
+    | '/reports'
     | '/research'
-    | '/schemas'
     | '/settings'
+    | '/slides'
     | '/viewer'
   id:
     | '__root__'
-    | '/'
+    | '/contexts'
+    | '/datasets'
     | '/editor'
     | '/excel'
-    | '/model'
+    | '/reports'
     | '/research'
-    | '/schemas'
     | '/settings'
+    | '/slides'
     | '/viewer'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  IndexRoute: typeof IndexRoute
+  ContextsRoute: typeof ContextsRoute
+  DatasetsRoute: typeof DatasetsRoute
   EditorRoute: typeof EditorRoute
   ExcelRoute: typeof ExcelRoute
-  ModelRoute: typeof ModelRoute
+  ReportsRoute: typeof ReportsRoute
   ResearchRoute: typeof ResearchRoute
-  SchemasRoute: typeof SchemasRoute
   SettingsRoute: typeof SettingsRoute
+  SlidesRoute: typeof SlidesRoute
   ViewerRoute: typeof ViewerRoute
 }
 
@@ -143,18 +156,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ViewerRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/slides': {
+      id: '/slides'
+      path: '/slides'
+      fullPath: '/slides'
+      preLoaderRoute: typeof SlidesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/schemas': {
-      id: '/schemas'
-      path: '/schemas'
-      fullPath: '/schemas'
-      preLoaderRoute: typeof SchemasRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/research': {
@@ -164,11 +177,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ResearchRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/model': {
-      id: '/model'
-      path: '/model'
-      fullPath: '/model'
-      preLoaderRoute: typeof ModelRouteImport
+    '/reports': {
+      id: '/reports'
+      path: '/reports'
+      fullPath: '/reports'
+      preLoaderRoute: typeof ReportsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/excel': {
@@ -185,24 +198,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EditorRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
+    '/datasets': {
+      id: '/datasets'
+      path: '/datasets'
+      fullPath: '/datasets'
+      preLoaderRoute: typeof DatasetsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/contexts': {
+      id: '/contexts'
+      path: '/contexts'
+      fullPath: '/contexts'
+      preLoaderRoute: typeof ContextsRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
-  IndexRoute: IndexRoute,
+  ContextsRoute: ContextsRoute,
+  DatasetsRoute: DatasetsRoute,
   EditorRoute: EditorRoute,
   ExcelRoute: ExcelRoute,
-  ModelRoute: ModelRoute,
+  ReportsRoute: ReportsRoute,
   ResearchRoute: ResearchRoute,
-  SchemasRoute: SchemasRoute,
   SettingsRoute: SettingsRoute,
+  SlidesRoute: SlidesRoute,
   ViewerRoute: ViewerRoute,
 }
 export const routeTree = rootRouteImport

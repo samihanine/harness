@@ -1,5 +1,9 @@
-/** AI chat (assistant-ui) on top of the plain-text agent loop, with conversations kept in IndexedDB. */
-import { useEffect, useMemo, useRef, useState } from "react";
+/**
+ * AI chat (assistant-ui) on top of the planner / implementer agent (agent/loop.ts), with conversations
+ * kept in IndexedDB. The planner's questions show as cards with options to click (or a free answer);
+ * the answer goes back as the next user message.
+ */
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   AssistantRuntimeProvider,
   ComposerPrimitive,
@@ -13,69 +17,83 @@ import {
 } from "@assistant-ui/react";
 import { MarkdownTextPrimitive } from "@assistant-ui/react-markdown";
 import remarkGfm from "remark-gfm";
-import { ArrowUpIcon, CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DownloadIcon, FileTextIcon, PaperclipIcon, PlusIcon, SearchIcon, SquareIcon, Trash2Icon, WrenchIcon, XIcon } from "lucide-react";
-import { Popover } from "./popover";
-import { forgetSession, runAgent, type Agent, type Status, type Update } from "@/agent/loop";
+import { ArrowUpIcon, CheckIcon, ChevronRightIcon, ChevronsUpDownIcon, DownloadIcon, FileTextIcon, ListChecksIcon, MessageCircleQuestionIcon, PaperclipIcon, PlusIcon, SendIcon, SquareIcon, Trash2Icon, WrenchIcon, XIcon } from "lucide-react";
+import { Markdown as MarkdownView } from "./markdown";
+import { Button } from "./ui/button";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "./ui/command";
+import { Input } from "./ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
+import { forgetSession, runTurn, type Agent, type Choices, type Status, type Update } from "@/agent/loop";
+import { AI_MODELS, addFileToConversation, deleteRemoteConversation, uploadAiFile } from "@/agent/llm";
 import { PROMPTS, withPrompts, type PromptScreen } from "@/config";
+import { find, put, remove, settings, useCollection, type Conversation } from "@/lib/store";
+import { last } from "@/lib/last";
+import { cn } from "@/lib/utils";
+
+/** Screen of a chat scope ("viewer:<id>", "excel:<id>"…), for the admin's additional instructions. */
+const SCREEN_OF: Record<string, PromptScreen> = { viewer: "viewer", editor: "editor", research: "research", reports: "reports", datasets: "datasets", excel: "excel", contexts: "contexts", slides: "slides" };
 
 /** The screen's agent with the instructions the admin added in Settings (for all screens, and this one). */
 const withAdmin = (agent: Agent, scope: string): Agent => {
   const screen = SCREEN_OF[scope.split(":")[0]];
   return screen ? { ...agent, instructions: withPrompts(screen, agent.instructions) } : PROMPTS.all.trim() ? { ...agent, instructions: `${agent.instructions}\n\n${PROMPTS.all}` } : agent;
 };
-import { AI_MODELS, addFileToConversation, deleteRemoteConversation, uploadAiFile } from "@/agent/llm";
-import { find, put, remove, settings, useCollection, type Conversation } from "@/lib/store";
-import { last } from "@/lib/last";
 
 const textOf = (m: ThreadMessage) => m.content.map((p) => (p.type === "text" ? p.text : "")).join("");
+type CallPart = { type: "tool-call"; toolName: string; args: Record<string, unknown>; argsText?: string; result?: unknown; isError?: boolean };
+const callsOf = (m: ThreadMessage) => m.content.filter((p) => p.type === "tool-call") as unknown as CallPart[];
 
-/** A past message for the model: its text, and for the assistant a short list of the actions it took. */
+/** A past message for the planner: its text, the questions it asked (with its plan) and the actions taken. */
 function historyOf(m: ThreadMessage) {
-  const actions = m.content
-    .filter((p) => p.type === "tool-call")
-    .map((p) => {
-      const call = p as { toolName: string; argsText?: string; result?: unknown; isError?: boolean };
-      return `  - ${call.toolName}(${(call.argsText ?? "").slice(0, 120)}) → ${call.isError ? "error: " : ""}${String(call.result ?? "").slice(0, 120)}`;
-    });
+  const calls = callsOf(m);
+  const asked = calls.find((c) => c.toolName === "ask_user")?.args as Choices | undefined;
+  const plan = calls.find((c) => c.toolName === "implement")?.args.plan;
+  const actions = calls
+    .filter((c) => c.toolName !== "ask_user" && c.toolName !== "implement")
+    .map((c) => `  - ${c.toolName}(${(c.argsText ?? "").slice(0, 120)}) → ${c.isError ? "error: " : ""}${String(c.result ?? "").slice(0, 120)}`);
   const files = m.content.filter((p) => p.type === "file").map((p) => (p as { filename?: string }).filename ?? "file");
-  return `${m.role}: ${textOf(m)}${files.length ? `[file added: ${files.join(", ")}]` : ""}${actions.length ? `\n  actions:\n${actions.join("\n")}` : ""}`;
+  return [
+    `${m.role}: ${textOf(m)}${files.length ? `[file added: ${files.join(", ")}]` : ""}`,
+    asked && `  asked: ${asked.message ? `${asked.message.slice(0, 400)}\n  ` : ""}${asked.questions.map((q) => `${q.question} [${q.options.join(" | ")}]`).join(" / ")}\n  plan proposed: ${asked.plan.slice(0, 600)}`,
+    plan && `  plan implemented: ${String(plan).slice(0, 600)}`,
+    actions.length && `  actions:\n${actions.join("\n")}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
-
-/** Screen of a chat scope ("viewer:<id>", "excel:<id>"…), for the admin's additional instructions. */
-const SCREEN_OF: Record<string, PromptScreen> = { viewer: "viewer", editor: "editor", model: "model", research: "research", schemas: "schemas", excel: "excel" };
 
 function adapter(agent: { current: Agent }, conversationId: string, scope: string): ChatModelAdapter {
   return {
     async *run({ messages, abortSignal }) {
-      const previous = messages.slice(0, -1).map(historyOf).join("\n\n");
+      const previous = messages.slice(0, -1);
+      // The message answers the planner's questions when its last assistant message asked some.
+      const lastAssistant = [...previous].reverse().find((m) => m.role === "assistant");
+      const answering = !!lastAssistant && callsOf(lastAssistant).some((c) => c.toolName === "ask_user");
       // Files added since the last answer go with this message (also after a reload of the page).
       const since = messages.slice(messages.map((m) => m.role).lastIndexOf("assistant") + 1);
       for (const part of since.flatMap((m) => [...m.content] as { type: string; data?: string }[])) if (part.type === "file") await addFileToConversation(conversationId, part.data ?? "");
       const { model } = await settings.get();
       const startedAt = new Date().toISOString();
       const t0 = performance.now();
-      // Full trace kept with the message (exported with the conversation): raw model exchanges, tool timings,
-      // and the whole time the answer took (reading the page, the model, the actions). `status`: what is
-      // happening now (shown while running, gone in the last update).
+      // Full trace kept with the message (exported with the conversation): model exchanges, tool timings.
       const parts = (u: Update, text?: string) => ({
         content: [
           ...u.steps.map((s) => ({ type: "tool-call" as const, toolCallId: s.id, toolName: s.name, args: s.args as never, argsText: JSON.stringify(s.args), result: s.result, isError: s.error })),
-          ...(text !== undefined ? [{ type: "text" as const, text }] : []),
+          ...(text ? [{ type: "text" as const, text }] : []),
         ],
         metadata: { custom: { status: u.status, trace: { model: model ?? AI_MODELS[0], startedAt, ms: Math.round(performance.now() - t0), remote: u.remote, steps: u.steps, llm: u.llm } } },
       });
-      let last: Update = { steps: [], llm: [] };
+      let latest: Update = { steps: [], llm: [] };
       try {
-        for await (const update of runAgent({ agent: withAdmin(agent.current, scope), model: model ?? AI_MODELS[0], conversationId, history: previous, request: textOf(messages.at(-1)!), signal: abortSignal })) {
-          last = update;
+        for await (const update of runTurn({ agent: withAdmin(agent.current, scope), model: model ?? AI_MODELS[0], conversationId, history: previous.map(historyOf).join("\n\n"), request: textOf(messages.at(-1)!), answering, signal: abortSignal })) {
+          latest = update;
           yield parts(update, update.answer);
         }
-        // The final time (the last update may have been sent before the end of the run).
-        yield parts({ ...last, status: undefined }, last.answer);
+        yield parts({ ...latest, status: undefined }, latest.answer);
       } catch (error) {
         if (abortSignal.aborted) throw error;
         // Shown in the conversation (and kept) instead of failing silently.
-        yield parts(last, `⚠️ ${error instanceof Error ? error.message : String(error)}`);
+        yield parts({ ...latest, status: undefined }, `⚠️ ${error instanceof Error ? error.message : String(error)}`);
       }
     },
   };
@@ -92,67 +110,52 @@ function download(c: Conversation) {
 
 /** Deletes a conversation: its remote conversations on the LLM API first (when the API can), then the local copy. */
 async function deleteConversation(c: Conversation) {
-  const remotes = new Set(
-    (c.messages as { metadata?: { custom?: { trace?: { remote?: string } } } }[]).map((m) => m.metadata?.custom?.trace?.remote).filter((id): id is string => !!id),
-  );
+  const remotes = new Set((c.messages as { metadata?: { custom?: { trace?: { remote?: string } } } }[]).map((m) => m.metadata?.custom?.trace?.remote).filter((id): id is string => !!id));
   forgetSession(c.id);
   for (const id of remotes) await deleteRemoteConversation(id).catch((e) => console.warn("Remote conversation not deleted", id, e));
   await remove("conversations", c.id);
 }
 
-/** Conversations of this screen (shadcn-style combobox): search, open, download, delete. */
-function ConversationPicker({ conversations, current, onSelect, onNew, onDelete }: {
-  conversations: Conversation[];
-  current?: Conversation;
-  onSelect: (id: string) => void;
-  onNew: () => void;
-  onDelete: (c: Conversation) => void;
-}) {
-  const [search, setSearch] = useState("");
-  const shown = conversations.filter((c) => c.title.toLowerCase().includes(search.toLowerCase()));
+/** Conversations of this screen: search, open, download, delete. */
+function ConversationPicker({ conversations, current, onSelect, onNew, onDelete }: { conversations: Conversation[]; current?: Conversation; onSelect: (id: string) => void; onNew: () => void; onDelete: (c: Conversation) => void }) {
+  const [open, setOpen] = useState(false);
   return (
-    <span className="min-w-0 flex-1">
-      <Popover
-        full
-        width={340}
-        trigger={(open) => (
-          <button type="button" onClick={() => (setSearch(""), open())} className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13.5px] hover:bg-muted">
-            <span className={`min-w-0 flex-1 truncate ${current ? "" : "text-muted-foreground"}`}>{current?.title ?? "New conversation"}</span>
-            <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
-          </button>
-        )}
-      >
-        {(close) => (
-          <>
-            <label className="flex items-center gap-2 border-b px-1 pb-1.5">
-              <SearchIcon className="size-3.5 text-muted-foreground" />
-              <input autoFocus value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search conversations…" className="h-7 flex-1 bg-transparent outline-none" />
-            </label>
-            <div className="max-h-80 overflow-y-auto">
-              <button type="button" onClick={() => (onNew(), close())} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
-                <PlusIcon className="size-3.5" /> New conversation
-              </button>
-              {shown.map((c) => (
-                <div key={c.id} className="group flex items-center gap-1 rounded-md pr-1 hover:bg-muted">
-                  <button type="button" onClick={() => (onSelect(c.id), close())} className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left">
-                    <CheckIcon className={`size-3.5 shrink-0 ${c.id === current?.id ? "" : "invisible"}`} />
-                    <span className="min-w-0 flex-1 truncate">{c.title}</span>
-                    <span className="shrink-0 text-[11px] text-muted-foreground">{new Date(c.updatedAt).toLocaleDateString()}</span>
-                  </button>
-                  <button type="button" title="Download (JSON with tool calls and model exchanges)" className="icon-btn size-6" onClick={() => download(c)}>
-                    <DownloadIcon />
-                  </button>
-                  <button type="button" title="Delete" className="icon-btn size-6 hover:text-destructive" onClick={() => confirm(`Delete "${c.title}"?`) && onDelete(c)}>
-                    <Trash2Icon />
-                  </button>
-                </div>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="ghost" className="h-8 min-w-0 flex-1 justify-between gap-2 px-2 text-[13px] font-normal">
+          <span className={cn("truncate", !current && "text-muted-foreground")}>{current?.title ?? "New conversation"}</span>
+          <ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[340px] p-0">
+        <Command>
+          <CommandInput placeholder="Search conversations…" />
+          <CommandList>
+            <CommandEmpty>No conversation.</CommandEmpty>
+            <CommandGroup>
+              <CommandItem onSelect={() => (onNew(), setOpen(false))} className="gap-2">
+                <PlusIcon className="size-4" /> New conversation
+              </CommandItem>
+              {conversations.map((c) => (
+                <CommandItem key={c.id} value={`${c.title} ${c.id}`} onSelect={() => (onSelect(c.id), setOpen(false))} className="group gap-2">
+                  <CheckIcon className={cn("size-4 text-primary", c.id === current?.id ? "opacity-100" : "opacity-0")} />
+                  <span className="min-w-0 flex-1 truncate">{c.title}</span>
+                  <span className="text-[11px] text-muted-foreground group-hover:hidden">{new Date(c.updatedAt).toLocaleDateString()}</span>
+                  <span className="hidden items-center gap-0.5 group-hover:flex">
+                    <button type="button" aria-label="Download the conversation (JSON with the model exchanges)" className="icon-btn size-6" onClick={(e) => (e.stopPropagation(), download(c))}>
+                      <DownloadIcon />
+                    </button>
+                    <button type="button" aria-label="Delete the conversation" className="icon-btn size-6 hover:text-destructive" onClick={(e) => (e.stopPropagation(), confirm(`Delete "${c.title}"?`) && onDelete(c))}>
+                      <Trash2Icon />
+                    </button>
+                  </span>
+                </CommandItem>
               ))}
-              {shown.length === 0 && <p className="px-2 py-2 text-[12px] text-muted-foreground">No conversation.</p>}
-            </div>
-          </>
-        )}
-      </Popover>
-    </span>
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -175,7 +178,7 @@ export function Chat({ scope, agent, placeholder = "Ask anything…", onConversa
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-1 border-b px-3">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b px-2">
         <ConversationPicker
           conversations={conversations}
           current={current}
@@ -186,14 +189,17 @@ export function Chat({ scope, agent, placeholder = "Ask anything…", onConversa
             if (c.id === currentId) setCurrentId(crypto.randomUUID());
           }}
         />
-        <button type="button" title="New conversation" className="icon-btn" onClick={() => setCurrentId(crypto.randomUUID())}>
+        <Button variant="ghost" size="icon" className="size-8 text-muted-foreground" aria-label="New conversation" onClick={() => setCurrentId(crypto.randomUUID())}>
           <PlusIcon />
-        </button>
+        </Button>
       </div>
       <Runtime key={currentId} id={currentId} scope={scope} initial={current} agent={agentRef} placeholder={placeholder} />
     </div>
   );
 }
+
+/** Sends a user message from inside a message (the answers of a question card). */
+const Send = createContext<(text: string) => void>(() => undefined);
 
 function Runtime({ id, scope, initial, agent, placeholder }: { id: string; scope: string; initial?: Conversation; agent: { current: Agent }; placeholder: string }) {
   const chatModel = useMemo(() => adapter(agent, id, scope), [agent, id, scope]);
@@ -233,46 +239,55 @@ function Runtime({ id, scope, initial, agent, placeholder }: { id: string; scope
       })
       .catch((e) => setUpload({ error: e instanceof Error ? e.message : String(e) }));
   };
+  const send = (text: string) => runtime.thread.append({ role: "user", content: [{ type: "text", text }] });
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
-        <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto bg-background px-4 py-5">
-          <ThreadPrimitive.Empty>
-            <p className="m-auto max-w-72 text-center text-[13.5px] leading-relaxed text-muted-foreground">{placeholder}</p>
-          </ThreadPrimitive.Empty>
-          <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
-        </ThreadPrimitive.Viewport>
-        <ComposerPrimitive.Root className="flex flex-col gap-1.5 border-t bg-card p-3">
-          {upload.error && <p className="px-2 text-[12px] text-destructive">{upload.error}</p>}
-          <div className="flex min-w-0 flex-1 items-end gap-1 rounded-[22px] border bg-background py-1 pr-1 pl-1.5 focus-within:border-ring focus-within:ring-3 focus-within:ring-zinc-900/5">
-            <input
-              ref={fileInput}
-              type="file"
-              hidden
-              onChange={(e) => {
-                const file = e.target.files?.[0];
-                e.target.value = "";
-                if (file) attach(file);
-              }}
-            />
-            <button type="button" title="Add a file to the conversation" disabled={upload.busy} className="flex size-9 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50" onClick={() => fileInput.current?.click()}>
-              <PaperclipIcon className={`size-4 ${upload.busy ? "animate-pulse" : ""}`} />
-            </button>
-            <ComposerPrimitive.Input placeholder={placeholder} rows={1} className="max-h-40 min-h-9 flex-1 resize-none bg-transparent py-2 text-[14px] outline-none" />
-            <ThreadPrimitive.If running={false}>
-              <ComposerPrimitive.Send className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-40" title="Send">
-                <ArrowUpIcon className="size-4" />
-              </ComposerPrimitive.Send>
-            </ThreadPrimitive.If>
-            <ThreadPrimitive.If running>
-              <ComposerPrimitive.Cancel className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-foreground hover:bg-zinc-200" title="Stop">
-                <SquareIcon className="size-3.5" />
-              </ComposerPrimitive.Cancel>
-            </ThreadPrimitive.If>
-          </div>
-        </ComposerPrimitive.Root>
-      </ThreadPrimitive.Root>
+      <Send.Provider value={send}>
+        <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
+          <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto bg-background px-4 py-5">
+            <ThreadPrimitive.Empty>
+              <div className="m-auto flex max-w-72 flex-col items-center gap-3 text-center">
+                <span className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                  <MessageCircleQuestionIcon className="size-5" />
+                </span>
+                <p className="text-[13.5px] leading-relaxed text-muted-foreground">{placeholder}</p>
+                <p className="text-[12px] leading-relaxed text-muted-foreground/80">The assistant explores first, then asks you to confirm before changing anything.</p>
+              </div>
+            </ThreadPrimitive.Empty>
+            <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
+          </ThreadPrimitive.Viewport>
+          <ComposerPrimitive.Root className="flex flex-col gap-1.5 border-t bg-card p-3">
+            {upload.error && <p className="px-2 text-[12px] text-destructive">{upload.error}</p>}
+            <div className="flex min-w-0 flex-1 items-end gap-1 rounded-2xl border border-input bg-background py-1 pr-1 pl-1.5 transition-shadow focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20">
+              <input
+                ref={fileInput}
+                type="file"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) attach(file);
+                }}
+              />
+              <Button type="button" variant="ghost" size="icon" aria-label="Add a file to the conversation" disabled={upload.busy} className="size-9 rounded-full text-muted-foreground" onClick={() => fileInput.current?.click()}>
+                <PaperclipIcon className={upload.busy ? "animate-pulse" : ""} />
+              </Button>
+              <ComposerPrimitive.Input placeholder={placeholder} rows={1} className="max-h-40 min-h-9 flex-1 resize-none bg-transparent py-2 text-[14px] outline-none placeholder:text-muted-foreground" />
+              <ThreadPrimitive.If running={false}>
+                <ComposerPrimitive.Send className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40" aria-label="Send">
+                  <ArrowUpIcon className="size-4" />
+                </ComposerPrimitive.Send>
+              </ThreadPrimitive.If>
+              <ThreadPrimitive.If running>
+                <ComposerPrimitive.Cancel className="flex size-9 shrink-0 items-center justify-center rounded-full bg-muted text-foreground hover:bg-accent" aria-label="Stop">
+                  <SquareIcon className="size-3.5" />
+                </ComposerPrimitive.Cancel>
+              </ThreadPrimitive.If>
+            </div>
+          </ComposerPrimitive.Root>
+        </ThreadPrimitive.Root>
+      </Send.Provider>
     </AssistantRuntimeProvider>
   );
 }
@@ -288,7 +303,7 @@ const UserMessage = () => {
       {isFile ? (
         <MessagePrimitive.Parts components={{ File: FileChip }} />
       ) : (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap text-primary-foreground shadow-sm">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap text-primary-foreground shadow-xs">
           <MessagePrimitive.Parts />
         </div>
       )}
@@ -299,7 +314,7 @@ const UserMessage = () => {
 
 /** A file added to the conversation: its name, as a message of its own. */
 const FileChip = ({ filename, mimeType }: { filename?: string; mimeType: string }) => (
-  <span className="flex max-w-[85%] items-center gap-2.5 rounded-2xl rounded-br-md border bg-card px-3.5 py-2.5 text-[13.5px] shadow-sm" title={mimeType}>
+  <span className="flex max-w-[85%] items-center gap-2.5 rounded-2xl rounded-br-md border bg-card px-3.5 py-2.5 text-[13.5px] shadow-xs" title={mimeType}>
     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted">
       <FileTextIcon className="size-4 text-muted-foreground" />
     </span>
@@ -310,63 +325,150 @@ const FileChip = ({ filename, mimeType }: { filename?: string; mimeType: string 
 type Custom = { status?: Status; trace?: { ms?: number } };
 
 /**
- * The assistant: a bordered bubble holding what it did (folded into one line), what it
- * is doing now (with a progress bar when known), and its answer; under it, its time and how long the
- * whole answer took (reading the page, the model, the actions).
+ * The assistant: what it did (folded into one line), its questions (a card), the plan handed to the
+ * implementer, what it is doing now, and its answer; under it, its time and how long it took.
  */
 const AssistantMessage = () => {
   const running = useAuiState((s) => s.message.status?.type === "running");
-  // Raw values selected (a new object or array per call would draw the message again and again).
   const custom = (useAuiState((s) => s.message.metadata?.custom) ?? {}) as Custom;
   const createdAt = useAuiState((s) => s.message.createdAt);
   const hasText = useAuiState((s) => s.message.content.some((p) => p.type === "text" && p.text));
   const seconds = custom.trace?.ms !== undefined ? (custom.trace.ms / 1000).toFixed(1) : undefined;
   return (
-    <MessagePrimitive.Root className="flex items-start">
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <div className="w-fit max-w-full rounded-2xl rounded-tl-md border bg-card px-4 py-3 text-[14px] shadow-sm">
-          <Steps running={running} />
-          {running && custom.status && <StatusLine status={custom.status} />}
-          {running && !custom.status && !hasText && <Dots />}
-          <MessagePrimitive.Parts components={{ Text: Markdown, tools: { Fallback: () => null } }} />
-        </div>
-        <span className="pl-1 text-[11px] text-muted-foreground tabular-nums">
-          {timeOf(createdAt)}
-          {seconds && ` · ${running ? "" : "answered in "}${seconds} s`}
-        </span>
+    <MessagePrimitive.Root className="flex flex-col gap-1">
+      <div className="flex w-full max-w-full flex-col gap-3 rounded-2xl rounded-tl-md border bg-card px-4 py-3 text-[14px] shadow-xs">
+        <Steps running={running} />
+        <MessagePrimitive.Parts components={{ Text: Markdown, tools: { by_name: { ask_user: ChoicesCard, implement: PlanChip }, Fallback: () => null } }} />
+        {running && custom.status && <StatusLine status={custom.status} />}
+        {running && !custom.status && !hasText && <Dots />}
       </div>
+      <span className="pl-1 text-[11px] text-muted-foreground tabular-nums">
+        {timeOf(createdAt)}
+        {seconds && ` · ${running ? "" : "in "}${seconds} s`}
+      </span>
     </MessagePrimitive.Root>
   );
 };
 
 const Markdown = () => <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} className="markdown" />;
 
+/** The planner's questions: options to click (one question: a click sends it), or a free answer. */
+function ChoicesCard({ args }: ToolCallMessagePartProps) {
+  const choices = args as unknown as Choices;
+  const send = useContext(Send);
+  const isLast = useAuiState((s) => s.message.isLast);
+  const running = useAuiState((s) => s.message.status?.type === "running");
+  const open = isLast && !running;
+  const questions = choices.questions ?? [];
+  const [picked, setPicked] = useState<string[][]>(() => questions.map(() => []));
+  const [free, setFree] = useState<string[]>(() => questions.map(() => ""));
+  const single = questions.length === 1 && !questions[0].multiple;
+  const answerOf = (i: number) => [...picked[i], ...(free[i].trim() ? [free[i].trim()] : [])];
+  const submit = (answers = questions.map((_, i) => answerOf(i))) => send(questions.length === 1 ? answers[0].join(", ") : questions.map((q, i) => `${q.question} → ${answers[i].join(", ") || "(no answer)"}`).join("\n"));
+  const toggle = (i: number, o: string) => {
+    if (single) return submit([[o]]);
+    setPicked((p) => p.map((list, k) => (k !== i ? list : questions[i].multiple ? (list.includes(o) ? list.filter((x) => x !== o) : [...list, o]) : [o])));
+  };
+  return (
+    <div className="flex flex-col gap-3">
+      {choices.message && <MarkdownBlock text={choices.message} />}
+      <div className={cn("flex flex-col gap-3 rounded-xl border bg-muted/40 p-3", !open && "opacity-70")}>
+        {questions.map((q, i) => (
+          <div key={i} className="flex flex-col gap-2">
+            <span className="flex items-start gap-2 text-[13.5px] font-medium">
+              <MessageCircleQuestionIcon className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+              {q.question}
+            </span>
+            <div className="flex flex-wrap gap-1.5 pl-6">
+              {q.options.map((o) => {
+                const on = picked[i]?.includes(o);
+                return (
+                  <button
+                    key={o}
+                    type="button"
+                    disabled={!open}
+                    aria-pressed={on}
+                    onClick={() => toggle(i, o)}
+                    className={cn(
+                      "rounded-lg border px-3 py-1.5 text-left text-[13px] font-medium transition-colors disabled:cursor-default",
+                      on ? "border-primary bg-primary text-primary-foreground" : "border-input bg-card hover:border-primary/50 hover:bg-accent hover:text-accent-foreground",
+                    )}
+                  >
+                    {o}
+                  </button>
+                );
+              })}
+            </div>
+            {open && (
+              <form
+                className="flex gap-1.5 pl-6"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (single && free[i].trim()) submit([[free[i].trim()]]);
+                }}
+              >
+                <Input value={free[i]} onChange={(e) => setFree((f) => f.map((v, k) => (k === i ? e.target.value : v)))} placeholder="Other answer…" className="h-8 text-[13px]" aria-label={`Other answer to: ${q.question}`} />
+                {single && (
+                  <Button type="submit" size="icon" variant="outline" className="size-8 shrink-0" disabled={!free[i].trim()} aria-label="Send this answer">
+                    <SendIcon />
+                  </Button>
+                )}
+              </form>
+            )}
+          </div>
+        ))}
+        {open && !single && (
+          <Button size="sm" className="ml-6 w-fit" disabled={questions.some((_, i) => !answerOf(i).length)} onClick={() => submit()}>
+            <SendIcon /> Send my answers
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The plan handed to the implementer once the user agreed (unfolded on click). */
+function PlanChip({ args }: ToolCallMessagePartProps) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-primary/25 bg-primary/5 px-3 py-2">
+      <button type="button" onClick={() => setOpen(!open)} className="flex w-full items-center gap-2 text-[12.5px] font-medium text-primary">
+        <ListChecksIcon className="size-4" aria-hidden /> Plan validated — implementing
+        <ChevronRightIcon className={cn("ml-auto size-3.5 transition-transform", open && "rotate-90")} />
+      </button>
+      {open && <pre className="mt-2 text-[12px] leading-relaxed whitespace-pre-wrap text-foreground/80">{String((args as { plan?: string }).plan ?? "")}</pre>}
+    </div>
+  );
+}
+
+const MarkdownBlock = ({ text }: { text: string }) => <MarkdownView>{text}</MarkdownView>;
+
 /** "3 actions · 1 failed", unfolded on click: each action, its arguments and result. */
 function Steps({ running }: { running: boolean }) {
   const [open, setOpen] = useState(false);
   const [shown, setShown] = useState<number>();
   const content = useAuiState((s) => s.message.content);
-  const steps = content.filter((p) => p.type === "tool-call") as unknown as ToolCallMessagePartProps[];
+  const steps = (content.filter((p) => p.type === "tool-call") as unknown as ToolCallMessagePartProps[]).filter((s) => s.toolName !== "ask_user" && s.toolName !== "implement");
   if (!steps.length) return null;
   const failed = steps.filter((s) => s.isError).length;
   return (
-    <div className="mb-2 border-b pb-2">
+    <div className="border-b pb-2">
       <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground">
-        <WrenchIcon className="size-3" />
+        <WrenchIcon className="size-3" aria-hidden />
         {steps.length} action{steps.length > 1 ? "s" : ""}
-        {failed > 0 && <span className="text-red-600">· {failed} failed</span>}
+        {failed > 0 && <span className="text-destructive">· {failed} failed</span>}
         {running && steps.at(-1)?.result === undefined && <span>· {steps.at(-1)?.toolName}…</span>}
-        <ChevronRightIcon className={`size-3 transition-transform ${open ? "rotate-90" : ""}`} />
+        <ChevronRightIcon className={cn("size-3 transition-transform", open && "rotate-90")} />
       </button>
       {open && (
         <ul className="mt-1.5 flex flex-col gap-1">
           {steps.map((s, i) => (
             <li key={i} className="text-[12px]">
               <button type="button" className="flex w-full items-start gap-1.5 text-left" onClick={() => setShown(shown === i ? undefined : i)}>
-                {s.result === undefined ? <span className="mt-1 size-2 shrink-0 animate-pulse rounded-full bg-blue-500" /> : s.isError ? <XIcon className="mt-0.5 size-3 shrink-0 text-red-500" /> : <CheckIcon className="mt-0.5 size-3 shrink-0 text-emerald-600" />}
+                {s.result === undefined ? <span className="mt-1 size-2 shrink-0 animate-pulse rounded-full bg-primary" /> : s.isError ? <XIcon className="mt-0.5 size-3 shrink-0 text-destructive" /> : <CheckIcon className="mt-0.5 size-3 shrink-0 text-success" />}
                 <span className="min-w-0">
                   <span className="font-mono">{s.toolName}</span>
-                  <span className={`block truncate ${s.isError ? "text-red-600" : "text-muted-foreground"}`}>{String(s.result ?? "running…").split("\n")[0]}</span>
+                  <span className={cn("block truncate", s.isError ? "text-destructive" : "text-muted-foreground")}>{String(s.result ?? "running…").split("\n")[0]}</span>
                 </span>
               </button>
               {shown === i && <pre className="mt-1 max-h-60 overflow-auto rounded bg-muted p-1.5 whitespace-pre-wrap">{`${s.argsText}\n\n${String(s.result ?? "…")}`}</pre>}
@@ -398,7 +500,7 @@ function StatusLine({ status }: { status: Status }) {
 }
 
 const Dots = () => (
-  <span className="flex gap-1 py-1">
+  <span className="flex gap-1 py-1" aria-label="Thinking">
     {[0, 1, 2].map((i) => (
       <span key={i} className="size-1.5 animate-bounce rounded-full bg-muted-foreground" style={{ animationDelay: `${i * 120}ms` }} />
     ))}

@@ -70,18 +70,18 @@ export type SchemaEntry = {
   contextIds: string[];
 };
 
-/**
- * A research of the Researcher (kept in this browser): the semantic models it reads and its sheets
- * (definitions only), published as an Excel workbook on OneDrive (`file`) where Excel computes them.
- */
-export type ResearchEntry = { id: string; name: string; datasetIds: string[]; sheets: import("./workbook").ResearchSheet[]; file?: { driveId: string; itemId: string; webUrl: string }; updatedAt: number };
+/** A research (kept in this browser): see research.ts. */
+export type ResearchEntry = import("./research").ResearchEntry;
 
 /** `viewState`: the report as the user left it in this conversation (filters, slicers, page: a bookmark state). */
 export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number; viewState?: string };
 /** `configLink`: the SharePoint JSON file holding the app's options (read at start). */
 export type Settings = { aiKey?: string; model?: string; configLink?: string };
 
-type Collections = { contexts: ContextEntry; reports: ReportEntry; datasets: DatasetEntry; schemas: SchemaEntry; researches: ResearchEntry; conversations: Conversation };
+/** A slide deck (its JSON: see src/slides). */
+export type DeckEntry = { id: string; name: string; deck: import("../slides").Deck; updatedAt: number };
+
+type Collections = { contexts: ContextEntry; reports: ReportEntry; datasets: DatasetEntry; schemas: SchemaEntry; researches: ResearchEntry; decks: DeckEntry; conversations: Conversation };
 export type Name = keyof Collections;
 
 const cache = new Map<Name, unknown[]>();

@@ -1,60 +1,186 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/plus-jakarta-sans";
 
-@theme {
-  --color-background: #ffffff;
-  --color-foreground: #111827;
-  --color-card: #ffffff;
-  --color-muted: #f3f4f6;
-  --color-muted-foreground: #6b7280;
-  --color-border: #e5e7eb;
-  --color-ring: #a1a1aa;
-  --color-primary: #18181b;
-  --color-primary-foreground: #ffffff;
-  --color-destructive: #dc2626;
-  /* Selected item of a list (e.g. the open row of the Excel editor). */
-  --color-accent: #f3f4f6;
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+/* Dark mode: a `.dark` class on <html> (Settings › General). */
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Design tokens (shadcn names). Light by default; the primary color can be changed by an admin
+ * (Settings › General: it sets --primary on <body>). Contrast checked for 4.5:1 on text tokens.
+ */
+:root {
+  --radius: 0.625rem;
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #2563eb;
+  --primary-foreground: #ffffff;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #eef4ff;
+  --accent-foreground: #1d4ed8;
+  --destructive: #dc2626;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #2563eb;
+  /* Call to action that must stand out from the primary (e.g. "Present"). */
+  --cta: #ea580c;
+  --chart-1: #2563eb;
+  --chart-2: #ea580c;
+  --chart-3: #0d9488;
+  --chart-4: #7c3aed;
+  --chart-5: #ca8a04;
+  --cta-foreground: #ffffff;
+  --success: #15803d;
+  --warning: #b45309;
+  --sidebar: #ffffff;
+}
+
+.dark {
+  --background: #0b1120;
+  --foreground: #e2e8f0;
+  --card: #111827;
+  --card-foreground: #e2e8f0;
+  --popover: #111827;
+  --popover-foreground: #e2e8f0;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #1e293b;
+  --secondary-foreground: #e2e8f0;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --accent: #172554;
+  --accent-foreground: #bfdbfe;
+  --destructive: #ef4444;
+  --border: #1f2a3d;
+  --input: #273449;
+  --ring: #3b82f6;
+  --cta: #f97316;
+  --chart-1: #60a5fa;
+  --chart-2: #fb923c;
+  --chart-3: #2dd4bf;
+  --chart-4: #a78bfa;
+  --chart-5: #facc15;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --sidebar: #0f172a;
+}
+
+@theme inline {
+  --font-sans: "Plus Jakarta Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-cta: var(--cta);
+  --color-cta-foreground: var(--cta-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-sidebar: var(--sidebar);
 }
 
 @layer base {
-  * { @apply border-border; }
+  * { @apply border-border outline-ring/50; }
   html, body, #app { @apply h-full; }
   body { @apply bg-background text-foreground font-sans text-[14px] antialiased; }
+  button:not(:disabled), [role="button"]:not([aria-disabled="true"]), a[href], summary, select, [role="tab"] { cursor: pointer; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
 }
 
-@utility btn {
-  @apply inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg border bg-card px-3.5 text-[13.5px] font-medium whitespace-nowrap shadow-xs transition-colors hover:bg-muted disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0;
-}
-@utility btn-primary {
-  @apply btn border-primary bg-primary text-primary-foreground hover:bg-primary/90;
-}
-@utility btn-ghost {
-  @apply btn border-transparent bg-transparent shadow-none;
+/* Small utilities kept for the dense data components (table cells, fields): same tokens as the shadcn components. */
+@utility input {
+  @apply h-9 w-full rounded-md border border-input bg-card px-3 text-[14px] shadow-xs outline-none transition-[color,box-shadow] placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/30;
 }
 @utility icon-btn {
-  @apply inline-flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50 [&_svg]:size-4;
+  @apply inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/30 disabled:opacity-50 outline-none [&_svg]:size-4;
 }
-@utility input {
-  @apply h-9 w-full rounded-lg border bg-card px-3 text-[14px] outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring focus:ring-3 focus:ring-zinc-900/5;
+@utility chip {
+  @apply inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-input bg-card px-3 text-[13px] font-medium text-foreground shadow-xs transition-colors hover:bg-accent [&_svg]:size-3.5 [&_svg]:text-muted-foreground;
+}
+@utility th {
+  @apply h-10 px-3 text-left text-[12.5px] font-semibold tracking-wide text-muted-foreground;
+}
+@utility badge {
+  @apply inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium whitespace-nowrap;
 }
 @utility label {
   @apply text-[12.5px] font-medium text-muted-foreground;
 }
-@utility card {
-  @apply rounded-xl border bg-card;
-}
-@utility tab {
-  @apply inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3.5 text-[14px] font-medium text-muted-foreground outline-none transition-colors hover:text-foreground data-[active=true]:bg-foreground data-[active=true]:text-background [&_svg]:size-4;
-}
-@utility chip {
-  @apply inline-flex h-9 shrink-0 items-center gap-2 rounded-full bg-muted px-3.5 text-[13.5px] font-medium text-foreground hover:bg-zinc-200/70 [&_svg]:size-4 [&_svg]:text-muted-foreground;
-}
-@utility th {
-  @apply h-12 px-4 text-left text-[14px] font-medium text-foreground;
-}
-@utility badge {
-  @apply inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-[13px] font-medium whitespace-nowrap;
-}
 @utility markdown {
-  @apply flex flex-col gap-2.5 leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-[17px] [&_h1]:font-semibold [&_h2]:text-[15px] [&_h2]:font-semibold [&_h3]:font-semibold [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-muted [&_pre]:p-2.5 [&_table]:text-[13px] [&_td]:border [&_td]:px-2 [&_th]:border [&_th]:px-2 [&_ul]:list-disc [&_ul]:pl-5;
+  @apply flex flex-col gap-2.5 leading-relaxed [&_a]:text-primary [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-[18px] [&_h1]:font-semibold [&_h2]:text-[15.5px] [&_h2]:font-semibold [&_h3]:font-semibold [&_ol]:list-decimal [&_ol]:pl-5 [&_pre]:overflow-auto [&_pre]:rounded-lg [&_pre]:bg-muted [&_pre]:p-2.5 [&_table]:text-[13px] [&_td]:border [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:px-2 [&_th]:py-1 [&_th]:bg-muted [&_ul]:list-disc [&_ul]:pl-5 [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_blockquote]:text-muted-foreground;
+}
+/* Same look as the shadcn Button (outline / default / ghost), for markup inside dense components. */
+@utility btn {
+  @apply inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-input bg-card px-3 text-[13px] font-medium whitespace-nowrap shadow-xs outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/30 disabled:pointer-events-none disabled:opacity-50 [&_svg]:size-4 [&_svg]:shrink-0;
+}
+@utility btn-primary {
+  @apply btn border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground;
+}
+@utility card {
+  @apply rounded-xl border bg-card text-card-foreground shadow-xs;
+}
+
+/* Slides: the PDF export prints the deck only (one slide per landscape page, iframes included). */
+.print-deck {
+  display: none;
+}
+.slide-markdown ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+.slide-markdown p + p,
+.slide-markdown ul {
+  margin-top: 0.6em;
+}
+@media print {
+  @page {
+    size: 1280px 720px;
+    margin: 0;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .print-deck,
+  .print-deck * {
+    visibility: visible;
+  }
+  .print-deck {
+    display: block;
+    position: absolute;
+    inset: 0 auto auto 0;
+    width: 1280px;
+  }
+  .print-slide {
+    width: 1280px;
+    break-after: page;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
 }

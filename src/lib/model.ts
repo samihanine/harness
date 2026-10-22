@@ -413,3 +413,16 @@ export function resolveField(info: ModelInfo | undefined, spec: string) {
     .map((c) => c.label);
   throw new Error(`No column or measure "${name}" in the model.${near.length ? ` Closest: ${near.join(", ")}.` : ""}`);
 }
+
+/** Parameters of a model: Power Query parameters (M expressions marked IsParameterQuery) and the other shared M expressions. */
+export function modelParameters(files: { path: string; text: string }[]) {
+  return files
+    .filter((f) => f.path.endsWith(".tmdl"))
+    .flatMap((f) => parseTmdl(f.text))
+    .filter((n) => n.kind === "expression")
+    .map((n) => {
+      const expr = (n.expr ?? "").trim();
+      const parameter = /IsParameterQuery\s*=\s*true/i.test(expr);
+      return { name: n.name, parameter, value: parameter ? expr.replace(/\s*meta\s*\[[\s\S]*$/i, "").trim() : expr, description: n.doc ?? n.props.description };
+    });
+}

@@ -1,55 +1,69 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { z } from "zod";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
   AlignLeftIcon,
   ArrowDownIcon,
-  ArrowUpIcon,
   ArrowUpDownIcon,
+  ArrowUpIcon,
+  BookTextIcon,
+  BookmarkIcon,
+  BookmarkPlusIcon,
   CalendarIcon,
-  CheckIcon,
-  ImageIcon,
-  LinkIcon,
   ChevronDownIcon,
-  ColumnsIcon,
+  ClipboardListIcon,
   ExternalLinkIcon,
   FileIcon,
+  FileSpreadsheetIcon,
+  FolderIcon,
   HashIcon,
-  KanbanIcon,
+  ImageIcon,
+  LinkIcon,
   ListIcon,
-  PanelLeftCloseIcon,
-  PanelLeftOpenIcon,
-  PanelRightIcon,
+  Maximize2Icon,
   PlusIcon,
   RefreshCwIcon,
+  SaveIcon,
   SearchIcon,
+  Settings2Icon,
   SlidersHorizontalIcon,
-  SparklesIcon,
   StarIcon,
   Table2Icon,
   Trash2Icon,
   TypeIcon,
+  UploadIcon,
   XIcon,
 } from "lucide-react";
-import { Chat } from "@/components/chat";
-import { Badge, FieldInput, FieldValue, type Uploader } from "@/components/field-input";
-import { Picker } from "@/components/picker";
-import { Popover } from "@/components/popover";
-import { Empty, PageHeader, SidePanel } from "@/components/side-panel";
-import { AI_PANEL, EXCEL_UPLOAD } from "@/config";
-import { tool, type Agent } from "@/agent/loop";
-import { withContexts } from "@/agent/context";
-import { addRows, deleteRows, idError, updateRows, uploadFileTo, withRows, withUpdates, withoutRows, type Table } from "@/lib/excel";
-import { rowsText } from "@/lib/pbi";
-import { TYPE_LABELS, idPrefix, isIdField, labelOf, listOf, titleField, type Field, type FieldType, type Row } from "@/lib/schema";
-import { patch, useCollection, type SchemaEntry } from "@/lib/store";
-import { EMPTY_VIEW, NO_VALUE, OPS, OPS_OF, apply, filterLabel, matches, readView, shownFields, viewText, type Filter, type Layout, type TableView } from "@/lib/table-view";
-import { last, useLast } from "@/lib/last";
+import { ContextLinks } from "@/components/context-links";
+import { AddDialog, EntityMenu, withToast } from "@/components/entity";
+import { Badge, FieldInput, type Uploader } from "@/components/field-input";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import { EntityPicker, Empty, Section, StatusText, SubTabs, Workspace } from "@/components/workspace";
+import { EXCEL_UPLOAD } from "@/config";
+import { excelData } from "@/agent/excel-tools";
+import type { Agent } from "@/agent/loop";
+import { schemaAgent } from "@/agent/schema-tools";
+import { addRows, applySchemaToExcel, deleteRows, idError, resolveFolder, updateRows, uploadFileTo, withRows, withUpdates, withoutRows, type Table } from "@/lib/excel";
+import { applyForm, designUrl, planForm, type FormPlan } from "@/lib/forms";
+import { addSchema, downloadText, linkForm, saveFields, setBuiltInExcel } from "@/lib/library";
+import { useLast } from "@/lib/last";
+import { errorText } from "@/lib/ms";
+import { COLORS, FIELD_TYPES, SWATCHES, TYPE_LABELS, fieldsErrors, isIdField, labelOf, type Field, type FieldType, type FormSection, type Option, type Row } from "@/lib/schema";
+import { patch, remove, useCollection, type SchemaEntry } from "@/lib/store";
+import { EMPTY_VIEW, NO_VALUE, OPS, OPS_OF, apply, filterLabel, readView, type Filter, type TableView } from "@/lib/table-view";
 import { useTable, type Write } from "@/lib/use-table";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/excel")({
-  validateSearch: (s: Record<string, unknown>) => ({ schema: (s.schema as string) || undefined }),
-  component: ExcelEditor,
+  validateSearch: (s: Record<string, unknown>): { schema?: string; tab?: string } => ({ schema: (s.schema as string) || undefined, tab: (s.tab as string) || undefined }),
+  component: Excel,
 });
 
 const quiet = (p: Promise<unknown>) => void p.catch(() => undefined); // errors are shown by the page
@@ -66,331 +80,327 @@ export const TYPE_ICONS: Record<FieldType, ReactNode> = {
   file: <FileIcon />,
 };
 
-/* ---------------------------------- Views ---------------------------------- */
-
-const ALL = "all";
+/* ------------------------------ View and bookmarks ------------------------------ */
 
 /**
- * The views of a schema as pills: "All rows" (kept in this browser) and the named views (kept with the
- * schema in the library). The open view is changed in place; "+" saves it under a new name.
+ * What the Data tab shows (search, filters, sorts), kept in this browser, and the bookmarks: named
+ * views kept with the schema (downloaded and imported with it). A bookmark is applied, not edited in place.
  */
-function useViews(schema?: SchemaEntry) {
-  const key = `table-view:${schema?.id}`;
-  const [own, setOwn] = useState<TableView>(EMPTY_VIEW);
-  const [active, setActiveState] = useState(ALL);
+function useView(schema?: SchemaEntry) {
+  const key = `excel-view:${schema?.id}`;
+  const [view, setViewState] = useState<TableView>(EMPTY_VIEW);
   useEffect(() => {
     try {
-      setOwn(readView(JSON.parse(localStorage.getItem(key) ?? "{}")));
+      setViewState(readView(JSON.parse(localStorage.getItem(key) ?? "{}")));
     } catch {
-      setOwn(EMPTY_VIEW);
+      setViewState(EMPTY_VIEW);
     }
-    setActiveState(last.get(`${key}:active`) ?? ALL);
   }, [key]);
-  const saved = schema?.views ?? [];
-  const current = saved.find((v) => v.name === active);
-  const view = current ? readView(current.view) : own;
-  const setActive = (name: string) => {
-    last.set(`${key}:active`, name);
-    setActiveState(name);
-  };
-  const update = (change: Partial<TableView>) => {
-    const next = { ...view, ...change };
-    if (current && schema) return void patch("schemas", schema.id, { views: saved.map((v) => (v.name === current.name ? { ...v, view: next } : v)) });
-    setOwn(next);
+  const set = (next: TableView) => {
+    setViewState(next);
     try {
       localStorage.setItem(key, JSON.stringify(next));
     } catch {}
   };
+  const bookmarks = schema?.views ?? [];
+  const same = (v: Record<string, unknown>) => {
+    const b = readView(v);
+    return JSON.stringify([b.search ?? "", b.filters, b.sorts]) === JSON.stringify([view.search ?? "", view.filters, view.sorts]);
+  };
   return {
     view,
-    update,
-    active: current ? current.name : ALL,
-    names: saved.map((v) => v.name),
-    open: setActive,
-    saveAs: (name: string) => schema && void patch("schemas", schema.id, { views: [...saved.filter((v) => v.name !== name), { name, view }] }).then(() => setActive(name)),
-    rename: (from: string, to: string) => schema && void patch("schemas", schema.id, { views: saved.map((v) => (v.name === from ? { ...v, name: to } : v)) }).then(() => active === from && setActive(to)),
-    remove: (name: string) => schema && void patch("schemas", schema.id, { views: saved.filter((v) => v.name !== name) }).then(() => setActive(ALL)),
+    update: (change: Partial<TableView>) => set({ ...view, ...change }),
+    bookmarks: bookmarks.map((b) => ({ name: b.name, active: same(b.view) })),
+    open: (name: string) => {
+      const b = bookmarks.find((x) => x.name === name);
+      if (b) set({ ...view, ...readView(b.view), widths: view.widths });
+    },
+    save: (name: string) => schema && void patch("schemas", schema.id, { views: [...bookmarks.filter((b) => b.name !== name), { name, view: { search: view.search, filters: view.filters, sorts: view.sorts } }] }),
+    remove: (name: string) => schema && void patch("schemas", schema.id, { views: bookmarks.filter((b) => b.name !== name) }),
   };
 }
 
 /* ----------------------------------- Page ----------------------------------- */
 
 /**
- * Excel editor: the content of a schema's Excel table (its structure is the Schema editor's), as a
- * table, a list with the open row's details, or a kanban; filters, sorts and named views. The AI
- * panel changes the rows and the view.
+ * Excel: a schema's Excel table. Data: its rows as a Notion-like table (every column, filters, sorts,
+ * bookmarks); Schema: its columns (types, choices with colors, rules), written to the Excel file and to
+ * the form with the user's buttons; Context: the notes given to the AI with it.
  */
-function ExcelEditor() {
-  const { schema: schemaId } = Route.useSearch();
+function Excel() {
+  const { schema: schemaId, tab } = Route.useSearch();
   const navigate = useNavigate({ from: "/excel" });
   useLast("excel:schema", schemaId, (schema) => navigate({ search: { schema }, replace: true }));
-  const schemas = useCollection("schemas").filter((s) => s.excel);
+  const schemas = useCollection("schemas");
   const schema = schemas.find((s) => s.id === schemaId);
   const { table, error, reload, write } = useTable(schema);
-  const views = useViews(schema);
+  const views = useView(schema);
   const { view } = views;
-  const layout: Layout = view.layout ?? "table";
-  /** The row open in the detail view (its index in the Excel table). */
-  const [row, setRow] = useState<number>();
+  const [open, setOpen] = useState<number>();
   /** Rows checked by the user (Excel indexes): the AI then works on them only. */
   const [checked, setChecked] = useState<number[]>([]);
-  useEffect(() => (setChecked([]), setRow(undefined)), [schemaId]);
-
-  const fields = table?.fields ?? [];
+  const [adding, setAdding] = useState(false);
+  useEffect(() => (setChecked([]), setOpen(undefined)), [schemaId]);
   const shown = useMemo(() => (table ? apply(table.rows, view, table.fields) : []), [table, view]);
   const excel = schema?.excel;
-  /** A row shown with all its fields: the detail view, on that row. */
-  const openRow = (index: number) => {
-    setRow(index);
-    if (layout !== "detail") views.update({ layout: "detail" });
-  };
-  const change = (index: number, name: string, value: unknown) => {
-    const changes = [{ index, values: { [name]: value } }];
-    quiet(write((t) => updateRows(excel!, t, changes), { optimistic: (t) => withUpdates(t, changes) }));
-  };
+
   const removeRows = (indexes: number[]) => {
     quiet(write(() => deleteRows(excel!, indexes), { optimistic: (t) => withoutRows(t, indexes) }));
     setChecked([]);
-    setRow(undefined);
+    setOpen(undefined);
   };
-  /** New: a row is added at once (next id, default values) and opened in the detail view to be filled. */
+  /** New row: added at the end of the table (next id, default values), then opened to be filled. */
   const createRow = () => {
     if (!table) return;
     const index = table.rows.length;
-    void write((t) => addRows(excel!, t, [{}], { partial: true }), { refetch: true, optimistic: (t) => withRows(t, [{}]) }).then(() => openRow(index), () => undefined);
-    openRow(index);
+    quiet(write((t) => addRows(excel!, t, [{}], { partial: true }), { refetch: true, optimistic: (t) => withRows(t, [{}]) }));
+    setOpen(index);
   };
-  // Uploads only when the schema has an uploads folder (set in the Schema editor) and the option is on.
+  // Uploads only when the schema has an uploads folder and the option is on.
   const folder = schema?.filesFolder;
   const upload: Uploader | undefined = EXCEL_UPLOAD && folder ? { save: (file) => uploadFileTo(folder, file), folder: folder.name } : undefined;
-  const agent = useMemo(
-    () => (schema && table ? excelAgent({ schema, table, shown: () => shown.map((s) => s.index), checked, view, setView: views.update, openRow, write }) : undefined),
-    [schema, table, shown, checked, view, write], // eslint-disable-line react-hooks/exhaustive-deps
-  );
+
+  const agent: Agent | undefined = useMemo(() => {
+    if (!schema) return undefined;
+    const structure = schema.builtIn ? undefined : schemaAgent(schema);
+    const data = table && excel ? excelData({ schema, table, shown: () => shown.map((s) => s.index), checked, view, setView: views.update, openRow: setOpen, write }) : undefined;
+    if (!data && !structure) return undefined;
+    return {
+      instructions: [
+        `Screen: EXCEL. One Excel table on SharePoint ("${schema.title}") with two parts: its DATA (rows) and its SCHEMA (the columns' definition). Do what the request is about: rows → data tools; columns, choices, rules, form → schema tools.`,
+        data?.instructions,
+        structure?.instructions ?? (schema.builtIn ? "This is a built-in schema: its columns are fixed (no schema change)." : ""),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      tools: [...(data?.tools ?? []), ...(structure?.tools ?? [])],
+      context: (data ?? structure)!.context,
+      state: async () => [await data?.state?.(), await structure?.state?.()].filter(Boolean).join("\n\n"),
+      finish: structure?.finish,
+    };
+  }, [schema, table, shown, checked, view, write]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const rename = () => {
+    if (!schema) return;
+    const title = prompt("Name of this table in the app", schema.title)?.trim();
+    if (title) void patch("schemas", schema.id, { title });
+  };
 
   return (
-    <div className="flex h-full">
-      {AI_PANEL && (
-        <SidePanel
-          tabs={[{ id: "ai", label: "AI assistant", icon: SparklesIcon, content: agent ? <Chat scope={`excel:${schemaId}`} agent={agent} placeholder="Ask to find, fix or add rows, or to filter the view…" /> : <Empty>Choose a schema.</Empty> }]}
-        />
-      )}
-      <div className="flex min-w-0 flex-1 flex-col">
-        <PageHeader
-          screen="Excel editor"
-          picker={
-            <Picker
-              items={schemas.map((s) => ({ id: s.id, label: s.title, hint: s.builtIn ? "built-in" : undefined }))}
-              value={schemaId}
-              onChange={(schema) => navigate({ search: { schema } })}
-              placeholder="Choose a schema…"
-              empty={<>No schema with an Excel file: add one in the <Link to="/" search={{ tab: "schemas" }} className="underline">Library</Link>.</>}
-            />
-          }
-          actions={
-            schema && (
+    <Workspace
+      title="Excel"
+      icon={FileSpreadsheetIcon}
+      picker={
+        <>
+          <EntityPicker
+            items={schemas.map((s) => ({ id: s.id, label: s.title, hint: s.builtIn ? "built-in" : s.form ? "form" : undefined }))}
+            value={schemaId}
+            onChange={(schema) => navigate({ search: { schema } })}
+            placeholder={schemas.length ? "Choose an Excel table" : "Add an Excel table"}
+            onAdd={() => setAdding(true)}
+            addLabel="Add an Excel table…"
+          />
+          <AddDialog
+            open={adding}
+            onOpenChange={setAdding}
+            title="Add an Excel table"
+            description="Paste the link of an Excel file on SharePoint or OneDrive. Its columns are detected (types from the data, or from its _schema sheet); a form link gives the questions' types and choices."
+            fields={[
+              { name: "excel", label: "Excel file link", placeholder: "https://…sharepoint.com/…/file.xlsx" },
+              { name: "table", label: "Table name", optional: true, hint: "Default: the file's first table." },
+              { name: "form", label: "Microsoft Form link", optional: true, hint: "The form whose answers go to this table." },
+              { name: "title", label: "Name in the app", optional: true },
+            ]}
+            onSubmit={async (v) => navigate({ search: { schema: (await addSchema({ excel: v.excel, table: v.table || undefined, form: v.form || undefined, title: v.title || undefined })).id } })}
+          />
+        </>
+      }
+      actions={
+        schema && (
+          <>
+            {excel && (
               <>
-                {table && (
-                  <button type="button" className="btn-primary h-9 rounded-full px-4" onClick={createRow}>
-                    <PlusIcon /> New
-                  </button>
-                )}
-                <button type="button" className="icon-btn" title="Read the file again" onClick={() => void reload()}>
+                <Button variant="ghost" size="icon" className="size-9" aria-label="Read the file again" title="Read the file again" onClick={() => void reload()}>
                   <RefreshCwIcon />
-                </button>
-                <a className="btn h-9 rounded-full" href={excel!.webUrl ?? excel!.link} target="_blank" rel="noreferrer">
-                  <ExternalLinkIcon /> Excel
-                </a>
+                </Button>
+                <Button variant="outline" size="sm" asChild>
+                  <a href={excel.webUrl ?? excel.link} target="_blank" rel="noreferrer">
+                    <ExternalLinkIcon /> Excel
+                  </a>
+                </Button>
               </>
-            )
-          }
-          below={schema && table && <FilterBar fields={fields} view={view} setView={views.update} count={shown.length} checked={checked} onClear={() => setChecked([])} onDelete={() => confirm(`Delete ${checked.length} row(s) from the Excel file?`) && removeRows(checked)} />}
-        >
-          {schema && table && <ViewTools fields={fields} views={views} />}
-        </PageHeader>
-        {error && <p className="border-b bg-red-500/5 px-6 py-2 text-[13px] text-destructive">{error}</p>}
-        {!schema && <Empty>Choose a schema (an Excel table of the Library) to see and change its rows.</Empty>}
-        {schema && !table && !error && <Empty>Loading…</Empty>}
-        {schema && table && (
-          <div className="min-h-0 flex-1 overflow-hidden p-5">
-            {layout === "table" && <TableLayout table={table} items={shown} view={view} setView={views.update} upload={upload} onChange={change} checked={checked} setChecked={setChecked} />}
-            {layout === "detail" && <DetailLayout key={schema.id} schema={schema} table={table} items={shown} selected={row} onSelect={setRow} write={write} upload={upload} onDelete={(i) => removeRows([i])} />}
-            {layout === "kanban" && <KanbanLayout table={table} items={shown} view={view} onChange={change} onOpenRow={openRow} />}
-          </div>
-        )}
-      </div>
-    </div>
+            )}
+            {schema.form && (
+              <Button variant="outline" size="sm" asChild>
+                <a href={designUrl(schema.form)} target="_blank" rel="noreferrer">
+                  <ClipboardListIcon /> Form
+                </a>
+              </Button>
+            )}
+            <EntityMenu
+              kind="schemas"
+              entry={schema}
+              onRename={schema.builtIn ? undefined : rename}
+              onRemove={schema.builtIn ? undefined : () => confirm(`Remove "${schema.title}" from the app? (the Excel file and the form are kept)`) && void remove("schemas", schema.id).then(() => navigate({ search: {} }))}
+            >
+              <DropdownMenuItem onSelect={() => downloadText(`${schema.title}.schema.json`, JSON.stringify(schema, null, 2))}>
+                <FileIcon /> Download the schema
+              </DropdownMenuItem>
+            </EntityMenu>
+          </>
+        )
+      }
+      ai={{ scope: `excel:${schema?.id}`, agent, placeholder: "Ask to find, fix or add rows, or to change the columns…", empty: "Choose an Excel table, or add one from its link." }}
+      tab={tab}
+      onTab={(t) => navigate({ search: (s) => ({ ...s, tab: t }), replace: true })}
+      tabs={[
+        {
+          id: "data",
+          label: "Data",
+          icon: Table2Icon,
+          count: table?.rows.length,
+          content: !schema ? (
+            <Empty icon={FileSpreadsheetIcon}>Choose an Excel table, or add one from its link (list at the top).</Empty>
+          ) : !excel ? (
+            <Empty icon={FileSpreadsheetIcon}>This built-in table has no Excel file yet: choose one in the Schema tab.</Empty>
+          ) : (
+            <>
+              {error && <p className="border-b bg-destructive/5 px-6 py-2 text-[13px] text-destructive">{error}</p>}
+              {!table && !error && <Empty>Loading…</Empty>}
+              {table && (
+                <>
+                  <DataBar table={table} views={views} count={shown.length} checked={checked} onClear={() => setChecked([])} onDelete={() => confirm(`Delete ${checked.length} row(s) from the Excel file?`) && removeRows(checked)} onNew={createRow} />
+                  <DataTableView schema={schema} table={table} items={shown} view={view} setView={views.update} upload={upload} write={write} checked={checked} setChecked={setChecked} onOpen={setOpen} />
+                  <RowSheet schema={schema} table={table} index={open} onClose={() => setOpen(undefined)} write={write} upload={upload} onDelete={(i) => removeRows([i])} />
+                </>
+              )}
+            </>
+          ),
+        },
+        { id: "schema", label: "Schema", icon: Settings2Icon, count: schema?.fields.length, content: schema ? <SchemaTab key={schema.id} schema={schema} onWritten={() => void reload()} /> : <Empty>Choose an Excel table.</Empty> },
+        { id: "context", label: "Context", icon: BookTextIcon, count: schema?.contextIds.length, content: schema ? <ContextLinks what="Excel table" ids={schema.contextIds} onChange={(contextIds) => void patch("schemas", schema.id, { contextIds })} /> : <Empty>Choose an Excel table.</Empty> },
+      ]}
+    />
   );
 }
 
-/* ---------------------------------- Toolbar ---------------------------------- */
+/* --------------------------------- Data bar --------------------------------- */
 
-const LAYOUTS: { id: Layout; label: string; icon: ReactNode }[] = [
-  { id: "table", label: "Table", icon: <Table2Icon /> },
-  { id: "detail", label: "List and details", icon: <PanelRightIcon /> },
-  { id: "kanban", label: "Kanban", icon: <KanbanIcon /> },
-];
+const chip = "h-8 gap-1.5 rounded-full px-3 text-[13px]";
 
-/** First line: the views as pills (+ saves the current one), the layout, the columns shown. */
-function ViewTools({ fields, views }: { fields: Field[]; views: ReturnType<typeof useViews> }) {
+/** Above the rows: bookmarks, filters, sorts, search, the selection and "New row". */
+function DataBar({ table, views, count, checked, onClear, onDelete, onNew }: { table: Table; views: ReturnType<typeof useView>; count: number; checked: number[]; onClear: () => void; onDelete: () => void; onNew: () => void }) {
   const { view, update: setView } = views;
-  const shown = shownFields(fields, view);
+  const fields = table.fields;
   return (
-    <>
-      {[ALL, ...views.names].map((name) => (
-        <button
-          key={name}
-          type="button"
-          className="tab group"
-          data-active={name === views.active}
-          onClick={() => views.open(name)}
-          onDoubleClick={() => {
-            if (name === ALL) return;
-            const next = prompt("Rename the view", name)?.trim();
-            if (next) views.rename(name, next);
+    <div className="flex shrink-0 flex-col gap-2 border-b bg-card px-5 py-2.5">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <BookmarkIcon className="mr-1 size-4 text-muted-foreground" aria-hidden />
+        {views.bookmarks.map((b) => (
+          <span key={b.name} className={cn("group flex h-7 items-center gap-1 rounded-full border pr-1 pl-3 text-[12.5px] transition-colors", b.active ? "border-primary/40 bg-primary/10 text-primary" : "hover:bg-muted")}>
+            <button type="button" className="cursor-pointer" onClick={() => views.open(b.name)}>
+              {b.name}
+            </button>
+            <button type="button" className="flex size-5 cursor-pointer items-center justify-center rounded-full opacity-0 group-hover:opacity-70 hover:bg-muted" aria-label={`Delete the bookmark ${b.name}`} onClick={() => confirm(`Delete the bookmark "${b.name}"?`) && views.remove(b.name)}>
+              <XIcon className="size-3" />
+            </button>
+          </span>
+        ))}
+        {!views.bookmarks.length && <span className="text-[12.5px] text-muted-foreground">No bookmark yet: filter the rows, then save them.</span>}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 rounded-full px-2.5 text-[12.5px] text-primary"
+          onClick={() => {
+            const name = prompt("Name of the bookmark (keeps the search, filters and sorts)")?.trim();
+            if (name) views.save(name);
           }}
         >
-          {name === ALL ? "All rows" : name}
-          {name !== ALL && name === views.active && <XIcon className="size-3.5 opacity-0 group-hover:opacity-70" onClick={(e) => (e.stopPropagation(), confirm(`Delete the view "${name}"?`) && views.remove(name))} />}
-        </button>
-      ))}
-      <button type="button" className="icon-btn" title="Save the current filters, sorts and layout as a new view" onClick={() => { const name = prompt("Name of the new view")?.trim(); if (name) views.saveAs(name); }}>
-        <PlusIcon />
-      </button>
-      <span className="mx-1 h-6 shrink-0 border-l" />
-      <span className="flex shrink-0 rounded-full bg-muted p-0.5">
-        {LAYOUTS.map((l) => (
-          <button key={l.id} type="button" title={l.label} onClick={() => setView({ layout: l.id === "table" ? undefined : l.id })} className={`flex size-8 items-center justify-center rounded-full [&_svg]:size-4 ${(view.layout ?? "table") === l.id ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>
-            {l.icon}
-          </button>
-        ))}
-      </span>
-      {(view.layout ?? "table") === "table" && (
-        <Popover width={240} trigger={(open) => (
-          <button type="button" className="chip" onClick={open} title="Columns shown in this view">
-            <ColumnsIcon /> {shown.length}/{fields.length}
-          </button>
-        )}>
-          {() => (
-            <div className="flex max-h-96 flex-col gap-1.5 overflow-y-auto p-1">
-              {fields.map((f) => {
-                const on = shown.includes(f);
-                return (
-                  <label key={f.name} className="flex items-center gap-2">
-                    <input type="checkbox" className="size-4 accent-[var(--color-primary)]" checked={on} onChange={() => setView({ hidden: fields.filter((x) => (x === f ? on : !shown.includes(x))).map((x) => x.name) })} />
-                    {labelOf(f)}
-                  </label>
-                );
-              })}
-              {view.hidden && (
-                <button type="button" className="btn mt-1 h-8 w-fit" onClick={() => setView({ hidden: undefined })}>
-                  Default (first 5)
-                </button>
-              )}
-            </div>
-          )}
+          <BookmarkPlusIcon /> Save as bookmark
+        </Button>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className={chip}>
+              <SlidersHorizontalIcon /> Filter
+              {view.filters.length > 0 && <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[11px] text-primary-foreground">{view.filters.length}</span>}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-[360px]">
+            <FiltersEditor fields={fields} view={view} setView={setView} />
+          </PopoverContent>
         </Popover>
-      )}
-    </>
-  );
-}
-
-/** Second line: filters (with their count), sorts, quick filters on the choices, search, results, selection. */
-function FilterBar({ fields, view, setView, count, checked, onClear, onDelete }: { fields: Field[]; view: TableView; setView: (v: Partial<TableView>) => void; count: number; checked: number[]; onClear: () => void; onDelete: () => void }) {
-  const choices = fields.filter((f) => f.type === "option").slice(0, 3);
-  return (
-    <>
-      <Popover width={340} trigger={(open) => (
-        <button type="button" className="chip" onClick={open}>
-          <SlidersHorizontalIcon /> Filter
-          {view.filters.length > 0 && <span className="flex size-5 items-center justify-center rounded-full bg-destructive text-[11.5px] text-white">{view.filters.length}</span>}
-        </button>
-      )}>
-        {() => <FiltersEditor fields={fields} view={view} setView={setView} />}
-      </Popover>
-      <Popover width={280} trigger={(open) => (
-        <button type="button" className="chip" onClick={open}>
-          <ArrowUpDownIcon /> Sort
-          {view.sorts.length > 0 && <span className="flex size-5 items-center justify-center rounded-full bg-foreground text-[11.5px] text-background">{view.sorts.length}</span>}
-        </button>
-      )}>
-        {() => <SortsEditor fields={fields} view={view} setView={setView} />}
-      </Popover>
-      {view.layout === "kanban" && <GroupBy fields={fields} view={view} setView={setView} />}
-      {choices.map((f) => {
-        const current = view.filters.find((x) => x.field === f.name && x.op === "is");
-        return (
-          <Popover key={f.name} width={240} trigger={(open) => (
-            <button type="button" className={`chip ${current?.values?.length ? "ring-2 ring-foreground/15" : ""}`} onClick={open}>
-              {labelOf(f)}
-              {current?.values?.length ? <span className="max-w-40 truncate text-muted-foreground">: {current.values.join(", ")}</span> : null}
-              <ChevronDownIcon />
-            </button>
-          )}>
-            {() => (
-              <div className="flex flex-col">
-                {f.options?.map((o) => {
-                  const on = !!current?.values?.includes(o.value);
-                  const values = on ? current!.values!.filter((v) => v !== o.value) : [...(current?.values ?? []), o.value];
-                  const others = view.filters.filter((x) => x !== current);
-                  return (
-                    <button key={o.value} type="button" className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-muted" onClick={() => setView({ filters: values.length ? [...others, { field: f.name, op: "is", values }] : others })}>
-                      <input type="checkbox" readOnly checked={on} className="size-4 accent-[var(--color-primary)]" />
-                      <Badge color={o.color}>{o.value}</Badge>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </Popover>
-        );
-      })}
-      <span className="shrink-0 text-[13.5px] font-medium">
-        {count} <span className="font-normal text-muted-foreground">results</span>
-      </span>
-      {checked.length > 0 && (
-        <span className="flex h-9 items-center gap-1 rounded-full bg-foreground pr-1 pl-3.5 text-[13px] text-background">
-          {checked.length} selected
-          <button type="button" className="flex size-7 items-center justify-center rounded-full hover:bg-white/15" title="Delete the selected rows" onClick={onDelete}>
-            <Trash2Icon className="size-4" />
-          </button>
-          <button type="button" className="flex size-7 items-center justify-center rounded-full hover:bg-white/15" title="Clear the selection" onClick={onClear}>
-            <XIcon className="size-4" />
-          </button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="outline" size="sm" className={chip}>
+              <ArrowUpDownIcon /> Sort
+              {view.sorts.length > 0 && <span className="flex size-5 items-center justify-center rounded-full bg-primary text-[11px] text-primary-foreground">{view.sorts.length}</span>}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-[300px]">
+            <SortsEditor fields={fields} view={view} setView={setView} />
+          </PopoverContent>
+        </Popover>
+        {fields
+          .filter((f) => f.type === "option")
+          .slice(0, 3)
+          .map((f) => {
+            const current = view.filters.find((x) => x.field === f.name && x.op === "is");
+            const others = view.filters.filter((x) => x !== current);
+            return (
+              <Popover key={f.name}>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm" className={cn(chip, current?.values?.length && "border-primary/40 bg-primary/5")}>
+                    {labelOf(f)}
+                    {current?.values?.length ? <span className="max-w-40 truncate text-muted-foreground">: {current.values.join(", ")}</span> : null}
+                    <ChevronDownIcon />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-60 p-1.5">
+                  {f.options?.map((o) => {
+                    const on = !!current?.values?.includes(o.value);
+                    const values = on ? current!.values!.filter((v) => v !== o.value) : [...(current?.values ?? []), o.value];
+                    return (
+                      <button key={o.value} type="button" className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted" onClick={() => setView({ filters: values.length ? [...others, { field: f.name, op: "is", values }] : others })}>
+                        <Checkbox checked={on} tabIndex={-1} />
+                        <Badge color={o.color}>{o.value}</Badge>
+                      </button>
+                    );
+                  })}
+                </PopoverContent>
+              </Popover>
+            );
+          })}
+        {(view.filters.length > 0 || view.sorts.length > 0 || view.search) && (
+          <Button variant="ghost" size="sm" className="h-8 text-[12.5px] text-muted-foreground" onClick={() => setView({ filters: [], sorts: [], search: "" })}>
+            Clear
+          </Button>
+        )}
+        <span className="text-[13px] font-medium tabular-nums">
+          {count} <span className="font-normal text-muted-foreground">of {table.rows.length} rows</span>
         </span>
-      )}
-      <span className="ml-auto" />
-      <label className="chip w-56 cursor-text">
-        <SearchIcon />
-        <input className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-muted-foreground" placeholder="Search" value={view.search ?? ""} onChange={(e) => setView({ search: e.target.value })} />
-      </label>
-    </>
-  );
-}
-
-/** Kanban: the choice field giving the columns (saved with the view). */
-function GroupBy({ fields, view, setView }: { fields: Field[]; view: TableView; setView: (v: Partial<TableView>) => void }) {
-  const choices = fields.filter((f) => f.type === "option" && !f.multiple);
-  const current = kanbanField(fields, view);
-  if (!current) return null;
-  return (
-    <Popover width={220} trigger={(open) => (
-      <button type="button" className="chip" onClick={open} title="The choice field giving the kanban's columns">
-        <ColumnsIcon /> Group by <span className="font-semibold">{labelOf(current)}</span>
-        <ChevronDownIcon />
-      </button>
-    )}>
-      {(close) => (
-        <div className="flex flex-col">
-          {choices.map((f) => (
-            <button key={f.name} type="button" className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-muted" onClick={() => (setView({ group: f.name }), close())}>
-              {labelOf(f)}
-              {f === current && <CheckIcon className="ml-auto size-4" />}
+        {checked.length > 0 && (
+          <span className="flex h-8 items-center gap-1 rounded-full bg-foreground pr-1 pl-3 text-[12.5px] text-background">
+            {checked.length} selected
+            <button type="button" className="flex size-6 cursor-pointer items-center justify-center rounded-full hover:bg-white/15" aria-label="Delete the selected rows" onClick={onDelete}>
+              <Trash2Icon className="size-3.5" />
             </button>
-          ))}
-        </div>
-      )}
-    </Popover>
+            <button type="button" className="flex size-6 cursor-pointer items-center justify-center rounded-full hover:bg-white/15" aria-label="Clear the selection" onClick={onClear}>
+              <XIcon className="size-3.5" />
+            </button>
+          </span>
+        )}
+        <span className="ml-auto" />
+        <label className="flex h-8 w-56 cursor-text items-center gap-2 rounded-full border bg-background px-3 text-[13px] focus-within:ring-2 focus-within:ring-ring/40">
+          <SearchIcon className="size-4 text-muted-foreground" />
+          <input className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-muted-foreground" placeholder="Search" value={view.search ?? ""} onChange={(e) => setView({ search: e.target.value })} />
+        </label>
+        <Button size="sm" className="h-8 rounded-full" onClick={onNew}>
+          <PlusIcon /> New row
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -398,7 +408,7 @@ function GroupBy({ fields, view, setView }: { fields: Field[]; view: TableView; 
 function FiltersEditor({ fields, view, setView }: { fields: Field[]; view: TableView; setView: (v: Partial<TableView>) => void }) {
   const set = (i: number, f?: Filter) => setView({ filters: f ? view.filters.map((x, k) => (k === i ? f : x)) : view.filters.filter((_, k) => k !== i) });
   return (
-    <div className="flex flex-col gap-3 p-1">
+    <div className="flex flex-col gap-3">
       {view.filters.map((filter, i) => {
         const field = fields.find((f) => f.name === filter.field) ?? fields[0];
         return (
@@ -417,9 +427,9 @@ function FiltersEditor({ fields, view, setView }: { fields: Field[]; view: Table
                   <option key={o} value={o}>{OPS[o]}</option>
                 ))}
               </select>
-              <button type="button" className="icon-btn" title="Remove the filter" onClick={() => set(i)}>
+              <Button variant="ghost" size="icon" className="size-8" aria-label="Remove the filter" onClick={() => set(i)}>
                 <XIcon />
-              </button>
+              </Button>
             </div>
             {!NO_VALUE.includes(filter.op) &&
               (field.type === "option" ? (
@@ -427,14 +437,14 @@ function FiltersEditor({ fields, view, setView }: { fields: Field[]; view: Table
                   {field.options?.map((o) => {
                     const on = filter.values?.includes(o.value);
                     return (
-                      <button key={o.value} type="button" className={on ? "" : "opacity-45 hover:opacity-100"} onClick={() => set(i, { ...filter, values: on ? filter.values!.filter((v) => v !== o.value) : [...(filter.values ?? []), o.value] })}>
+                      <button key={o.value} type="button" className={cn("cursor-pointer", on ? "" : "opacity-45 hover:opacity-100")} onClick={() => set(i, { ...filter, values: on ? filter.values!.filter((v) => v !== o.value) : [...(filter.values ?? []), o.value] })}>
                         <Badge color={o.color}>{o.value}</Badge>
                       </button>
                     );
                   })}
                 </div>
               ) : (
-                <input className="input h-8" type={field.type === "number" || field.type === "rating" ? "number" : field.type === "date" ? "date" : "text"} placeholder="Value" value={filter.value ?? ""} onChange={(e) => set(i, { ...filter, value: e.target.value })} />
+                <Input className="h-8" type={field.type === "number" || field.type === "rating" ? "number" : field.type === "date" ? "date" : "text"} placeholder="Value" value={filter.value ?? ""} onChange={(e) => set(i, { ...filter, value: e.target.value })} />
               ))}
           </div>
         );
@@ -456,18 +466,18 @@ function FiltersEditor({ fields, view, setView }: { fields: Field[]; view: Table
 
 function SortsEditor({ fields, view, setView }: { fields: Field[]; view: TableView; setView: (v: Partial<TableView>) => void }) {
   return (
-    <div className="flex flex-col gap-2 p-1">
+    <div className="flex flex-col gap-2">
       {view.sorts.map((s, i) => {
         const field = fields.find((f) => f.name === s.field);
         return (
           <div key={i} className="flex items-center gap-1.5">
-            <span className="flex-1 truncate">{field ? labelOf(field) : s.field}</span>
-            <button type="button" className="btn h-8" onClick={() => setView({ sorts: view.sorts.map((x, k) => (k === i ? { ...x, desc: !x.desc } : x)) })}>
+            <span className="flex-1 truncate text-[13px]">{field ? labelOf(field) : s.field}</span>
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setView({ sorts: view.sorts.map((x, k) => (k === i ? { ...x, desc: !x.desc } : x)) })}>
               {s.desc ? <ArrowDownIcon /> : <ArrowUpIcon />} {s.desc ? "Z → A" : "A → Z"}
-            </button>
-            <button type="button" className="icon-btn" onClick={() => setView({ sorts: view.sorts.filter((_, k) => k !== i) })}>
+            </Button>
+            <Button variant="ghost" size="icon" className="size-8" aria-label="Remove the sort" onClick={() => setView({ sorts: view.sorts.filter((_, k) => k !== i) })}>
               <XIcon />
-            </button>
+            </Button>
           </div>
         );
       })}
@@ -483,21 +493,30 @@ function SortsEditor({ fields, view, setView }: { fields: Field[]; view: TableVi
 
 /* ----------------------------------- Table ----------------------------------- */
 
-function TableLayout({ table, items, view, setView, upload, onChange, checked, setChecked }: {
+const defaultWidth = (f: Field) => (isIdField(f) ? 130 : f.type === "text" ? 320 : f.type === "string" ? 220 : f.type === "file" || f.type === "url" ? 200 : f.type === "image" ? 110 : 170);
+
+/** Every column, edited in place (as in Notion); a row opens on the side with its expand button. */
+function DataTableView({ schema, table, items, view, setView, upload, write, checked, setChecked, onOpen }: {
+  schema: SchemaEntry;
   table: Table;
   items: { row: Row; index: number }[];
   view: TableView;
   setView: (v: Partial<TableView>) => void;
   upload?: Uploader;
-  onChange: (index: number, name: string, value: unknown) => void;
+  write: Write;
   checked: number[];
   setChecked: (c: number[]) => void;
+  onOpen: (index: number) => void;
 }) {
-  const columns = shownFields(table.fields, view);
+  const columns = table.fields;
   const all = items.length > 0 && items.every((i) => checked.includes(i.index));
-  // Drag a header's right edge to resize the column (saved with the view when released).
+  const change = (index: number, name: string, value: unknown) => {
+    const changes = [{ index, values: { [name]: value } }];
+    quiet(write((t) => updateRows(schema.excel!, t, changes), { optimistic: (t) => withUpdates(t, changes) }));
+  };
+  // Drag a header's right edge to resize the column (kept in this browser when released).
   const [resizing, setResizing] = useState<{ name: string; width: number }>();
-  const widthOf = (f: Field) => (resizing?.name === f.name ? resizing.width : view.widths?.[f.name]) ?? (isIdField(f) ? 130 : f.type === "text" ? 320 : f.type === "string" ? 220 : f.type === "file" || f.type === "url" ? 200 : f.type === "image" ? 110 : 170);
+  const widthOf = (f: Field) => (resizing?.name === f.name ? resizing.width : view.widths?.[f.name]) ?? defaultWidth(f);
   const style = (f: Field) => ({ width: widthOf(f), minWidth: widthOf(f), maxWidth: widthOf(f) });
   const resize = (f: Field, e: React.PointerEvent<HTMLElement>) => {
     e.preventDefault();
@@ -520,26 +539,26 @@ function TableLayout({ table, items, view, setView, upload, onChange, checked, s
     setView({ sorts: s ? (s.desc ? [] : [{ field: f.name, desc: true }]) : [{ field: f.name }] });
   };
   return (
-    <div className="card h-full overflow-auto">
-      <table className="w-max min-w-full border-separate border-spacing-0">
-        <thead className="sticky top-0 z-10 bg-card">
+    <div className="min-h-0 flex-1 overflow-auto bg-card">
+      <table className="w-max min-w-full border-separate border-spacing-0 text-[13.5px]">
+        <thead className="sticky top-0 z-10 bg-muted/70 backdrop-blur">
           <tr>
-            <th className="w-12 border-r border-b bg-muted/40">
+            <th className="sticky left-0 z-20 w-20 border-r border-b bg-muted">
               <span className="flex justify-center">
-                <input type="checkbox" className="size-4 accent-[var(--color-primary)]" title="Select all the rows shown" checked={all} onChange={() => setChecked(all ? [] : items.map((i) => i.index))} />
+                <Checkbox aria-label="Select all the rows shown" checked={all} onCheckedChange={() => setChecked(all ? [] : items.map((i) => i.index))} />
               </span>
             </th>
             {columns.map((f) => {
               const sort = view.sorts.find((s) => s.field === f.name);
               return (
-                <th key={f.name} style={style(f)} className="relative border-r border-b bg-muted/40 p-0 last:border-r-0">
-                  <button type="button" title={f.description ?? "Sort"} onClick={() => sortBy(f)} className="th flex w-full items-center gap-2 hover:bg-muted [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground">
+                <th key={f.name} style={style(f)} className="relative border-r border-b p-0 last:border-r-0">
+                  <button type="button" title={f.description ?? "Sort"} onClick={() => sortBy(f)} className="th flex w-full cursor-pointer items-center gap-2 hover:bg-muted [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground">
                     {TYPE_ICONS[f.type]}
                     <span className="truncate">{labelOf(f)}</span>
                     {f.required && <span className="text-destructive/70">*</span>}
                     {sort && (sort.desc ? <ArrowDownIcon /> : <ArrowUpIcon />)}
                   </button>
-                  <div role="separator" aria-orientation="vertical" title="Drag to resize" onPointerDown={(e) => resize(f, e)} className={`absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize hover:bg-zinc-400/40 ${resizing?.name === f.name ? "bg-zinc-400/50" : ""}`} />
+                  <div role="separator" aria-orientation="vertical" title="Drag to resize" onPointerDown={(e) => resize(f, e)} className={cn("absolute inset-y-0 -right-1 z-10 w-2 cursor-col-resize hover:bg-primary/25", resizing?.name === f.name && "bg-primary/35")} />
                 </th>
               );
             })}
@@ -547,326 +566,551 @@ function TableLayout({ table, items, view, setView, upload, onChange, checked, s
         </thead>
         <tbody>
           {items.map(({ row, index }) => (
-            <tr key={index} className={`group ${checked.includes(index) ? "bg-muted/60" : "hover:bg-muted/40"}`}>
-              <td className="border-r border-b align-middle">
-                <span className="flex justify-center">
-                  <input type="checkbox" className="size-4 accent-[var(--color-primary)]" title="Select this row" checked={checked.includes(index)} onChange={() => setChecked(checked.includes(index) ? checked.filter((i) => i !== index) : [...checked, index])} />
+            <tr key={index} className={cn("group", checked.includes(index) ? "bg-primary/5" : "hover:bg-muted/40")}>
+              <td className="sticky left-0 z-[5] border-r border-b bg-card align-middle group-hover:bg-muted">
+                <span className="flex items-center justify-center gap-1">
+                  <Checkbox aria-label="Select this row" checked={checked.includes(index)} onCheckedChange={() => setChecked(checked.includes(index) ? checked.filter((i) => i !== index) : [...checked, index])} />
+                  <button type="button" className="flex size-6 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-background hover:text-foreground" aria-label="Open the row" title="Open the row" onClick={() => onOpen(index)}>
+                    <Maximize2Icon className="size-3.5" />
+                  </button>
                 </span>
               </td>
               {columns.map((f) => (
                 <td key={f.name} style={style(f)} className="overflow-hidden border-r border-b p-0 align-middle last:border-r-0">
-                  <FieldInput variant="cell" field={f} value={row[f.name]} upload={upload} validate={(v) => idError(table, index, v)} onChange={(v) => onChange(index, f.name, v)} />
+                  <FieldInput variant="cell" field={f} value={row[f.name]} upload={upload} validate={(v) => idError(table, index, v)} onChange={(v) => change(index, f.name, v)} />
                 </td>
               ))}
             </tr>
           ))}
         </tbody>
       </table>
-      {items.length === 0 && <p className="p-10 text-center text-muted-foreground">No row matches this view.</p>}
+      {items.length === 0 && <p className="p-10 text-center text-muted-foreground">No row matches the filters.</p>}
     </div>
   );
 }
 
-/* ---------------------------------- Detail ---------------------------------- */
-
-/** The rows as a list (title and choices) and the open row's fields beside it. */
-function DetailLayout({ schema, table, items, selected, onSelect, write, upload, onDelete }: { schema: SchemaEntry; table: Table; items: { row: Row; index: number }[]; selected?: number; onSelect: (index: number) => void; write: Write; upload?: Uploader; onDelete: (i: number) => void }) {
-  // The list can be folded (remembered in this browser) to give the row all the width.
-  const [folded, setFolded] = useState(() => last.get("detail-list") === "folded");
-  const fold = (next: boolean) => (last.set("detail-list", next ? "folded" : "open"), setFolded(next));
-  const title = titleField(table.fields);
+/** One row with every field as a form, on the side; changes are written at once. */
+function RowSheet({ schema, table, index, onClose, write, upload, onDelete }: { schema: SchemaEntry; table: Table; index?: number; onClose: () => void; write: Write; upload?: Uploader; onDelete: (index: number) => void }) {
+  const row = index === undefined ? undefined : table.rows[index];
   const id = table.fields.find(isIdField);
-  const badges = table.fields.filter((f) => f.type === "option").slice(0, 2);
-  useEffect(() => {
-    if (selected === undefined && items[0]) onSelect(items[0].index);
-  }, [items.length]); // eslint-disable-line react-hooks/exhaustive-deps
-  return (
-    <div className="flex h-full gap-4">
-      {folded ? (
-        <button type="button" className="card flex w-10 shrink-0 items-start justify-center pt-3 text-muted-foreground hover:text-foreground" title="Show the list" onClick={() => fold(false)}>
-          <PanelLeftOpenIcon className="size-4" />
-        </button>
-      ) : (
-      <div className="card flex w-96 shrink-0 flex-col overflow-hidden">
-        <div className="flex h-11 shrink-0 items-center border-b px-3 text-[13px] text-muted-foreground">
-          {items.length} rows
-          <button type="button" className="icon-btn ml-auto size-7" title="Fold the list" onClick={() => fold(true)}>
-            <PanelLeftCloseIcon />
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-        {items.map(({ row, index }) => (
-          <button key={index} type="button" onClick={() => onSelect(index)} className={`flex w-full flex-col gap-1.5 border-b px-4 py-3 text-left last:border-b-0 ${selected === index ? "bg-accent" : "hover:bg-muted/40"}`}>
-            <span className="flex items-baseline gap-2">
-              {id && <span className="max-w-24 shrink-0 truncate text-[12.5px] text-muted-foreground tabular-nums">{String(row[id.name] ?? "")}</span>}
-              <span className="font-medium break-words">{title ? String(row[title.name] ?? "") || "Untitled" : `Row ${index + 1}`}</span>
-            </span>
-            {badges.length > 0 && (
-              <span className="flex flex-wrap gap-1">
-                {badges.map((f) => listOf(row[f.name]).map((v) => <Badge key={`${f.name}${v}`} small color={f.options?.find((o) => o.value === v)?.color}>{v}</Badge>))}
-              </span>
-            )}
-          </button>
-        ))}
-        {items.length === 0 && <p className="p-6 text-center text-muted-foreground">No row matches this view.</p>}
-        </div>
-      </div>
-      )}
-      <div className="card min-w-0 flex-1 overflow-y-auto p-6">
-        {selected === undefined ? <Empty>Choose a row.</Empty> : <RowForm key={String(selected)} schema={schema} table={table} selected={selected} write={write} upload={upload} onDelete={onDelete} columns />}
-      </div>
-    </div>
-  );
-}
-
-/* ---------------------------------- Kanban ---------------------------------- */
-
-/** The kanban's columns: the view's grouping field, else the first single choice field. */
-const kanbanField = (fields: Field[], view: TableView) => {
-  const choices = fields.filter((f) => f.type === "option" && !f.multiple);
-  return choices.find((f) => f.name === view.group) ?? choices[0];
-};
-
-/** One column per choice of a field (the view's grouping, saved with the view); drag a card to change its value. */
-function KanbanLayout({ table, items, view, onChange, onOpenRow }: { table: Table; items: { row: Row; index: number }[]; view: TableView; onChange: (index: number, name: string, value: unknown) => void; onOpenRow: (index: number) => void }) {
-  const field = kanbanField(table.fields, view);
-  const [dragged, setDragged] = useState<number>();
-  const [over, setOver] = useState<string>();
-  if (!field) return <Empty>The kanban needs a single choice field (e.g. a status).</Empty>;
-  const title = titleField(table.fields);
-  const id = table.fields.find(isIdField);
-  const others = table.fields.filter((f) => f !== field && f !== title && !isIdField(f) && ["option", "date", "rating"].includes(f.type)).slice(0, 3);
-  const columns = [...(field.options ?? []).map((o) => ({ key: o.value, color: o.color })), { key: "", color: undefined }];
-  return (
-    <div className="flex h-full flex-col gap-3">
-      <div className="flex min-h-0 flex-1 gap-4 overflow-x-auto pb-2">
-        {columns.map((c) => {
-          const cards = items.filter(({ row }) => (listOf(row[field.name])[0] ?? "") === c.key);
-          if (!c.key && !cards.length) return null;
-          return (
-            <div
-              key={c.key}
-              onDragOver={(e) => (e.preventDefault(), setOver(c.key))}
-              onDragLeave={() => setOver(undefined)}
-              onDrop={(e) => {
-                e.preventDefault();
-                setOver(undefined);
-                if (dragged !== undefined) onChange(dragged, field.name, c.key || null);
-                setDragged(undefined);
-              }}
-              className={`flex w-80 shrink-0 flex-col gap-3 rounded-2xl p-3 transition-colors ${over === c.key ? "bg-zinc-200/70" : "bg-muted/60"}`}
-            >
-              <span className="flex items-center gap-2 px-1">
-                {c.key ? <Badge color={c.color}>{c.key}</Badge> : <span className="font-medium text-muted-foreground">No value</span>}
-                <span className="text-muted-foreground">{cards.length}</span>
-              </span>
-              <div className="flex min-h-0 flex-col gap-2.5 overflow-y-auto">
-                {cards.map(({ row, index }) => (
-                  <button
-                    key={index}
-                    type="button"
-                    draggable
-                    onDragStart={() => setDragged(index)}
-                    onDragEnd={() => setDragged(undefined)}
-                    onClick={() => onOpenRow(index)}
-                    className={`flex flex-col gap-2 rounded-xl border bg-card p-3.5 text-left shadow-xs hover:shadow-md ${dragged === index ? "opacity-40" : ""}`}
-                  >
-                    {id && <span className="truncate text-[12px] text-muted-foreground tabular-nums">{String(row[id.name] ?? "")}</span>}
-                    <span className="font-medium">{title ? String(row[title.name] ?? "") || "Untitled" : `Row ${index + 1}`}</span>
-                    {others.length > 0 && (
-                      <span className="flex flex-wrap items-center gap-1.5 text-[13px]">
-                        {others.map((f) => (row[f.name] === null || row[f.name] === undefined || row[f.name] === "" ? null : <FieldValue key={f.name} field={f} value={row[f.name]} />))}
-                      </span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* --------------------------------- Row form --------------------------------- */
-
-/**
- * Every field of a row, as a form: long texts, short texts and files on the whole width, the other
- * fields side by side (`columns`: three per line). Changes are written at once.
- */
-function RowForm({ schema, table, selected, write, upload, onDelete, columns = false }: { schema: SchemaEntry; table: Table; selected: number; write: Write; upload?: Uploader; onDelete: (index: number) => void; columns?: boolean }) {
-  const row = table.rows[selected];
-  if (!row) return <Empty>This row is not in the table anymore.</Empty>;
   const set = (name: string, value: unknown) => {
-    const changes = [{ index: selected, values: { [name]: value } }];
+    const changes = [{ index: index!, values: { [name]: value } }];
     quiet(write((t) => updateRows(schema.excel!, t, changes), { optimistic: (t) => withUpdates(t, changes) }));
   };
-  const wide = (f: Field) => !columns || ["text", "file", "url", "image", "string"].includes(f.type);
   return (
-    <div className="flex flex-col gap-5">
-      <div className={`grid gap-x-4 gap-y-4 ${columns ? "grid-cols-3" : "grid-cols-1"}`}>
-        {table.fields.map((f) => (
-          <div key={f.name} className={`flex flex-col gap-1.5 ${wide(f) ? "col-span-full" : ""}`}>
-            <span className="flex items-center gap-1.5 text-[13px] font-medium text-muted-foreground [&_svg]:size-3.5">
-              {TYPE_ICONS[f.type]} {labelOf(f)}
-              {f.required && <span className="text-destructive/70">*</span>}
-            </span>
-            <FieldInput variant="form" field={f} value={row[f.name]} upload={upload} validate={(v) => idError(table, selected, v)} onChange={(v) => set(f.name, v)} />
-            {f.description && <span className="text-[12px] text-muted-foreground">{f.description}</span>}
+    <Sheet open={index !== undefined} onOpenChange={(o) => !o && onClose()}>
+      <SheetContent className="w-full gap-0 sm:max-w-xl">
+        <SheetHeader className="border-b">
+          <SheetTitle>{row && id ? String(row[id.name] ?? "") || "New row" : "Row"}</SheetTitle>
+          <SheetDescription>{schema.title} · row {index === undefined ? "" : index + 1}</SheetDescription>
+        </SheetHeader>
+        {row ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-5">
+            {table.fields.map((f) => (
+              <div key={f.name} className="flex flex-col gap-1.5">
+                <span className="flex items-center gap-1.5 text-[12.5px] font-medium text-muted-foreground [&_svg]:size-3.5">
+                  {TYPE_ICONS[f.type]} {labelOf(f)}
+                  {f.required && <span className="text-destructive/70">*</span>}
+                </span>
+                <FieldInput variant="form" field={f} value={row[f.name]} upload={upload} validate={(v) => idError(table, index!, v)} onChange={(v) => set(f.name, v)} />
+                {f.description && <span className="text-[12px] text-muted-foreground">{f.description}</span>}
+              </div>
+            ))}
+            <Button variant="outline" className="mt-2 ml-auto text-destructive" onClick={() => confirm("Delete this row from the Excel file?") && onDelete(index!)}>
+              <Trash2Icon /> Delete the row
+            </Button>
+          </div>
+        ) : (
+          <Empty>Adding the row…</Empty>
+        )}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+/* ---------------------------------- Schema ---------------------------------- */
+
+type Draft = { fields: Field[]; sections: FormSection[] };
+type Busy = { busy?: string; done?: string; error?: string };
+
+/**
+ * The columns as a form: the list on the left, the chosen column's settings on the right, the form's
+ * sections under it. Saved in the app with "Save"; written to the Excel file ("Sync the Excel":
+ * columns, dropdowns, colors) and to the form ("Update the form", after review) by the user.
+ */
+function SchemaTab({ schema, onWritten }: { schema: SchemaEntry; onWritten: () => void }) {
+  const saved: Draft = { fields: schema.fields, sections: schema.sections ?? [] };
+  const [draft, setDraft] = useState<Draft>(saved);
+  const [selected, setSelected] = useState<string | undefined>(schema.fields.find((f) => !isIdField(f))?.name ?? schema.fields[0]?.name);
+  const [state, setState] = useState<Busy>({});
+  const [plan, setPlan] = useState<FormPlan>();
+  const savedText = JSON.stringify(saved);
+  const changed = JSON.stringify(draft) !== savedText;
+  // The AI (or an import) changed the schema: shown at once when nothing is being edited.
+  const lastSaved = useRef(savedText);
+  useEffect(() => {
+    if (JSON.stringify(draft) === lastSaved.current) setDraft(saved);
+    lastSaved.current = savedText;
+  }, [savedText]); // eslint-disable-line react-hooks/exhaustive-deps
+  const problems = useMemo(() => fieldsErrors(draft.fields, draft.sections), [draft]);
+  const run = (busy: string, task: (progress: (label: string, done: number, total: number) => void) => Promise<string | void>) => {
+    setState({ busy });
+    task((label, done, total) => setState({ busy: `${label} ${done}/${total}` })).then((done) => setState({ done: done ?? undefined }), (e) => setState({ error: errorText(e) }));
+  };
+  const fixed = !!schema.builtIn;
+  const field = draft.fields.find((f) => f.name === selected);
+  const setField = (name: string, next: Field) => {
+    setDraft({
+      fields: draft.fields.map((f) => (f.name === name ? next : f)),
+      // A renamed field keeps its place in its section.
+      sections: next.name === name ? draft.sections : draft.sections.map((s) => ({ ...s, fields: s.fields.map((n) => (n === name ? next.name : n)) })),
+    });
+    if (next.name !== name) setSelected(next.name);
+  };
+  const move = (name: string, by: number) => {
+    const i = draft.fields.findIndex((f) => f.name === name);
+    const j = i + by;
+    if (j < 0 || j >= draft.fields.length) return;
+    const fields = [...draft.fields];
+    [fields[i], fields[j]] = [fields[j], fields[i]];
+    setDraft({ ...draft, fields });
+  };
+  const addField = () => {
+    let name = "New column";
+    for (let n = 2; draft.fields.some((f) => f.name === name); n++) name = `New column ${n}`;
+    setDraft({ ...draft, fields: [...draft.fields, { name, type: "string" }] });
+    setSelected(name);
+  };
+  const save = () => run("Saving…", async () => {
+      await saveFields(schema, draft.fields, draft.sections);
+      return "Saved. Use “Sync the Excel” to write it to the file.";
+    });
+  const syncExcel = () =>
+    confirm(`Write the schema to "${schema.excel!.name}"?\n\nMissing columns are added${schema.form ? " at the end (the columns the form writes to never move)" : ""} — none is deleted —, the hidden _schema sheet is rewritten, and the table's sheet gets the dropdowns and colors of the choices.`) &&
+    run("Writing the Excel file…", async (progress) => {
+      await applySchemaToExcel(schema.excel!, schema.fields, progress, { appendOnly: !!schema.form });
+      onWritten();
+      return "Excel file updated.";
+    });
+  const reviewForm = () => run("Reading the form…", async () => void setPlan(await planForm(schema.form!, schema.fields, schema.sections)));
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-5 p-6">
+        <Section
+          title="Files"
+          description={fixed ? "A built-in table: its columns are fixed; one Excel file holds the rows of every report." : "Where the rows live and what fills them. Saving the columns changes the app only; write them to the files with these buttons."}
+          actions={
+            !fixed &&
+            schema.excel && (
+              <>
+                <StatusText state={state} />
+                <Button variant="outline" size="sm" disabled={!schema.form || !!state.busy || changed} title={schema.form ? "Write the questions of the form after the schema (review first)" : "No form linked"} onClick={reviewForm}>
+                  <UploadIcon /> Update the form
+                </Button>
+                <Button size="sm" disabled={!!state.busy || changed} title={changed ? "Save the columns first" : "Write the columns, dropdowns and colors to the Excel file"} onClick={syncExcel}>
+                  <FileSpreadsheetIcon /> Sync the Excel
+                </Button>
+              </>
+            )
+          }
+        >
+          <div className="grid gap-4 md:grid-cols-3">
+            <FileInfo label="Excel table">
+              {schema.excel ? (
+                <a className="inline-flex items-center gap-1 text-primary hover:underline" href={schema.excel.webUrl ?? schema.excel.link} target="_blank" rel="noreferrer">
+                  {schema.excel.name} › {schema.excel.table} <ExternalLinkIcon className="size-3.5" />
+                </a>
+              ) : (
+                <span className="text-muted-foreground">None</span>
+              )}
+              {fixed && <BuiltInExcel schema={schema} />}
+            </FileInfo>
+            {!fixed && (
+              <FileInfo label="Microsoft Form">
+                <FormLink schema={schema} />
+              </FileInfo>
+            )}
+            {EXCEL_UPLOAD && !fixed && (
+              <FileInfo label="Uploads folder">
+                <UploadsFolder schema={schema} />
+              </FileInfo>
+            )}
+          </div>
+        </Section>
+        {plan && (
+          <FormReview
+            plan={plan}
+            onCancel={() => setPlan(undefined)}
+            onApply={() => {
+              const current = plan;
+              setPlan(undefined);
+              run("Writing the form…", async (progress) => {
+                const { fields, sections } = await applyForm(schema.form!, current, progress);
+                await patch("schemas", schema.id, { fields, sections: sections.length ? sections : undefined });
+                return `Form updated: ${current.create.length} added, ${current.update.length} changed, ${current.remove.length} deleted.`;
+              });
+            }}
+          />
+        )}
+        <Section
+          title="Columns"
+          description="Each column of the Excel table (and question of the form, named after the column)."
+          actions={
+            !fixed && (
+              <>
+                {changed && (
+                  <Button variant="ghost" size="sm" onClick={() => (setDraft(saved), setState({}))}>
+                    Discard
+                  </Button>
+                )}
+                <Button size="sm" variant={changed ? "default" : "outline"} disabled={!changed || problems.length > 0 || !!state.busy} onClick={save}>
+                  <SaveIcon /> Save
+                </Button>
+              </>
+            )
+          }
+        >
+          {problems.length > 0 && <p className="mb-4 rounded-lg bg-destructive/10 px-3 py-2 text-[13px] text-destructive">{problems.join(" ")}</p>}
+          <div className="grid gap-5 md:grid-cols-[280px_1fr]">
+            <div className="flex flex-col gap-1">
+              {draft.fields.map((f) => (
+                <button
+                  key={f.name}
+                  type="button"
+                  onClick={() => setSelected(f.name)}
+                  className={cn("flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2 text-left text-[13.5px] transition-colors [&_svg]:size-4 [&_svg]:shrink-0", f.name === selected ? "bg-primary/10 text-primary" : "hover:bg-muted")}
+                >
+                  <span className={f.name === selected ? "" : "text-muted-foreground"}>{TYPE_ICONS[f.type]}</span>
+                  <span className="min-w-0 flex-1 truncate">{labelOf(f)}</span>
+                  {f.required && <span className="text-destructive/70">*</span>}
+                  {f.form === false && <span className="text-[11px] text-muted-foreground">Excel only</span>}
+                </button>
+              ))}
+              {!fixed && (
+                <Button variant="ghost" size="sm" className="mt-1 justify-start text-primary" onClick={addField}>
+                  <PlusIcon /> Add a column
+                </Button>
+              )}
+            </div>
+            {field ? (
+              <FieldEditor
+                key={draft.fields.indexOf(field)}
+                field={field}
+                fields={draft.fields}
+                sections={draft.sections}
+                readOnly={fixed || isIdField(field)}
+                onChange={(next) => setField(field.name, next)}
+                onMove={(by) => move(field.name, by)}
+                onDelete={() => {
+                  setDraft({ fields: draft.fields.filter((f) => f !== field), sections: draft.sections.map((s) => ({ ...s, fields: s.fields.filter((n) => n !== field.name) })) });
+                  setSelected(draft.fields.find((f) => f !== field)?.name);
+                }}
+              />
+            ) : (
+              <Empty>Choose a column.</Empty>
+            )}
+          </div>
+        </Section>
+        {!fixed && schema.form && <SectionsEditor draft={draft} onChange={(sections) => setDraft({ ...draft, sections })} />}
+      </div>
+    </div>
+  );
+}
+
+function FileInfo({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <span className="text-[12px] font-medium text-muted-foreground">{label}</span>
+      <div className="flex min-w-0 flex-col gap-2 text-[13.5px]">{children}</div>
+    </div>
+  );
+}
+
+/** The settings of one column, by type. */
+function FieldEditor({ field, fields, sections, readOnly, onChange, onMove, onDelete }: { field: Field; fields: Field[]; sections: FormSection[]; readOnly: boolean; onChange: (f: Field) => void; onMove: (by: number) => void; onDelete: () => void }) {
+  const [name, setName] = useState(field.name);
+  const set = (change: Partial<Field>) => {
+    const next = { ...field, ...change };
+    for (const k of Object.keys(change) as (keyof Field)[]) if (next[k] === undefined || next[k] === "") delete next[k];
+    onChange(next);
+  };
+  const options = field.options ?? [];
+  const setOption = (i: number, o?: Option) => set({ options: o ? options.map((x, k) => (k === i ? o : x)) : options.filter((_, k) => k !== i) });
+  const targets = [...sections.map((s) => s.title), "end"];
+  return (
+    <div className="flex flex-col gap-4 rounded-xl border bg-background p-5">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="field-name">Column name (= question)</Label>
+          <Input id="field-name" value={name} disabled={readOnly} onChange={(e) => setName(e.target.value)} onBlur={() => name.trim() && name.trim() !== field.name && set({ name: name.trim() })} />
+          {field.question && <p className="text-[11.5px] text-warning">Renaming a column linked to the form creates a new, empty column in the Excel.</p>}
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="field-type">Type</Label>
+          <select id="field-type" className="input h-9" value={field.type} disabled={readOnly} onChange={(e) => set({ type: e.target.value as FieldType })}>
+            {FIELD_TYPES.map((t) => (
+              <option key={t} value={t}>{TYPE_LABELS[t]}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="field-label">Label in the app</Label>
+          <Input id="field-label" placeholder={field.name} value={field.label ?? ""} disabled={readOnly} onChange={(e) => set({ label: e.target.value })} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="field-default">Default value (new rows)</Label>
+          <Input id="field-default" value={Array.isArray(field.default) ? field.default.join("; ") : (field.default ?? "").toString()} disabled={readOnly} onChange={(e) => set({ default: field.type === "number" || field.type === "rating" ? (e.target.value === "" ? undefined : Number(e.target.value)) : e.target.value })} />
+        </div>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="field-description">Description (help text, the question's subtitle)</Label>
+        <Textarea id="field-description" rows={2} value={field.description ?? ""} disabled={readOnly} onChange={(e) => set({ description: e.target.value })} />
+      </div>
+      <div className="flex flex-wrap gap-x-6 gap-y-3">
+        <Toggle label="Required" checked={!!field.required} disabled={readOnly} onChange={(v) => set({ required: v || undefined })} />
+        <Toggle label="In the form" checked={field.form !== false} disabled={readOnly} onChange={(v) => set({ form: v ? undefined : false })} />
+        {field.type === "option" && <Toggle label="Several values" checked={!!field.multiple} disabled={readOnly} onChange={(v) => set({ multiple: v || undefined, ...(v && { branches: undefined }) })} />}
+        {field.type === "rating" && (
+          <label className="flex items-center gap-2 text-[13px]">
+            Highest
+            <select className="input h-8 w-20" value={field.max ?? 5} disabled={readOnly} onChange={(e) => set({ max: Number(e.target.value) })}>
+              <option value={5}>5</option>
+              <option value={10}>10</option>
+            </select>
+          </label>
+        )}
+      </div>
+      {field.type === "option" && (
+        <div className="flex flex-col gap-2">
+          <Label>Choices</Label>
+          {options.map((o, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button type="button" disabled={readOnly} className="size-7 shrink-0 cursor-pointer rounded-full border-2 border-background ring-1 ring-border" style={{ background: SWATCHES[o.color] }} aria-label={`Color of ${o.value}: ${o.color}`} />
+                </PopoverTrigger>
+                <PopoverContent className="flex w-auto gap-1.5 p-2">
+                  {COLORS.map((c) => (
+                    <button key={c} type="button" className={cn("size-6 cursor-pointer rounded-full ring-offset-2", c === o.color && "ring-2 ring-ring")} style={{ background: SWATCHES[c] }} aria-label={c} onClick={() => setOption(i, { ...o, color: c })} />
+                  ))}
+                </PopoverContent>
+              </Popover>
+              <Input className="h-8" value={o.value} disabled={readOnly} onChange={(e) => setOption(i, { ...o, value: e.target.value })} />
+              {!field.multiple && sections.length > 0 && (
+                <select className="input h-8 w-44" title="Where the form goes after this answer" value={field.branches?.[o.value] ?? ""} disabled={readOnly} onChange={(e) => {
+                  const branches = { ...field.branches };
+                  if (e.target.value) branches[o.value] = e.target.value;
+                  else delete branches[o.value];
+                  set({ branches: Object.keys(branches).length ? branches : undefined });
+                }}>
+                  <option value="">Then: next question</option>
+                  {targets.map((t) => (
+                    <option key={t} value={t}>{t === "end" ? "Then: end of the form" : `Then: ${t}`}</option>
+                  ))}
+                </select>
+              )}
+              <Button variant="ghost" size="icon" className="size-8" disabled={readOnly} aria-label={`Remove ${o.value}`} onClick={() => setOption(i)}>
+                <XIcon />
+              </Button>
+              <Badge color={o.color}>{o.value || "…"}</Badge>
+            </div>
+          ))}
+          {!readOnly && (
+            <Button variant="ghost" size="sm" className="w-fit text-primary" onClick={() => set({ options: [...options, { value: `Choice ${options.length + 1}`, color: COLORS[(options.length + 1) % COLORS.length] }] })}>
+              <PlusIcon /> Add a choice
+            </Button>
+          )}
+        </div>
+      )}
+      {!readOnly && (
+        <div className="flex items-center gap-2 border-t pt-4">
+          <Button variant="outline" size="sm" disabled={fields[0] === field} onClick={() => onMove(-1)}>
+            <ArrowUpIcon /> Up
+          </Button>
+          <Button variant="outline" size="sm" disabled={fields.at(-1) === field} onClick={() => onMove(1)}>
+            <ArrowDownIcon /> Down
+          </Button>
+          <Button variant="ghost" size="sm" className="ml-auto text-destructive" onClick={() => confirm(`Remove the column "${field.name}" from the schema? (the Excel column and its values are kept)`) && onDelete()}>
+            <Trash2Icon /> Remove
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Toggle({ label, checked, disabled, onChange }: { label: string; checked: boolean; disabled?: boolean; onChange: (v: boolean) => void }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-2 text-[13px]">
+      <Switch checked={checked} disabled={disabled} onCheckedChange={onChange} />
+      {label}
+    </label>
+  );
+}
+
+/** The form's sections: title, questions, where the form goes when done. */
+function SectionsEditor({ draft, onChange }: { draft: Draft; onChange: (s: FormSection[]) => void }) {
+  const { sections, fields } = draft;
+  const set = (i: number, s?: FormSection) => onChange(s ? sections.map((x, k) => (k === i ? s : x)) : sections.filter((_, k) => k !== i));
+  const inForm = fields.filter((f) => f.form !== false && !isIdField(f));
+  const free = inForm.filter((f) => !sections.some((s) => s.fields.includes(f.name)));
+  return (
+    <Section
+      title="Form sections"
+      description={`Pages of the form. Questions in no section come first${free.length ? `: ${free.map(labelOf).join(", ")}` : ""}.`}
+      actions={
+        <Button variant="outline" size="sm" onClick={() => onChange([...sections, { title: `Section ${sections.length + 1}`, fields: [] }])}>
+          <PlusIcon /> Add a section
+        </Button>
+      }
+    >
+      {!sections.length && <p className="text-[13px] text-muted-foreground">No section: the form is one page.</p>}
+      <div className="flex flex-col gap-3">
+        {sections.map((s, i) => (
+          <div key={i} className="flex flex-col gap-3 rounded-xl border bg-background p-4">
+            <div className="flex gap-2">
+              <Input className="h-8 font-medium" value={s.title} onChange={(e) => set(i, { ...s, title: e.target.value })} />
+              <select className="input h-8 w-56" value={s.next ?? ""} onChange={(e) => set(i, { ...s, next: e.target.value || undefined })}>
+                <option value="">Then: next section</option>
+                {sections.filter((x) => x !== s).map((x) => (
+                  <option key={x.title} value={x.title}>Then: {x.title}</option>
+                ))}
+                <option value="end">Then: end of the form</option>
+              </select>
+              <Button variant="ghost" size="icon" className="size-8" aria-label="Remove the section" onClick={() => set(i)}>
+                <XIcon />
+              </Button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {inForm.map((f) => {
+                const on = s.fields.includes(f.name);
+                const elsewhere = !on && sections.some((x) => x !== s && x.fields.includes(f.name));
+                if (elsewhere) return null;
+                return (
+                  <button key={f.name} type="button" className={cn("h-7 cursor-pointer rounded-full border px-3 text-[12.5px] transition-colors", on ? "border-primary/40 bg-primary/10 text-primary" : "text-muted-foreground hover:bg-muted")} onClick={() => set(i, { ...s, fields: on ? s.fields.filter((n) => n !== f.name) : [...s.fields, f.name] })}>
+                    {labelOf(f)}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         ))}
       </div>
-      <button type="button" className="btn ml-auto text-destructive" onClick={() => confirm("Delete this row from the Excel file?") && onDelete(selected)}>
-        <Trash2Icon /> Delete the row
-      </button>
+    </Section>
+  );
+}
+
+/** The Excel file of a built-in table (one for every report): a file without table gets one. */
+function BuiltInExcel({ schema }: { schema: SchemaEntry }) {
+  const [link, setLink] = useState("");
+  return (
+    <form
+      className="flex gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (link.trim()) void withToast("Setting up the Excel file…", setBuiltInExcel(schema, link.trim()), "Excel file set.").then(() => setLink(""));
+      }}
+    >
+      <Input className="h-8" placeholder={schema.excel ? "Another Excel file link" : "Excel file link"} value={link} onChange={(e) => setLink(e.target.value)} />
+      <Button type="submit" size="sm" variant="outline" disabled={!link.trim()}>
+        Use
+      </Button>
+    </form>
+  );
+}
+
+/** The form linked to the table: its name, or a field to link one (its questions can retype the matching columns). */
+function FormLink({ schema }: { schema: SchemaEntry }) {
+  const [link, setLink] = useState("");
+  if (schema.form)
+    return (
+      <span className="flex items-center gap-1.5">
+        <a href={designUrl(schema.form)} target="_blank" rel="noreferrer" className="truncate text-primary hover:underline">
+          {schema.form.title || "Form"}
+        </a>
+        <Button variant="ghost" size="icon" className="size-7" aria-label="Unlink the form" title="Unlink the form (the form is kept)" onClick={() => confirm("Unlink the form from this table? (the form itself is kept)") && void patch("schemas", schema.id, { form: undefined })}>
+          <XIcon />
+        </Button>
+      </span>
+    );
+  return (
+    <form
+      className="flex gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (link.trim()) void withToast("Reading the form…", linkForm(schema, link.trim(), confirm("Give the matching columns the types and choices of the form's questions?")), "Form linked.").then(() => setLink(""));
+      }}
+    >
+      <Input className="h-8" placeholder="Form link (optional)" value={link} onChange={(e) => setLink(e.target.value)} />
+      <Button type="submit" size="sm" variant="outline" disabled={!link.trim()}>
+        <LinkIcon /> Link
+      </Button>
+    </form>
+  );
+}
+
+/** Optional: the SharePoint folder receiving the files uploaded in the Data tab (image and file columns). */
+function UploadsFolder({ schema }: { schema: SchemaEntry }) {
+  const [link, setLink] = useState("");
+  if (schema.filesFolder)
+    return (
+      <span className="flex items-center gap-1.5">
+        <a href={schema.filesFolder.link} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 truncate text-primary hover:underline">
+          <FolderIcon className="size-4" /> {schema.filesFolder.name}
+        </a>
+        <Button variant="ghost" size="icon" className="size-7" aria-label="No uploads (links only)" onClick={() => void patch("schemas", schema.id, { filesFolder: undefined })}>
+          <XIcon />
+        </Button>
+      </span>
+    );
+  return (
+    <form
+      className="flex gap-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (link.trim()) void withToast("Reading the folder…", resolveFolder(link.trim()).then((filesFolder) => patch("schemas", schema.id, { filesFolder })), "Uploads folder set.").then(() => setLink(""));
+      }}
+    >
+      <Input className="h-8" placeholder="Folder link (optional)" title="SharePoint folder receiving the uploaded images and files" value={link} onChange={(e) => setLink(e.target.value)} />
+      <Button type="submit" size="sm" variant="outline" disabled={!link.trim()}>
+        Use
+      </Button>
+    </form>
+  );
+}
+
+/** What updating the form will do, to confirm (deleting a question deletes its answers in the form). */
+function FormReview({ plan, onApply, onCancel }: { plan: FormPlan; onApply: () => void; onCancel: () => void }) {
+  const nothing = !plan.create.length && !plan.update.length && !plan.remove.length;
+  const list = (title: string, items: string[], color: "green" | "blue" | "red") =>
+    items.length > 0 && (
+      <div className="flex flex-col gap-1.5">
+        <span className="text-[13px] font-medium">{title}</span>
+        <span className="flex flex-wrap gap-1.5">
+          {items.map((t, i) => (
+            <Badge key={i} color={color}>{t}</Badge>
+          ))}
+        </span>
+      </div>
+    );
+  return (
+    <div className="flex flex-col gap-3 rounded-xl border border-warning/40 bg-warning/10 p-4">
+      <span className="font-semibold">{nothing ? "The form already matches the schema." : "Update the form?"}</span>
+      {list("To add", plan.create, "green")}
+      {list("To change (title, type, choices, branches, order)", plan.update, "blue")}
+      {list("Questions to delete (their answers are deleted from the form)", plan.remove.map((q) => q.title), "red")}
+      <div className="flex gap-2">
+        {!nothing && (
+          <Button size="sm" onClick={onApply}>
+            Update the form
+          </Button>
+        )}
+        <Button size="sm" variant="outline" onClick={onCancel}>
+          {nothing ? "Close" : "Cancel"}
+        </Button>
+      </div>
     </div>
   );
 }
 
-/* ----------------------------------- AI ------------------------------------ */
-
-const cell = z.union([z.string(), z.number(), z.boolean(), z.array(z.string()), z.null()]);
-const filterArg = z.object({ field: z.string(), op: z.enum(Object.keys(OPS) as [Filter["op"], ...Filter["op"][]]), value: z.string().optional(), values: z.array(z.string()).optional() });
-
-/** The fields for the AI: name, type, rules, choices. */
-export const fieldsText = (fields: Field[]) =>
-  fields
-    .map((f) => `- ${f.name} (${TYPE_LABELS[f.type]}${f.type === "rating" ? ` 1-${f.max ?? 5}` : ""}${f.required ? ", required" : ""}${f.multiple ? ", several values" : ""})${f.label ? ` label "${f.label}"` : ""}${f.options?.length ? ` choices: ${f.options.map((o) => o.value).join(", ")}` : ""}${f.description ? ` — ${f.description}` : ""}`)
-    .join("\n");
-
-function excelAgent({ schema, table, shown, checked, view, setView, openRow, write }: {
-  schema: SchemaEntry;
-  table: Table;
-  /** Excel indexes of the rows the view shows, in its order. */
-  shown: () => number[];
-  checked: number[];
-  view: TableView;
-  setView: (v: Partial<TableView>) => void;
-  openRow: (index: number) => void;
-  write: Write;
-}): Agent {
-  const excel = schema.excel!;
-  const idField = table.fields.find(isIdField);
-  /** Row given by its id (TASK_001) or its index. */
-  const indexOf = (r: { index?: number; id?: string }) => {
-    if (r.id === undefined) {
-      if (r.index === undefined) throw new Error("Give the row id (or index).");
-      return r.index;
-    }
-    const index = idField ? table.rows.findIndex((x) => String(x[idField.name] ?? "").toLowerCase() === r.id!.toLowerCase()) : -1;
-    if (index < 0) throw new Error(`No row with id ${r.id}`);
-    return index;
-  };
-  const pick = (index: number) => ({ index, ...Object.fromEntries(table.fields.map((f) => [f.name, table.rows[index]?.[f.name]])) });
-  const flat = (r: Record<string, unknown>) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, Array.isArray(v) ? v.join("; ") : v]));
-  const checkFields = (names: string[]) => {
-    const unknown = names.filter((n) => !table.fields.some((f) => f.name === n));
-    if (unknown.length) throw new Error(`Unknown field(s): ${unknown.join(", ")}. Fields: ${table.fields.map((f) => f.name).join(", ")}.`);
-  };
-  return {
-    instructions: `You manage the CONTENT of an Excel table on SharePoint ("${schema.title}"): you read, find, add, change and delete rows, and change what the user sees (filters, sorts, layout). You never change the columns (that is the Schema editor's job: tell the user). Rows have ${idField ? `an id (column "${idField.name}", e.g. ${idPrefix(excel.table)}_001, given by the app; use it to name rows to the user and in tool calls; change one with change_row_id ONLY when the user explicitly asks to change that id) and ` : ""}an "index" (position in the Excel table). Long text holds markdown; choice fields only accept their listed values (several values: a list); ratings are whole numbers; dates are YYYY-MM-DD; links, images and files are URLs.
-Do the whole request in one go; for many rows, change them all in one update_rows call.`,
-    context: async () =>
-      withContexts(
-        [`Excel table "${excel.table}" of "${excel.name}" (schema "${schema.title}")`, `Fields:\n${fieldsText(table.fields)}`, schema.form && `Microsoft Form "${schema.form.title}" fills this table.`],
-        [schema.contextIds],
-      ),
-    // What the user sees now (the "list" of this screen), read again before each model call.
-    state: async () =>
-      [
-        checked.length
-          ? `THE USER SELECTED ${checked.length} ROW(S): indexes ${checked.join(", ")}. Act on these rows only (read them with read_rows), unless the user clearly asks otherwise.`
-          : "No row selected: the request concerns all the rows.",
-        `${table.rows.length} rows; the user's view shows ${shown().length} (${viewText(view, table.fields)}).`,
-        `First rows of the view:\n${rowsText(shown().slice(0, 8).map(pick).map(flat), 8)}`,
-      ].join("\n\n"),
-    tools: [
-      tool({
-        name: "read_rows",
-        description: "Reads rows with their index: the selected rows when the user selected some, else those of the user's view; all=true for every row.",
-        args: z.object({ all: z.boolean().optional(), offset: z.number().optional(), limit: z.number().optional() }),
-        readOnly: true,
-        run: async ({ all, offset = 0, limit = 30 }) => {
-          const indexes = all ? table.rows.map((_, i) => i) : checked.length ? checked : shown();
-          return rowsText(indexes.slice(offset, offset + limit).map(pick).map(flat), limit);
-        },
-      }),
-      tool({
-        name: "find_rows",
-        description: 'Finds rows (all of them, whatever the view) matching every filter, e.g. [{"field":"status","op":"is","values":["Open"]}]. Ops: contains, is, isNot, empty, notEmpty, gt, lt, before, after.',
-        args: z.object({ filters: z.array(filterArg), limit: z.number().optional() }),
-        readOnly: true,
-        run: async ({ filters, limit = 30 }) => {
-          checkFields(filters.map((f) => f.field));
-          const found = table.rows.map((row, index) => ({ row, index })).filter(({ row }) => filters.every((f) => matches(row, f as Filter, table.fields)));
-          return `${found.length} row(s).\n${rowsText(found.slice(0, limit).map(({ index }) => flat(pick(index))), limit)}`;
-        },
-      }),
-      tool({
-        name: "update_rows",
-        description: "Changes values of rows (only the given fields; never the id: see change_row_id). Each row by its id (or index).",
-        args: z.object({ rows: z.array(z.object({ id: z.string().optional(), index: z.number().optional(), values: z.record(z.string(), cell) })) }),
-        run: async ({ rows: given }) => {
-          const changes = given.map((r) => ({ index: indexOf(r), values: Object.fromEntries(Object.entries(r.values).filter(([k]) => k !== idField?.name)) }));
-          await write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) });
-          return `${changes.length} row(s) updated.`;
-        },
-      }),
-      tool({
-        name: "add_rows",
-        description: "Adds rows at the end of the table (their ids are given automatically). Required fields must be given.",
-        args: z.object({ rows: z.array(z.record(z.string(), cell)) }),
-        run: async ({ rows: added }) => {
-          await write((t) => addRows(excel, t, added), { refetch: true, optimistic: (t) => withRows(t, added) });
-          return `${added.length} row(s) added.`;
-        },
-      }),
-      tool({
-        name: "delete_rows",
-        description: "Deletes rows by id (or index). Only when the user asks to delete them.",
-        args: z.object({ ids: z.array(z.string()).optional(), indexes: z.array(z.number()).optional() }),
-        run: async ({ ids = [], indexes: given = [] }) => {
-          const indexes = [...new Set([...ids.map((id) => indexOf({ id })), ...given])];
-          await write(() => deleteRows(excel, indexes), { optimistic: (t) => withoutRows(t, indexes) });
-          return `${indexes.length} row(s) deleted.`;
-        },
-      }),
-      tool({
-        name: "set_view",
-        description: 'Changes what the user sees (only the given parts): search, filters, sorts, layout ("table", "detail": a list with the open row, "kanban": columns by a choice field = group), grouping, and opens a row. Filter ops as in find_rows; choice fields: op "is" / "isNot" with "values".',
-        args: z.object({
-          search: z.string().optional(),
-          filters: z.array(filterArg).optional(),
-          sorts: z.array(z.object({ field: z.string(), desc: z.boolean().optional() })).optional(),
-          layout: z.enum(["table", "detail", "kanban"]).optional(),
-          group: z.string().nullable().optional().describe("Single choice field giving the kanban's columns (null: the first one)"),
-          open_row: z.string().optional().describe("Id of the row to show with all its fields"),
-        }),
-        run: async ({ search, filters, sorts, layout, group, open_row }) => {
-          checkFields([...(filters ?? []), ...(sorts ?? [])].map((x) => x.field).concat(group ? [group] : []));
-          setView({ ...(search !== undefined && { search }), ...(filters && { filters: filters as Filter[] }), ...(sorts && { sorts }), ...(layout && { layout: layout === "table" ? undefined : layout }), ...(group !== undefined && { group: group ?? undefined }) });
-          if (open_row !== undefined) openRow(indexOf({ id: open_row }));
-          return "View updated.";
-        },
-      }),
-      ...(idField
-        ? [
-            tool({
-              name: "change_row_id",
-              description: "Changes the id of a row. ONLY when the user explicitly asks to change / rename that id. The new id must be unique (case ignored) and not empty.",
-              args: z.object({ id: z.string().describe("Current id"), new_id: z.string() }),
-              run: async ({ id, new_id }) => {
-                const index = indexOf({ id });
-                const error = idError(table, index, new_id);
-                if (error) throw new Error(error);
-                const changes = [{ index, values: { [idField.name]: new_id.trim() } }];
-                await write((t) => updateRows(excel, t, changes), { optimistic: (t) => withUpdates(t, changes) });
-                return `Id ${id} changed to ${new_id.trim()}.`;
-              },
-            }),
-          ]
-        : []),
-    ],
-  };
-}

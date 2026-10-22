@@ -1,18 +1,26 @@
 /**
- * The agent loop for a plain-text LLM: every reply is one JSON object listing tool calls
- * (`{"tools":[{"name","args"}]}`), parsed tolerantly; the application runs them and sends the results.
- * One LLM conversation per app conversation: the protocol, tools and context are sent once, then each
- * user message only brings what changed (the page state, the context when it changed).
+ * The agent of every screen, for a small plain-text LLM: each reply is one JSON object listing tool
+ * calls (`{"tools":[{"name","args"}]}`), parsed tolerantly; the application runs them and sends back
+ * the results. A user message goes through two roles, each with its own prompt and tools:
+ *
+ * 1. The PLANNER (one LLM conversation per app conversation, read tools only) explores, then always
+ *    asks the user to choose (`ask_user`: questions with options, shown as buttons in the chat) with
+ *    the action plan it would follow. When the user has answered, it either asks again, answers
+ *    (nothing to change) or hands the final plan to the implementer (`implement`).
+ * 2. The IMPLEMENTER (a fresh LLM conversation per plan, dropped afterwards, every tool) does the plan
+ *    and answers; the screen's `finish` then saves its changes (a refused save goes back to it once).
+ *
+ * Every message ends with the reply format and the tool names: weak models forget both.
  */
 import { z } from "zod";
-import { openSession, type Session } from "./llm";
+import { deleteRemoteConversation, openSession, type Session } from "./llm";
 import { ReplyError, parseReply } from "./reply";
 
 export type Tool = {
   name: string;
   description: string;
   args: z.ZodObject;
-  /** Reads only (no confirmation needed, safe to repeat). */
+  /** Reads only: given to the planner too (safe to run before the user validated). */
   readOnly?: boolean;
   run: (args: any) => Promise<string>;
 };
@@ -20,28 +28,28 @@ export type Tool = {
 export const tool = <S extends z.ZodObject>(t: { name: string; description: string; args: S; readOnly?: boolean; run: (args: z.infer<S>) => Promise<string> }): Tool => t;
 
 export type Agent = {
-  /** What this screen is and how to work in it. */
+  /** What this screen is, what the AI can do there and how (shared by the planner and the implementer). */
   instructions: string;
   tools: Tool[];
   /** What the AI works on (model, file, notes…): sent at the start of a conversation, again only when it changes. */
   context: () => Promise<string>;
-  /** What the user sees now (page, filters, editor…): re-read before each model call, sent when it changed. */
+  /** What the user sees now (page, filters, rows…): re-read before each model call, sent when it changed. */
   state?: (progress?: Progress) => Promise<string>;
-  /**
-   * Run when the AI has finished its answer (e.g. saving the changes it made to a draft); the text it
-   * returns is added to the answer, and so is its error.
-   */
+  /** Run when the implementer has finished (e.g. saving its draft); its text is added to the answer. */
   finish?: () => Promise<string | undefined>;
 };
 
 export type Step = { id: string; name: string; args: Record<string, unknown>; result?: string; error?: boolean; ms?: number };
 /** One exchange with the model, exactly as sent and received. */
-export type LlmCall = { at: string; prompt: string; reply?: string; error?: string; ms?: number };
+export type LlmCall = { at: string; role: "planner" | "implementer"; prompt: string; reply?: string; error?: string; ms?: number };
 /** Reports how far a long read is (e.g. visuals of the page read so far / all of them). */
 export type Progress = (done: number, total: number) => void;
-/** What the agent is doing between visible steps (reading the page, waiting for the model), with progress when known. */
+/** What the agent is doing between visible steps, with progress when known. */
 export type Status = { label: string; done?: number; total?: number };
-export type Update = { steps: Step[]; llm: LlmCall[]; answer?: string; /** Remote conversation id (stateful APIs). */ remote?: string; status?: Status };
+export type Update = { steps: Step[]; llm: LlmCall[]; answer?: string; remote?: string; status?: Status };
+
+/** The planner's questions, as shown in the chat (an `ask_user` step). */
+export type Choices = { message?: string; questions: { question: string; options: string[]; multiple?: boolean }[]; plan: string };
 
 /** Readable error, also for the plain objects the Power BI client rejects with ({ message, detailedMessage }). */
 export function describeError(error: unknown): string {
@@ -54,39 +62,37 @@ export function describeError(error: unknown): string {
   return String(error);
 }
 
-/** sessionChars: past this size the LLM conversation is restarted (with a summary of the app conversation). */
-const LIMITS = { steps: 20, retries: 2, resultChars: 6_000, historyChars: 12_000, sessionChars: 150_000 };
+/** sessionChars: past this size the planner's conversation is restarted (with a summary of the app conversation). */
+const LIMITS = { plannerSteps: 12, implementerSteps: 24, retries: 2, resultChars: 6_000, historyChars: 12_000, sessionChars: 150_000 };
 
 const tag = (name: string, body: string, attrs = "") => `<${name}${attrs ? ` ${attrs}` : ""}>\n${body.trim()}\n</${name}>`;
 
-const PROTOCOL = `You are the engine of an AI assistant embedded in an application. Messages are written by the APPLICATION: it gives you the context and the user's request, runs the tools you call and sends you their results. The user only sees what you pass to "answer".
+/** Shared by both roles: how to talk to the application. */
+const PROTOCOL = `You are an AI agent inside an application. Messages are written by the APPLICATION: it gives you the context, the user's message, runs the tools you call and sends you their results. The user only sees what your final tool shows.
 
-YOU HAVE TOOLS. Calling them is the ONLY way to read data or change anything in the application: you never act by describing an action in text. To use a tool, reply with its name and arguments in JSON (format below); the application runs it and sends you the result in its next message.
+YOU ACT ONLY THROUGH TOOLS. To read data or change anything, call a tool by replying with JSON (format below); the application runs it and answers with the result. Describing an action in text does nothing.
 
 1. Every reply is ONE raw JSON object and nothing else (no prose, no markdown fences): {"tools": [{"name": "<tool>", "args": {…}}]}
-2. Several independent tools may be called in one reply; you get all results in the next message.
-3. When done, reply with "answer" ALONE: {"tools": [{"name": "answer", "args": {"text": "…"}}]}
-4. Never invent data: read it with tools. Never claim a change you did not make through a tool.
-5. When a tool fails, read the error, fix the arguments and retry, or explain the problem.
-6. Do the whole request in one go: when it is clear, do every step with tools then answer; ask the user only when the request is truly ambiguous. When unsure about a fact, check it with a tool rather than guess.
-7. Answer in ENGLISH, concise, in markdown. Only exception: when the user's message is written in French (even with typos), answer in French.`;
+2. Several independent tools may be called in one reply; you get all their results in the next message.
+3. Never invent names or values: read them with tools (exact names, copied).
+4. A tool failed? Read the error: it says what is wrong. Fix the arguments and retry.
+5. Write for the user in ENGLISH, short, in markdown — except when the user writes in French (even with typos): then in French.`;
 
-/** End of EVERY message: weak models forget that they can (and must) call tools. */
-const format = (names: string[]) =>
-  tag(
-    "reply_format",
-    `IMPORTANT — reply with ONE raw JSON object and NOTHING else (no text before or after it, no markdown fences):
-{"tools": [{"name": "<tool name>", "args": {…}}]}
-Tool names: ${names.join(", ")}.
-Need data, or must change something? Call the tool(s) NOW, e.g. {"tools": [{"name": "${names.find((n) => n !== "answer") ?? "answer"}", "args": {…}}]}
-Done (everything was done through tools)? {"tools": [{"name": "answer", "args": {"text": "your reply to the user, in markdown"}}]}`,
-  );
+const PLANNER = `You are the PLANNER. You never change anything yourself: you READ (your tools are read-only), understand the request, find out what is possible, then make sure you understood by asking the user to choose. Another agent, the IMPLEMENTER, will make the changes from your plan once the user agreed.
 
-/** Live LLM conversation of each app conversation, with what it was last told (context, state). */
-type Live = { session: Session; model: string; context?: string; state?: string };
-const live = new Map<string, Live>();
-/** Drops the LLM conversation of an app conversation (deleted). */
-export const forgetSession = (conversationId: string) => void live.delete(conversationId);
+How to work:
+1. A new user request: read what you need first (names, values, current state), several tools per reply. Do not ask the user what you can find yourself.
+2. Then call ask_user ALONE:
+   - message: short markdown for the user: what you found and understood; for a question, the answer itself (with the figures you read).
+   - questions: 1 to 3 questions, each with 2 to 4 short options; the most likely option FIRST. A simple request: ONE question to confirm (e.g. "Add the measure [Margin] = [Revenue] - [Cost] to 'Sales'?" → "Yes, do it" / "No"). A big or unclear request: one question per decision. A pure question (nothing to change): the answer in message, and a question on what to do next.
+   - plan: the action plan for the implementer if the user agrees: numbered steps with the exact tools, names and values. Not shown to the user.
+3. The user's answers come in <user_answers> (they may also write freely). Then:
+   - everything decided → call implement ALONE with the final plan (self-contained: every step, exact names and values, the user's choices);
+   - a free answer that changes the request or leaves something unclear → read what you need, then ask_user again;
+   - nothing to change (the user only wanted information) → answer.
+Never call implement or answer before the user has answered your questions. ask_user, implement and answer always come alone in their reply.`;
+
+const IMPLEMENTER = `You are the IMPLEMENTER. The user validated the plan below: do it now with your tools, step by step, checking each result. Do not ask the user anything (they already chose); fix what fails (read the error, correct, retry). When everything is done, call answer ALONE with a short summary of what was changed (and what failed, if anything).`;
 
 /** `name(a: string, b?: number)` + descriptions, from the zod schema. */
 function signature(t: Tool) {
@@ -102,36 +108,176 @@ function signature(t: Tool) {
   ].join("\n");
 }
 
-const ANSWER: Tool = tool({ name: "answer", description: "Final reply to the user (markdown). Ends the turn. Must be the only call of its reply.", args: z.object({ text: z.string() }), readOnly: true, run: async () => "" });
+const ANSWER = tool({ name: "answer", description: "Final reply to the user (markdown). Ends the turn. Alone in its reply.", args: z.object({ text: z.string() }), readOnly: true, run: async () => "" });
+const option = z.preprocess((o) => (o && typeof o === "object" && "label" in o ? (o as { label: unknown }).label : o), z.string());
+const ASK_USER = tool({
+  name: "ask_user",
+  description: "Shows the user your findings and questions with options to click (they can also answer freely), with your action plan. Ends your turn. Alone in its reply.",
+  args: z.object({
+    message: z.string().optional().describe("Markdown for the user: what you found / understood, or the answer to their question"),
+    questions: z.array(z.object({ question: z.string(), options: z.array(option).min(2).max(5).describe("Short answers, the most likely FIRST"), multiple: z.boolean().optional().describe("Several options may be chosen") })).min(1).max(4),
+    plan: z.string().describe("The action plan for the implementer if the user agrees: numbered steps, exact tools, names and values (not shown)"),
+  }),
+  readOnly: true,
+  run: async () => "",
+});
+const IMPLEMENT = tool({
+  name: "implement",
+  description: "Hands the final plan to the implementer, who makes the changes now. Only after the user answered your questions. Alone in its reply.",
+  args: z.object({ plan: z.string().describe("Self-contained final plan: every step with exact tools, names and values, and the user's choices") }),
+  readOnly: true,
+  run: async () => "",
+});
 
-export async function* runAgent({
+/** End of EVERY message: the format, the tools by kind, and what is expected now. */
+const format = (tools: Tool[], now: string, example: string) =>
+  tag(
+    "reply_format",
+    `Reply with ONE raw JSON object and NOTHING else: {"tools": [{"name": "<tool>", "args": {…}}]}
+Read tools: ${tools.filter((t) => t.readOnly && !TERMINALS.has(t.name)).map((t) => t.name).join(", ") || "none"}.
+${tools.some((t) => !t.readOnly) ? `Tools that change things: ${tools.filter((t) => !t.readOnly).map((t) => t.name).join(", ")}.\n` : ""}Final tools (alone in their reply): ${tools.filter((t) => TERMINALS.has(t.name)).map((t) => t.name).join(", ")}.
+Now: ${now}
+Example: ${example}`,
+  );
+const TERMINALS = new Set(["answer", "ask_user", "implement"]);
+
+/** The planner's live conversation per app conversation, with what it was last told. */
+type Live = { session: Session; model: string; context?: string; state?: string; note?: string };
+const live = new Map<string, Live>();
+/** Drops the planner conversation of an app conversation (deleted). */
+export const forgetSession = (conversationId: string) => void live.delete(conversationId);
+
+type Turn = { steps: Step[]; llm: LlmCall[]; remote?: string };
+/** How a role ended: its final tool, or a message for the user when it could not finish. */
+type Ended = { name: string; args: Record<string, unknown> } | { giveUp: string };
+type Seen = { context?: string; state?: string };
+
+/**
+ * Runs one role until it calls one of its final tools (returned) or gives up (a message for the user).
+ * Tools run in order; after them the page state is read again and sent when it changed.
+ */
+async function* drive(opts: {
+  role: LlmCall["role"];
+  session: Session;
+  first: string;
+  tools: Tool[];
+  max: number;
+  turn: Turn;
+  signal: AbortSignal;
+  /** Re-reads context and page state; returns the tags of what changed. */
+  reread: () => AsyncGenerator<Update, string[]>;
+  /** End of every message (format and what is expected). */
+  tail: () => string;
+  /** A final tool refused now (e.g. implement before the user answered): the reason sent back. */
+  refuse?: (name: string, args: Record<string, unknown>) => string | undefined;
+}): AsyncGenerator<Update, Ended> {
+  const { turn, signal } = opts;
+  const byName = new Map(opts.tools.map((t) => [t.name, t]));
+  let prompt = opts.first;
+  let retries = 0;
+  let reminded = false;
+  for (let n = 0; n <= opts.max; n++) {
+    signal.throwIfAborted();
+    const call: LlmCall = { at: new Date().toISOString(), role: opts.role, prompt: n === opts.max ? `${tag("note", "No tool turns left: call your final tool now.")}\n\n${opts.tail()}` : prompt };
+    turn.llm.push(call);
+    yield { ...turn, status: { label: opts.role === "planner" ? (turn.steps.length ? "Exploring" : "Understanding your request") : "Working on the plan" } };
+    const started = performance.now();
+    const reply = await opts.session.send(call.prompt, signal).catch((error: unknown) => {
+      call.error = describeError(error);
+      throw error;
+    });
+    Object.assign(call, { reply, ms: Math.round(performance.now() - started) });
+    turn.remote ??= await opts.session.remote();
+    let calls;
+    try {
+      calls = parseReply(reply);
+      const unknown = calls.filter((c) => !byName.has(c.name)).map((c) => c.name);
+      if (unknown.length) throw new ReplyError(`Unknown tool(s): ${unknown.join(", ")}. Your tools: ${[...byName.keys()].join(", ")}.`);
+      retries = 0;
+    } catch (error) {
+      if (!(error instanceof ReplyError)) throw error;
+      // Plain prose: the model talking to the user. Sent back once to get the proper final tool.
+      if (++retries > LIMITS.retries) return { giveUp: !reply.includes("{") && reply.trim() ? reply.trim() : `⚠️ The assistant's reply could not be read (${error.message}). Ask again.` };
+      prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\nReply again with the JSON object only (shorter if needed: fewer calls; count the brackets).`)}\n\n${opts.tail()}`;
+      n--;
+      continue;
+    }
+    const final = calls.find((c) => TERMINALS.has(c.name));
+    if (final && calls.length === 1) {
+      const refused = opts.refuse?.(final.name, final.args);
+      // A final tool with wrong arguments: refused with the reason, like any tool.
+      const parsed = byName.get(final.name)!.args.safeParse(final.args);
+      const problem = refused ?? (parsed.success ? undefined : `Invalid arguments of ${final.name}: ${z.prettifyError(parsed.error)}`);
+      if (problem) {
+        prompt = `${tag("refused", problem)}\n\n${opts.tail()}`;
+        continue;
+      }
+      // Failed steps never redone: one reminder, so the model retries them or says what failed.
+      const failed = turn.steps.filter((s, i) => s.error && !turn.steps.slice(i + 1).some((t) => t.name === s.name && !t.error));
+      if (opts.role === "implementer" && failed.length && !reminded) {
+        reminded = true;
+        prompt = `${tag("note", `Before answering: these steps FAILED and were not redone successfully:\n${failed.map((s) => `- ${s.name} ${JSON.stringify(s.args).slice(0, 200)} → ${String(s.result).slice(0, 300)}`).join("\n")}\nFix and retry them now, or say clearly in your answer what is not done.`)}\n\n${opts.tail()}`;
+        continue;
+      }
+      return { name: final.name, args: parsed.data as Record<string, unknown> };
+    }
+    const results: string[] = [];
+    for (const c of calls) {
+      if (TERMINALS.has(c.name)) {
+        results.push(tag("result", `"${c.name}" was ignored: it must be alone in its reply. Call it again alone once the other tools are done.`, `tool="${c.name}" status="error"`));
+        continue;
+      }
+      const step: Step = { id: crypto.randomUUID(), name: c.name, args: c.args };
+      turn.steps.push(step);
+      yield { ...turn };
+      const t = byName.get(c.name)!;
+      const t0 = performance.now();
+      try {
+        const text = await t.run(t.args.parse(c.args));
+        step.result = text.length > LIMITS.resultChars ? `${text.slice(0, LIMITS.resultChars)}\n…[truncated, ${text.length} characters: ask for less]` : text;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        step.error = true;
+        step.result = error instanceof z.ZodError ? `Invalid arguments: ${z.prettifyError(error)}` : describeError(error);
+      }
+      step.ms = Math.round(performance.now() - t0);
+      results.push(tag("result", step.result || "(done)", `tool="${c.name}" status="${step.error ? "error" : "ok"}"`));
+      yield { ...turn };
+    }
+    prompt = [tag("tool_results", results.join("\n")), ...(yield* opts.reread()), opts.tail()].filter(Boolean).join("\n\n");
+  }
+  return { giveUp: "⚠️ The assistant used all its steps without finishing. Ask again, more precisely." };
+}
+
+/** The user's answers to the questions, as sent back to the planner. */
+export const answersText = (choices: Choices, answers: string[][]) => choices.questions.map((q, i) => `- ${q.question} → ${answers[i]?.join(", ") || "(no answer)"}`).join("\n");
+
+export async function* runTurn({
   agent,
   model,
   conversationId,
   history,
   request,
+  answering,
   signal,
 }: {
   agent: Agent;
   model: string;
-  /** App conversation: its LLM conversation is reused from one user message to the next. */
+  /** App conversation: its planner conversation is reused from one message to the next. */
   conversationId: string;
-  /** The app conversation so far, as text: only used to start a new LLM conversation (e.g. after a reload). */
+  /** The conversation so far, as text: only used to start a new planner conversation (e.g. after a reload). */
   history: string;
   request: string;
+  /** The message answers the planner's last questions (the planner may then implement or answer). */
+  answering: boolean;
   signal: AbortSignal;
 }): AsyncGenerator<Update> {
-  const tools = [ANSWER, ...agent.tools];
-  const byName = new Map(tools.map((t) => [t.name, t]));
-  const FORMAT = format(tools.map((t) => t.name));
-  const steps: Step[] = [];
-  const llm: LlmCall[] = [];
-  let remote: string | undefined;
+  const turn: Turn = { steps: [], llm: [] };
   const read = async (progress?: Progress) => ({
-    context: await agent.context().catch((e) => `Context unavailable: ${e}`),
-    state: agent.state ? await agent.state(progress).catch((e) => `Page state unavailable: ${e}`) : undefined,
+    context: await agent.context().catch((e) => `Context unavailable: ${describeError(e)}`),
+    state: agent.state ? await agent.state(progress).catch((e) => `Page state unavailable: ${describeError(e)}`) : undefined,
   });
-  /** `read`, telling the user what is happening (with its progress) when it takes more than a moment. */
+  /** `read`, telling the user what is happening (with progress) when it takes more than a moment. */
   const readShown = async function* (label: string): AsyncGenerator<Update, Awaited<ReturnType<typeof read>>> {
     let progress: { done: number; total: number } | undefined;
     let result: Awaited<ReturnType<typeof read>> | undefined;
@@ -139,140 +285,139 @@ export async function* runAgent({
     for (;;) {
       await Promise.race([task, new Promise((r) => setTimeout(r, 200))]);
       if (result) return result;
-      yield { steps, llm, remote, status: { label, ...progress } };
+      yield { ...turn, status: { label, ...progress } };
     }
   };
-  let current = live.get(conversationId);
-  if (current && (current.model !== model || current.session.chars > LIMITS.sessionChars)) current = undefined;
-  const fresh = !current;
-  if (!current) live.set(conversationId, (current = { session: openSession(model, "agent", conversationId), model }));
-  const conv = current;
-  const now = yield* readShown("Reading what you see");
-  /** What changed since the LLM was last told, as tags (both on a new conversation). */
-  const changes = (next: typeof now, first = false) => {
+  /** What changed since the model was last told (`seen`), as tags (everything on a new conversation). */
+  const changes = (seen: Seen, next: Awaited<ReturnType<typeof read>>, first = false) => {
     const parts = [
-      (first || next.context !== conv.context) && tag(first ? "context" : "context_now", next.context),
-      next.state !== undefined && (first || next.state !== conv.state) && tag(first ? "page_state" : "page_state_now", next.state),
-    ];
-    conv.context = next.context;
-    conv.state = next.state;
+      (first || next.context !== seen.context) && tag(first ? "context" : "context_now", next.context),
+      next.state !== undefined && (first || next.state !== seen.state) && tag(first ? "page_state" : "page_state_now", next.state),
+    ].filter((p): p is string => !!p);
+    seen.context = next.context;
+    seen.state = next.state;
     return parts;
   };
-  const unchanged = !fresh && now.state !== undefined && now.state === conv.state;
-  let prompt = [
-    ...(fresh ? [tag("protocol", PROTOCOL), tag("app_instructions", agent.instructions), tag("tools", tools.map(signature).join("\n"))] : []),
-    ...changes(now, fresh),
+
+  /* --------------------------------- Planner -------------------------------- */
+  const readTools = [...agent.tools.filter((t) => t.readOnly), ASK_USER, IMPLEMENT, ANSWER];
+  let conv = live.get(conversationId);
+  if (conv && (conv.model !== model || conv.session.chars > LIMITS.sessionChars)) conv = undefined;
+  const fresh = !conv;
+  if (!conv) live.set(conversationId, (conv = { session: openSession(model, "planner", conversationId), model }));
+  const planner = conv;
+  const now = yield* readShown("Reading what you see");
+  const plannerTail = (stage: "new" | "answers" | "exploring") =>
+    format(
+      readTools,
+      stage === "answers"
+        ? "the user answered your questions. Everything decided → implement (final plan). Something unclear → read, then ask_user again. Nothing to change → answer."
+        : stage === "new"
+          ? "a new request. Read what you need with your read tools, then call ask_user (message, questions with options, plan)."
+          : "keep reading what you need, then call ask_user (or implement / answer if the user already answered).",
+      stage === "answers" ? `{"tools": [{"name": "implement", "args": {"plan": "1. … 2. …"}}]}` : `{"tools": [{"name": "ask_user", "args": {"message": "…", "questions": [{"question": "…?", "options": ["Yes, do it", "No"]}], "plan": "1. …"}}]}`,
+    );
+  const first = [
+    ...(fresh ? [tag("protocol", PROTOCOL), tag("role", PLANNER), tag("app_instructions", agent.instructions), tag("tools", readTools.map(signature).join("\n"))] : []),
+    ...changes(planner, now, fresh),
     fresh && history && tag("conversation_so_far", history.slice(-LIMITS.historyChars)),
-    unchanged && tag("note", "The page state has not changed since your last message."),
-    tag("user_message", request),
-    FORMAT,
+    planner.note && tag("since_your_last_message", planner.note),
+    answering ? tag("user_answers", request) : tag("user_message", request),
+    plannerTail(answering ? "answers" : "new"),
   ]
     .filter(Boolean)
     .join("\n\n");
-  const session = conv.session;
-  /** The final answer, after the agent's own finishing step (e.g. saving its changes). */
-  const done = async function* (answer: string): AsyncGenerator<Update, void> {
-    if (agent.finish) {
-      yield { steps, llm, remote, status: { label: "Saving the changes" } };
-      const note = await agent.finish().catch((e) => `⚠️ Not saved: ${describeError(e)}`);
-      if (note) answer = `${answer}\n\n${note}`;
-    }
-    yield { steps, llm, remote, answer };
-  };
-  let retries = 0;
-  let reminded = false;
-  let saveRetried = false;
+  planner.note = undefined;
+  let plannerStage: "answers" | "exploring" = answering ? "answers" : "exploring";
+  let ended: Ended;
   try {
-    for (let turn = 0; turn <= LIMITS.steps; turn++) {
-      signal.throwIfAborted();
-      const call: LlmCall = { at: new Date().toISOString(), prompt: turn === LIMITS.steps ? `${tag("note", "No tool turns left: answer now.")}\n\n${FORMAT}` : prompt };
-      llm.push(call);
-      yield { steps, llm, remote, status: { label: steps.length ? "Thinking about the results" : "Thinking" } };
-      const started = performance.now();
-      const reply = await session.send(call.prompt, signal).catch((error: unknown) => {
-        call.error = error instanceof Error ? error.message : String(error);
-        throw error;
-      });
-      Object.assign(call, { reply, ms: Math.round(performance.now() - started) });
-      remote ??= await session.remote();
-      let calls;
-      try {
-        calls = parseReply(reply);
-        const unknown = calls.filter((c) => !byName.has(c.name)).map((c) => c.name);
-        if (unknown.length) throw new ReplyError(`Unknown tool(s): ${unknown.join(", ")}. Available: ${[...byName.keys()].join(", ")}.`);
-        retries = 0;
-      } catch (error) {
-        // Plain prose (no JSON at all) is the model answering: taken as the final answer, no extra round trip.
-        if (error instanceof ReplyError && !reply.includes("{") && reply.trim()) return yield* done(reply.trim());
-        if (!(error instanceof ReplyError)) throw error;
-        // Still unreadable after the retries: said plainly (the raw JSON is no answer for the user).
-        if (++retries > LIMITS.retries) return yield* done(`⚠️ The assistant's last reply could not be read (${error.message}), so it stopped there.${steps.length ? " The steps above were done." : ""} Ask again to finish.`);
-        prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\nSend the corrected JSON only, shorter if needed (fewer calls or operations; count the closing brackets).`)}\n\n${FORMAT}`;
-        turn--;
-        continue;
-      }
-      const answer = calls.find((c) => c.name === "answer");
-      if (answer && calls.length === 1) {
-        // Failed steps never redone successfully: one reminder before the answer, so the model retries
-        // them or says what failed instead of claiming them done.
-        const failed = steps.filter((s, i) => s.error && !steps.slice(i + 1).some((t) => t.name === s.name && !t.error));
-        if (failed.length && !reminded) {
-          reminded = true;
-          prompt = [
-            tag(
-              "note",
-              `Before answering: these steps FAILED and were not redone successfully:\n${failed.map((s) => `- ${s.name} ${JSON.stringify(s.args).slice(0, 200)} → ${String(s.result).slice(0, 300)}`).join("\n")}\nFix the arguments and retry them now, or say clearly in your answer what is not done. Never present them as done.`,
-            ),
-            FORMAT,
-          ].join("\n\n");
-          continue;
-        }
-        // The changes are saved before the answer is shown: a refused save goes back to the model once
-        // (its draft is kept), so it fixes the files instead of announcing changes that were not saved.
-        if (agent.finish && !saveRetried) {
-          yield { steps, llm, remote, status: { label: "Saving the changes" } };
-          let note: string | undefined;
-          try {
-            note = await agent.finish();
-          } catch (error) {
-            saveRetried = true;
-            prompt = [tag("save_failed", `Your changes could not be saved: ${describeError(error)}\nNothing was saved; your draft is kept. Fix the file named in the error (or discard_changes and redo the step), then answer.`), FORMAT].join("\n\n");
-            continue;
-          }
-          const text = String(answer.args.text ?? "");
-          yield { steps, llm, remote, answer: note ? `${text}\n\n${note}` : text };
-          return;
-        }
-        return yield* done(String(answer.args.text ?? ""));
-      }
-
-      const results: string[] = [];
-      for (const call of calls.filter((c) => c.name !== "answer")) {
-        const step: Step = { id: crypto.randomUUID(), name: call.name, args: call.args };
-        steps.push(step);
-        yield { steps, llm, remote };
-        const t = byName.get(call.name)!;
-        const started = performance.now();
-        try {
-          const text = await t.run(t.args.parse(call.args));
-          step.result = text.length > LIMITS.resultChars ? `${text.slice(0, LIMITS.resultChars)}\n…[truncated, ${text.length} characters: ask for less]` : text;
-        } catch (error) {
-          if (signal.aborted) throw error;
-          step.error = true;
-          step.result = error instanceof z.ZodError ? `Invalid arguments: ${z.prettifyError(error)}` : describeError(error);
-        }
-        step.ms = Math.round(performance.now() - started);
-        results.push(tag("result", step.result || "(done)", `tool="${call.name}" status="${step.error ? "error" : "ok"}"`));
-        yield { steps, llm, remote };
-      }
-      prompt = [tag("tool_results", results.join("\n")), answer && tag("note", `"answer" was ignored: it must be alone in its reply.`), ...changes(yield* readShown("Reading the page again")), FORMAT]
-        .filter(Boolean)
-        .join("\n\n");
-    }
+    ended = yield* drive({
+      role: "planner",
+      session: planner.session,
+      first,
+      tools: readTools,
+      max: LIMITS.plannerSteps,
+      turn,
+      signal,
+      reread: async function* () {
+        return changes(planner, yield* readShown("Reading the page again"));
+      },
+      tail: () => plannerTail(plannerStage),
+      refuse: (name) => (name !== "ask_user" && !answering ? `The user has not answered any question yet: first call ask_user (message, questions with options, plan). ${name === "answer" ? "Put your answer in its message." : ""}` : undefined),
+    });
   } catch (error) {
-    // A failed exchange may have left the LLM conversation incomplete: the next message starts a new one.
-    if (live.get(conversationId) === conv) live.delete(conversationId);
+    // A failed exchange may have left the conversation incomplete: the next message starts a new one.
+    if (live.get(conversationId) === planner) live.delete(conversationId);
     throw error;
   }
-  // Remote conversations are kept: deleted with the app conversation (see Chat).
+  plannerStage = "exploring";
+  if ("giveUp" in ended) return yield { ...turn, answer: ended.giveUp };
+  if (ended.name === "ask_user") {
+    turn.steps.push({ id: crypto.randomUUID(), name: "ask_user", args: ended.args, result: "" });
+    return yield { ...turn, answer: "" };
+  }
+  if (ended.name === "answer") return yield { ...turn, answer: String(ended.args.text ?? "") };
+
+  /* ------------------------------- Implementer ------------------------------ */
+  const plan = String(ended.args.plan ?? "");
+  turn.steps.push({ id: crypto.randomUUID(), name: "implement", args: { plan }, result: "" });
+  yield { ...turn };
+  const session = openSession(model, "implementer", conversationId);
+  const seen: Seen = {};
+  const tools = [...agent.tools, ANSWER];
+  const implementerTail = () => format(tools, "do the next steps of the plan with your tools; when everything is done, answer.", `{"tools": [{"name": "${agent.tools.find((t) => !t.readOnly)?.name ?? "answer"}", "args": {…}}]}`);
+  const start = [
+    tag("protocol", PROTOCOL),
+    tag("role", IMPLEMENTER),
+    tag("app_instructions", agent.instructions),
+    tag("tools", tools.map(signature).join("\n")),
+    ...changes(seen, yield* readShown("Reading what you see")),
+    tag("conversation", `${history.slice(-3000)}\n\nuser: ${request}`.trim()),
+    tag("plan", plan),
+    implementerTail(),
+  ].join("\n\n");
+  const implemented = turn.steps.length;
+  let result: Ended = { giveUp: "" };
+  let saveRetried = false;
+  let note: string | undefined;
+  try {
+    for (;;) {
+      result = yield* drive({
+        role: "implementer",
+        session,
+        first: saveRetried ? `${tag("save_failed", note ?? "")}\n\n${implementerTail()}` : start,
+        tools,
+        max: LIMITS.implementerSteps,
+        turn,
+        signal,
+        reread: async function* () {
+          return changes(seen, yield* readShown("Reading the page again"));
+        },
+        tail: implementerTail,
+      });
+      if ("giveUp" in result || !agent.finish) break;
+      // The changes are saved before the answer is shown: a refused save goes back once (the draft is kept).
+      yield { ...turn, status: { label: "Saving the changes" } };
+      try {
+        note = await agent.finish();
+        break;
+      } catch (error) {
+        if (saveRetried) {
+          note = `⚠️ Not saved: ${describeError(error)}`;
+          break;
+        }
+        saveRetried = true;
+        note = `Your changes could not be saved: ${describeError(error)}\nNothing was saved; your draft is kept. Fix the file named in the error (or discard_changes and redo the step), then answer.`;
+      }
+    }
+  } finally {
+    void session.remote().then((id) => {
+      if (id) void deleteRemoteConversation(id).catch(() => undefined);
+    });
+  }
+  const text = "giveUp" in result ? result.giveUp : String(result.args.text ?? "");
+  // The planner learns what was done before the user's next message.
+  const done = turn.steps.slice(implemented).map((s) => `- ${s.name}${s.error ? " (failed)" : ""}: ${String(s.result ?? "").split("\n")[0].slice(0, 160)}`);
+  planner.note = `The implementer carried out your plan.\nActions:\n${done.join("\n") || "none"}\nIts answer to the user: ${text}${note ? `\n${note}` : ""}`;
+  yield { ...turn, answer: note ? `${text}\n\n${note}` : text };
 }
