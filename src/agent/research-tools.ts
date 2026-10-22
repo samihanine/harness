@@ -12,7 +12,8 @@ import { patch, type DatasetEntry } from "@/lib/store";
 
 type Chart = Extract<Block, { kind: "chart" }>;
 const blockId = () => crypto.randomUUID().slice(0, 8);
-const fieldList = z.array(z.string()).default([]);
+/** Fields: a list (a single field, or several separated by commas, are accepted too). */
+const fieldList = z.preprocess((v) => (typeof v === "string" ? (v.trim() ? v.split(/,(?![^[]*\])/).map((x) => x.trim()) : []) : v), z.array(z.string()).default([]));
 
 /** The research as the AI sees it: models, canvas blocks, report pages. */
 function researchText(r: ResearchEntry, datasets: DatasetEntry[]) {
@@ -67,6 +68,7 @@ export function researchAgent(get: () => ResearchEntry, datasets: () => DatasetE
     instructions: `Screen: RESEARCH. You answer business questions from the research's semantic models and present the results in two places:
 - the CANVAS (Canvas tab): text blocks (markdown: findings, explanations) and charts, each computed by one DAX query. Chart kinds: ${CHARTS.join(", ")}. The query's first column is the category (x axis / slices), the next columns are the numeric series; kpi shows the first row's numbers; table shows all rows. Keep queries small (TOPN, SUMMARIZECOLUMNS, ≤ 30 rows for charts).
 - the REPORTS (Report tab): one Power BI report per model; each page is ONE full-page matrix: rows, columns, values, page filters — no formatting, no other visual. set_page adds or replaces a page; the reports are written when your answer is done.
+In Research, a question on the data is answered ON THE CANVAS (charts + a short summary) and in the report — never only in the chat: it is a change, so plan it and confirm it with ask_user (one short question), with the key figures already in its message.
 ALWAYS, when your answer uses data: add at least one report page (set_page) whose matrix reproduces the figures you show — the same measures (values), columns (rows / columns) and filters — so the user can see how they were obtained and check them; in the canvas summary, name the measures used (e.g. [Total Sales], [Margin %]) and the report page. The DAX of each chart is kept with it.
 How to work: the context lists the models' tables, columns and measures (do not sample tables to learn them). Check the figures with run_dax, then add the charts and a short markdown summary of what they show. add_chart runs its query and returns the rows: do not run the same query again first. Titles, texts and page names in the user's language. Use only fields that exist in the models.
 ${DAX_RULES}`,

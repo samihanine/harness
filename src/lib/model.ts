@@ -407,6 +407,9 @@ export function resolveField(info: ModelInfo | undefined, spec: string) {
   if (!info?.tables.length) throw new Error(`"${spec}": write it 'Table'[${name}].`);
   const homes = info.tables.filter((t) => [...t.columns, ...t.measures].some((c) => norm(c.name) === norm(name)));
   if (homes.length === 1) return checkName(info, homes[0].name, name);
+  // [Name] alone is how DAX writes a measure: one measure of that name wins over columns.
+  const measures = homes.filter((t) => t.measures.some((m) => norm(m.name) === norm(name)));
+  if (homes.length > 1 && /^\[/.test(s) && measures.length === 1) return checkName(info, measures[0].name, name);
   if (homes.length > 1) throw new Error(`"${name}" is in several tables: write one of ${homes.map((t) => `'${t.name}'[${name}]`).join(", ")}.`);
   // Closest by the name itself (not the table), visible tables first.
   const near = info.tables

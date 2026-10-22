@@ -112,7 +112,11 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
     const report = f.get(REPORT) as any;
     const custom = report?.themeCollection?.customTheme?.name;
     const item = report?.resourcePackages?.flatMap((p: any) => p.items ?? []).find((i: any) => i.name === custom && i.type === "CustomTheme");
-    if (item) return `StaticResources/RegisteredResources/${item.path}`;
+    if (item) {
+      // Power BI lists the theme without ".json" once it saved the report; the file keeps it.
+      const path = `StaticResources/RegisteredResources/${item.path}`;
+      return f.has(path) || !f.has(`${path}.json`) ? path : `${path}.json`;
+    }
     const name = `HubTheme${newName().slice(0, 6)}`;
     const next = structuredClone(report);
     next.themeCollection = { ...next.themeCollection, customTheme: { name, reportVersionAtImport: next.themeCollection?.baseTheme?.reportVersionAtImport, type: "RegisteredResources" } };

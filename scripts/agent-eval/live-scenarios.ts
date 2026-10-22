@@ -4,6 +4,9 @@
  */
 import type { Agent } from "@/agent/loop";
 import { builderAgent } from "@/agent/builder";
+import { datasetText, withContexts } from "@/agent/context";
+import { modelTools } from "@/agent/model-tools";
+import { DAX_RULES, daxTool } from "@/agent/pbi-tools";
 import { researchAgent } from "@/agent/research-tools";
 import { addDataset } from "@/lib/library";
 import { definition, partText } from "@/lib/report-def";
@@ -176,5 +179,20 @@ export const LIVE_SCENARIOS: Scenario[] = [
         ...expect(r.blocks.some((b) => b.kind === "markdown" && /r[ée]gion/i.test(b.text)), "no summary naming the regions"),
       ];
     },
+  },
+  {
+    name: "dataset-question",
+    description: "Datasets (live): a simple DAX question should be answered at once, without questions",
+    request: "Écris un code DAX pour afficher la dernière commande.",
+    setup: async () => {
+      const d = await testDataset();
+      reset({ datasets: [d], contexts: [] });
+      return {
+        instructions: `Screen: DATASETS. The user reads a semantic model: you explain it, find fields and answer with DAX.\n${DAX_RULES}`,
+        tools: [daxTool(() => ({ id: d.id })), ...modelTools(() => peek("datasets")[0])],
+        context: async () => withContexts([await datasetText(peek("datasets")[0])], []),
+      };
+    },
+    check: async () => [],
   },
 ];
