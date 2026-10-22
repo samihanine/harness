@@ -245,14 +245,14 @@ function Runtime({ id, scope, initial, agent, placeholder }: { id: string; scope
     <AssistantRuntimeProvider runtime={runtime}>
       <Send.Provider value={send}>
         <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">
-          <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto bg-background px-4 py-5">
+          <ThreadPrimitive.Viewport className="flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden overflow-y-auto bg-background px-4 py-5">
             <ThreadPrimitive.Empty>
               <div className="m-auto flex max-w-72 flex-col items-center gap-3 text-center">
                 <span className="flex size-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
                   <MessageCircleQuestionIcon className="size-5" />
                 </span>
                 <p className="text-[13.5px] leading-relaxed text-muted-foreground">{placeholder}</p>
-                <p className="text-[12px] leading-relaxed text-muted-foreground/80">The assistant explores first, then asks you to confirm before changing anything.</p>
+                <p className="text-[12px] leading-relaxed text-muted-foreground/80">The assistant answers questions right away, and asks you to confirm before changing anything.</p>
               </div>
             </ThreadPrimitive.Empty>
             <ThreadPrimitive.Messages components={{ UserMessage, AssistantMessage }} />
@@ -303,7 +303,7 @@ const UserMessage = () => {
       {isFile ? (
         <MessagePrimitive.Parts components={{ File: FileChip }} />
       ) : (
-        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap text-primary-foreground shadow-xs">
+        <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[14px] leading-relaxed whitespace-pre-wrap text-primary-foreground [overflow-wrap:anywhere] shadow-xs">
           <MessagePrimitive.Parts />
         </div>
       )}
@@ -336,7 +336,7 @@ const AssistantMessage = () => {
   const seconds = custom.trace?.ms !== undefined ? (custom.trace.ms / 1000).toFixed(1) : undefined;
   return (
     <MessagePrimitive.Root className="flex flex-col gap-1">
-      <div className="flex w-full max-w-full flex-col gap-3 rounded-2xl rounded-tl-md border bg-card px-4 py-3 text-[14px] shadow-xs">
+      <div className="flex w-full max-w-full min-w-0 flex-col gap-2.5 rounded-2xl rounded-tl-md border bg-card px-4 py-3 text-[14px] [overflow-wrap:anywhere] shadow-xs [&_pre]:overflow-x-auto [&_pre]:[overflow-wrap:normal] [&>:empty]:hidden">
         <Steps running={running} />
         <MessagePrimitive.Parts components={{ Text: Markdown, tools: { by_name: { ask_user: ChoicesCard, implement: PlanChip }, Fallback: () => null } }} />
         {running && custom.status && <StatusLine status={custom.status} />}
@@ -350,7 +350,8 @@ const AssistantMessage = () => {
   );
 };
 
-const Markdown = () => <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} className="markdown" />;
+/** Nothing for an empty text part (it left a blank gap in the card while the agent works). */
+const Markdown = ({ text }: { text: string }) => (text.trim() ? <MarkdownTextPrimitive remarkPlugins={[remarkGfm]} className="markdown" /> : null);
 
 /** The planner's questions: options to click (one question: a click sends it), or a free answer. */
 function ChoicesCard({ args }: ToolCallMessagePartProps) {
@@ -452,7 +453,7 @@ function Steps({ running }: { running: boolean }) {
   if (!steps.length) return null;
   const failed = steps.filter((s) => s.isError).length;
   return (
-    <div className="border-b pb-2">
+    <div className="border-b pb-2 last:border-b-0 last:pb-0">
       <button type="button" onClick={() => setOpen(!open)} className="flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground">
         <WrenchIcon className="size-3" aria-hidden />
         {steps.length} action{steps.length > 1 ? "s" : ""}

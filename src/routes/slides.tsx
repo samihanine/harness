@@ -3,11 +3,12 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import CodeMirror from "@uiw/react-codemirror";
 import { json as jsonLanguage } from "@codemirror/lang-json";
 import { AnimatePresence, motion } from "motion/react";
-import { BracesIcon, ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileTextIcon, MaximizeIcon, PlusIcon, PresentationIcon, SaveIcon } from "lucide-react";
+import { BracesIcon, DatabaseIcon, FileChartColumnIcon, FileSpreadsheetIcon, ChevronLeftIcon, ChevronRightIcon, DownloadIcon, FileTextIcon, MaximizeIcon, PlusIcon, PresentationIcon, SaveIcon } from "lucide-react";
 import { EntityMenu, withToast } from "@/components/entity";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { EntityPicker, Empty, Workspace } from "@/components/workspace";
+import { Switch } from "@/components/ui/switch";
+import { EntityPicker, Empty, Section, Workspace } from "@/components/workspace";
 import { slidesAgent } from "@/agent/slides-tools";
 import { useLast } from "@/lib/last";
 import { errorText } from "@/lib/ms";
@@ -39,7 +40,15 @@ function Slides() {
   useEffect(() => {
     if (index >= count && count) setIndex(count - 1);
   }, [count, index]);
-  const agent = entry && slidesAgent(() => live.current.entry!, setIndex, () => live.current.index);
+  const datasets = useCollection("datasets");
+  const reports = useCollection("reports");
+  const schemas = useCollection("schemas").filter((x) => x.excel);
+  const sources = entry?.sources ?? { datasetIds: [], reportIds: [], schemaIds: [] };
+  const chosen = { datasets: datasets.filter((d) => sources.datasetIds.includes(d.id)), reports: reports.filter((r) => sources.reportIds.includes(r.id)), schemas: schemas.filter((x) => sources.schemaIds.includes(x.id)) };
+  const liveSources = useRef(chosen);
+  liveSources.current = chosen;
+  const agent = entry && slidesAgent(() => live.current.entry!, setIndex, () => live.current.index, () => liveSources.current);
+  const toggle = (kind: keyof typeof sources, id: string, on: boolean) => entry && void patch("decks", entry.id, { sources: { ...sources, [kind]: on ? [...sources[kind], id] : sources[kind].filter((x) => x !== id) } });
   const create = async () => {
     const name = prompt("Name of the presentation", "New presentation")?.trim();
     if (name) navigate({ search: { deck: (await put("decks", { id: crypto.randomUUID(), name, deck: { ...EXAMPLE_DECK, title: name }, updatedAt: Date.now() })).id } });
@@ -94,8 +103,51 @@ function Slides() {
       tabs={[
         { id: "preview", label: "Preview", icon: PresentationIcon, count: entry ? count : undefined, content: entry ? <Preview deck={entry.deck} index={index} onIndex={setIndex} active={(tab ?? "preview") === "preview"} /> : <Empty icon={PresentationIcon} action={<Button onClick={() => void create()}><PlusIcon /> New presentation</Button>}>A presentation is a short JSON (a theme and slides from templates) written with the assistant or by hand.</Empty> },
         { id: "content", label: "Content", icon: BracesIcon, content: entry ? <Content key={entry.id} entry={entry} /> : <Empty>Choose a presentation.</Empty> },
+        {
+          id: "datasets",
+          label: "Datasets",
+          icon: DatabaseIcon,
+          count: entry ? sources.datasetIds.length : undefined,
+          content: entry ? <SourceList title="Semantic models" description="The assistant computes the deck's figures on them with DAX." items={datasets.map((d) => ({ id: d.id, label: d.name, hint: d.access === "view" ? "no DAX access" : undefined, disabled: d.access === "view" }))} chosen={sources.datasetIds} onToggle={(id, on) => toggle("datasetIds", id, on)} /> : <Empty>Choose a presentation.</Empty>,
+        },
+        {
+          id: "reports",
+          label: "Reports",
+          icon: FileChartColumnIcon,
+          count: entry ? sources.reportIds.length : undefined,
+          content: entry ? <SourceList title="Power BI reports" description="Their pages and visuals can be shown in the slides (visual / compare)." items={reports.map((r) => ({ id: r.id, label: r.name }))} chosen={sources.reportIds} onToggle={(id, on) => toggle("reportIds", id, on)} /> : <Empty>Choose a presentation.</Empty>,
+        },
+        {
+          id: "excel",
+          label: "Excel",
+          icon: FileSpreadsheetIcon,
+          count: entry ? sources.schemaIds.length : undefined,
+          content: entry ? <SourceList title="Excel tables" description="The assistant reads their rows to write the slides." items={schemas.map((x) => ({ id: x.id, label: x.title }))} chosen={sources.schemaIds} onToggle={(id, on) => toggle("schemaIds", id, on)} /> : <Empty>Choose a presentation.</Empty>,
+        },
       ]}
     />
+  );
+}
+
+/* ---------------------------------- Sources ---------------------------------- */
+
+/** The items a deck is written from (none by default: the assistant then gets no tool for them). */
+function SourceList({ title, description, items, chosen, onToggle }: { title: string; description: string; items: { id: string; label: string; hint?: string; disabled?: boolean }[]; chosen: string[]; onToggle: (id: string, on: boolean) => void }) {
+  return (
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 overflow-y-auto p-6">
+      <Section title={title} description={description}>
+        {!items.length && <p className="text-[13px] text-muted-foreground">None in the app yet: add them in their screen.</p>}
+        <div className="flex flex-col divide-y">
+          {items.map((i) => (
+            <label key={i.id} className="flex cursor-pointer items-center gap-3 py-2.5 text-[13.5px]">
+              <Switch checked={chosen.includes(i.id)} disabled={i.disabled} onCheckedChange={(on) => onToggle(i.id, on)} />
+              <span className="min-w-0 flex-1 truncate font-medium">{i.label}</span>
+              {i.hint && <span className="text-[12px] text-muted-foreground">{i.hint}</span>}
+            </label>
+          ))}
+        </div>
+      </Section>
+    </div>
   );
 }
 

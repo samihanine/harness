@@ -267,17 +267,21 @@ const flags = (t: TableInfo) => [t.kind, t.hidden && "hidden", t.rows !== undefi
 
 /** Always in the AI context: tables (one line each), measure names by folder, relationships. Details through the model tools. */
 export function modelSummary(info: ModelInfo) {
+  // Column names (with a short type) when the model is small enough: the AI then needs no describe_table to name them.
+  const visible = info.tables.reduce((n, t) => n + t.columns.filter((c) => !c.hidden).length, 0);
+  const named = visible <= 160;
+  const typeOf = (c: Column) => { const t = (c.type ?? "").toLowerCase(); return /date/.test(t) ? " (date)" : /int|double|decimal|number/.test(t) ? " (number)" : ""; };
   const lines = [
     info.source === "tmdl" ? "Model read in full (DAX of every measure available)." : "Model read partially (with Build rights).",
     ...info.warnings.map((w) => `Limit: ${w}`),
-    "Tables (details: describe_table; a measure: get_measure; search: search_model):",
+    named ? "Tables (columns and measures below are exact names; a measure's DAX: get_measure; values / descriptions: describe_table):" : "Tables (details: describe_table; a measure: get_measure; search: search_model):",
   ];
   for (const t of info.tables) {
     const folders = new Map<string, string[]>();
     for (const m of t.measures.filter((m) => !m.hidden)) folders.set(m.folder ?? "", [...(folders.get(m.folder ?? "") ?? []), `[${m.name}]`]);
     const measures = [...folders].map(([f, names]) => (f ? `${f}: ${names.join(", ")}` : names.join(", "))).join("; ");
     lines.push(
-      `- '${t.name}'${flags(t) ? ` (${flags(t)})` : ""}${t.description ? ` — ${short(t.description, 120)}` : ""}: ${t.columns.filter((c) => !c.hidden).length} columns${measures ? `; measures: ${measures}` : ""}`,
+      `- '${t.name}'${flags(t) ? ` (${flags(t)})` : ""}${t.description ? ` — ${short(t.description, 120)}` : ""}: ${named ? `columns ${t.columns.filter((c) => !c.hidden).map((c) => `${c.name}${typeOf(c)}`).join(", ") || "none shown"}` : `${t.columns.filter((c) => !c.hidden).length} columns`}${measures ? `; measures: ${measures}` : ""}`,
     );
   }
   if (info.relationships.length) lines.push("Relationships (many→one unless noted):", ...info.relationships.map((r) => `- ${r.from} ${r.cardinality} ${r.to}${r.both ? " (both directions)" : ""}${r.active ? "" : " (inactive: USERELATIONSHIP)"}`));

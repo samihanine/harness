@@ -7,7 +7,10 @@
     "build": "vite build",
     "start": "bun .output/server/index.mjs",
     "typecheck": "tsc --noEmit",
-    "eval:agent": "bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/run.ts"
+    "eval:agent": "bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/run.ts",
+    "eval:live:setup": "EVAL_LIVE=1 bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/sales.ts setup",
+    "eval:live:cleanup": "EVAL_LIVE=1 bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/sales.ts cleanup",
+    "eval:live": "EVAL_LIVE=1 bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/run.ts"
   },
   "dependencies": {
     "@assistant-ui/react": "0.15.22",

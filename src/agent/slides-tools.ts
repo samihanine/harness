@@ -3,8 +3,13 @@
  * checked against the templates before anything is saved.
  */
 import { z } from "zod";
-import { tool, type Agent } from "./loop";
-import { all, patch, type DeckEntry } from "@/lib/store";
+import { datasetText, withContexts } from "./context";
+import { tool, type Agent, type Tool } from "./loop";
+import { DAX_RULES, daxTool } from "./pbi-tools";
+import { readRows } from "@/lib/excel";
+import { rowsText } from "@/lib/pbi";
+import { readReportSchema } from "@/lib/report-schema";
+import { patch, type DatasetEntry, type DeckEntry, type ReportEntry, type SchemaEntry } from "@/lib/store";
 import { checkSlide, templatesText, type Deck, type SlideJson } from "@/slides";
 import { themeSchema } from "@/slides/kit";
 
@@ -13,7 +18,51 @@ const titleOf = (s: SlideJson) => String(s.title ?? s.text ?? "").replace(/\*\*|
 /** Decks before the AI's last change (one step of undo per deck). */
 const previous = new Map<string, Deck>();
 
-export function slidesAgent(get: () => DeckEntry, show: (index: number) => void, current: () => number): Agent {
+/** What the deck is written from (chosen in the Datasets / Reports / Excel tabs; none by default). */
+export type DeckSources = { datasets: DatasetEntry[]; reports: ReportEntry[]; schemas: SchemaEntry[] };
+
+/** The sources' tools: DAX on the datasets, rows of the Excel tables (nothing when none is chosen). */
+function sourceTools(sources: () => DeckSources): Tool[] {
+  const s = sources();
+  return [
+    ...(s.datasets.length ? [daxTool(() => undefined, () => sources().datasets.map((d) => ({ id: d.id, groupId: d.groupId, name: d.name })))] : []),
+    ...(s.schemas.length
+      ? [
+          tool({
+            name: "read_excel_rows",
+            description: "Reads rows of a chosen Excel table (by its name), e.g. to quote figures or list items in slides.",
+            args: z.object({ table: z.string(), offset: z.number().optional(), limit: z.number().optional() }),
+            readOnly: true,
+            run: async ({ table, offset = 0, limit = 40 }) => {
+              const schema = sources().schemas.find((x) => x.title.toLowerCase() === table.toLowerCase()) ?? sources().schemas[0];
+              if (!schema?.excel) throw new Error(`No chosen Excel table "${table}". Tables: ${sources().schemas.map((x) => x.title).join(", ")}.`);
+              const t = await readRows(schema.excel, schema.fields);
+              return `${t.rows.length} rows in "${schema.title}".\n${rowsText(t.rows.slice(offset, offset + limit), limit)}`;
+            },
+          }),
+        ]
+      : []),
+  ];
+}
+
+/** The sources for the AI: models (structure and examples), reports (pages and visuals with their zones), Excel tables. */
+async function sourcesText(s: DeckSources) {
+  const reports = await Promise.all(
+    s.reports.map(async (r) => {
+      const schema = await readReportSchema(r).catch(() => undefined);
+      const pages = schema?.pages.map((p) => `  - page "${p.displayName}" (page: "${p.name}", ${p.width}×${p.height}): ${schema.visuals.filter((v) => v.page === p.name && !v.hidden).map((v) => `${v.title ?? v.type} [crop x ${v.x}, y ${v.y}, w ${v.width}, h ${v.height}]`).join("; ")}`);
+      return `Report "${r.name}" (report: "${r.id}")${pages?.length ? `\n${pages.join("\n")}` : ""}`;
+    }),
+  );
+  return [
+    ...(await Promise.all(s.datasets.map(datasetText))),
+    reports.length ? `Reports for visual / compare slides (crop: a visual's zone; scale it to a 1280×720 page when the page is another size):\n${reports.join("\n")}` : "",
+    s.schemas.length ? `Excel tables (read_excel_rows): ${s.schemas.map((x) => `"${x.title}" (columns: ${x.fields.map((f) => f.name).join(", ")})`).join("; ")}` : "",
+  ].filter(Boolean);
+}
+
+export function slidesAgent(get: () => DeckEntry, show: (index: number) => void, current: () => number, sources: () => DeckSources = () => ({ datasets: [], reports: [], schemas: [] })): Agent {
+  const chosen = sources();
   const save = async (deck: Deck) => {
     previous.set(get().id, get().deck);
     await patch("decks", get().id, { deck, updatedAt: Date.now() });
@@ -28,16 +77,20 @@ export function slidesAgent(get: () => DeckEntry, show: (index: number) => void,
     instructions: `Screen: SLIDES. You write a presentation as a short JSON: a theme and slides, each slide = a template id and its args (the templates draw it; you only give the content). Slides are numbered from 1.
 Templates:
 ${templatesText()}
-Rules: one idea per slide, short texts (a title of ≤ 8 words, items of ≤ 15 words); **bold** and ==highlight== (accent color) in texts; a "section" slide starts each part (the outline comes from them); start with "hero", end with "end". Power BI slides (visual, compare) take a report of the app (id or name).`,
+Rules: one idea per slide, short texts (a title of ≤ 8 words, items of ≤ 15 words); **bold** and ==highlight== (accent color) in texts; a "section" slide starts each part (the outline comes from them); start with "hero", end with "end".${
+      chosen.reports.length ? " Power BI slides (visual, compare): a chosen report (its id), a page name and the visual's crop from the context." : " No report is chosen: no visual / compare slide (the user can choose reports in the Reports tab)."
+    }${chosen.datasets.length ? ` Figures: compute them with run_dax on the chosen models (exact values), never invent them.\n${DAX_RULES}` : ""}${chosen.schemas.length ? " Excel tables: read their rows with read_excel_rows." : ""}`,
     context: async () => {
-      const reports = await all("reports");
-      return `Reports of the app (for visual / compare slides): ${reports.map((r) => `"${r.name}" (${r.id})`).join(", ") || "none"}.`;
+      const s = sources();
+      const parts = await sourcesText(s);
+      return withContexts(parts.length ? parts : ["No data source chosen for this deck (Datasets / Reports / Excel tabs): write from the user's request only."], [...s.datasets.map((d) => d.contextIds), ...s.reports.map((r) => r.contextIds), ...s.schemas.map((x) => x.contextIds)]);
     },
     state: async () => {
       const { deck } = get();
       return `Deck "${deck.title}" — theme ${JSON.stringify(deck.theme)}\nSlides (${deck.slides.length}), the user sees slide ${current() + 1}:\n${deck.slides.map((s, i) => `${i + 1}. ${s.template} — ${titleOf(s)}`).join("\n") || "none"}`;
     },
     tools: [
+      ...sourceTools(sources),
       tool({
         name: "read_slides",
         description: "Reads the JSON of slides (by number; none: all).",

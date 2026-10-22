@@ -4,7 +4,7 @@ type Settings = { aiKey?: string; model?: string };
 
 const collections = new Map<string, { id: string }[]>();
 
-export const reset = (seed: Record<string, { id: string }[]> = {}) => {
+export const reset = (seed: Record<string, any[]> = {}) => {
   collections.clear();
   for (const [k, v] of Object.entries(seed)) collections.set(k, structuredClone(v));
 };

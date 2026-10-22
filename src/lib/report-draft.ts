@@ -78,6 +78,12 @@ export function check(file: string, json: unknown) {
     if (state !== undefined && Object.entries(state ?? {}).some(([, r]: [string, any]) => !Array.isArray(r?.projections))) throw new Error(`${file}: each role of "visual.query.queryState" needs "projections": [...] (use set_visual_fields).`);
   }
   if (file.endsWith("/page.json") && (typeof o.name !== "string" || typeof o.width !== "number" || typeof o.height !== "number")) throw new Error(`${file}: "name", "width" and "height" are required.`);
+  // Filters (report, page, visual): the shape Power BI checks on save.
+  for (const f of o.filterConfig?.filters ?? []) {
+    if (!f || typeof f.name !== "string" || !f.field) throw new Error(`${file}: each filter of "filterConfig.filters" needs "name" and "field".`);
+    if (f.filter !== undefined && (!Array.isArray(f.filter?.From) || !Array.isArray(f.filter?.Where)))
+      throw new Error(`${file}: filter "${f.name}": "filter" must be {"Version": 2, "From": [...], "Where": [...]}. For a Top N, use create_visual "top" or set_visual_top_n (they write it for you).`);
+  }
   if (file.endsWith("pages/pages.json") && !Array.isArray(o.pageOrder)) throw new Error(`${file}: "pageOrder" must be a list.`);
 }
 

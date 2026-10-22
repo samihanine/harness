@@ -30,6 +30,11 @@ export type AiSlot = {
   /** Shown instead of the chat when there is no agent (e.g. nothing chosen yet). */
   empty?: string;
   onConversation?: (id: string) => void;
+  /** More tabs next to the assistant (e.g. the Viewer's guide of the clicked visual). */
+  tabs?: { id: string; label: string; icon: LucideIcon; content: ReactNode }[];
+  /** The tab shown (controlled), e.g. to open the guide when a visual is clicked. */
+  tab?: string;
+  onTab?: (id: string) => void;
 };
 
 /** The assistant: folded to a thin bar, or open and resizable (drag its right edge; width remembered). */
@@ -37,6 +42,9 @@ function AiPanel({ ai }: { ai: AiSlot }) {
   const [open, setOpen] = useState(() => last.get("panel") !== "closed");
   const [width, setWidth] = useState(() => Number(last.get("panel-width")) || 400);
   const [dragging, setDragging] = useState(false);
+  const [ownTab, setOwnTab] = useState("assistant");
+  const current = ai.tab ?? ownTab;
+  const select = (id: string) => (ai.onTab ? ai.onTab(id) : setOwnTab(id));
   const toggle = (next: boolean) => {
     last.set("panel", next ? "open" : "closed");
     setOpen(next);
@@ -74,12 +82,28 @@ function AiPanel({ ai }: { ai: AiSlot }) {
         </>
       )}
       <div className={cn("flex h-14 w-full shrink-0 items-center border-b", open ? "gap-2 px-4" : "justify-center")}>
-        {open && (
+        {open && !ai.tabs?.length && (
           <span className="flex items-center gap-2 text-[14.5px] font-semibold">
             <span className="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
               <SparklesIcon className="size-4" />
             </span>
             Assistant
+          </span>
+        )}
+        {open && !!ai.tabs?.length && (
+          <span className="flex rounded-lg bg-muted p-0.5" role="tablist" aria-label="Panel">
+            {[{ id: "assistant", label: "Assistant", icon: SparklesIcon }, ...ai.tabs].map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={t.id === current}
+                onClick={() => select(t.id)}
+                className={cn("flex h-8 cursor-pointer items-center gap-1.5 rounded-md px-3 text-[13px] font-medium transition-colors [&_svg]:size-3.5", t.id === current ? "bg-card text-foreground shadow-xs" : "text-muted-foreground hover:text-foreground")}
+              >
+                <t.icon aria-hidden /> {t.label}
+              </button>
+            ))}
           </span>
         )}
         <Tooltip>
@@ -96,8 +120,13 @@ function AiPanel({ ai }: { ai: AiSlot }) {
           <SparklesIcon />
         </Button>
       )}
-      {/* Kept mounted while folded: the conversation goes on. */}
-      <div className={open ? "flex min-h-0 w-full flex-1 flex-col" : "hidden"}>{chat}</div>
+      {/* Kept mounted while folded or on another tab: the conversation goes on. */}
+      <div className={open && current === "assistant" ? "flex min-h-0 w-full flex-1 flex-col" : "hidden"}>{chat}</div>
+      {ai.tabs?.map((t) => (
+        <div key={t.id} className={open && current === t.id ? "flex min-h-0 w-full flex-1 flex-col overflow-y-auto" : "hidden"}>
+          {t.content}
+        </div>
+      ))}
     </aside>
   );
 }
@@ -150,7 +179,7 @@ export function Workspace({
           <div className="flex h-11 shrink-0 items-end gap-3 border-b bg-card px-4">
             <TabsList variant="line" className="h-11 gap-1 p-0">
               {tabs.map((t) => (
-                <TabsTrigger key={t.id} value={t.id} className="relative h-11 gap-2 rounded-none border-0 px-3 text-[13.5px] data-[state=active]:text-foreground data-[state=active]:shadow-none after:absolute after:inset-x-2 after:bottom-0 after:h-0.5 after:rounded-full after:bg-primary after:opacity-0 data-[state=active]:after:opacity-100 [&_svg]:size-4">
+                <TabsTrigger key={t.id} value={t.id} className="relative h-11 flex-none gap-2 rounded-none border-0 px-3 text-[13.5px] data-[state=active]:text-foreground data-[state=active]:shadow-none after:rounded-full after:bg-primary group-data-[orientation=horizontal]/tabs:after:inset-x-2 group-data-[orientation=horizontal]/tabs:after:bottom-0 [&_svg]:size-4">
                   {t.icon && <t.icon aria-hidden />}
                   {t.label}
                   {t.count !== undefined && <span className="rounded-full bg-muted px-1.5 text-[11px] text-muted-foreground tabular-nums">{t.count}</span>}

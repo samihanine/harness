@@ -100,7 +100,41 @@ export type VisualSpec = {
   sort?: { field: string; descending?: boolean };
   /** textbox: its text (one paragraph per line). */
   text?: string;
+  /** Keep the first N items of the category (or rows) by a value, e.g. a top 10 products by sales. */
+  top?: { count: number; by: string; bottom?: boolean };
 };
+
+/** The roles holding the items a Top N keeps (the first column found). */
+const ITEM_ROLES = ["Category", "Rows", "Values", "Series"];
+
+/**
+ * A visual-level Top N filter (as Power BI writes it): the visual's first category column, limited to
+ * the `count` first items by a measure or an aggregated column.
+ */
+export function topNFilter(queryState: Record<string, { projections: { field: any }[] }>, top: NonNullable<VisualSpec["top"]>, info: ModelInfo | undefined, extension: ReportMeasures) {
+  const item = ITEM_ROLES.flatMap((r) => queryState[r]?.projections ?? []).find((p) => p.field?.Column)?.field.Column;
+  if (!item) throw new Error("A Top N needs a column in the visual (Category or Rows) to keep the first items of.");
+  if (!(top.count >= 1)) throw new Error("top.count must be 1 or more.");
+  const by = projection(top.by, info, extension).field as any;
+  const entity = item.Expression.SourceRef.Entity;
+  // The ordering value, referring to its table by a source name of the subquery.
+  const byEntity = (by.Measure ?? by.Column ?? by.Aggregation?.Expression?.Column)?.Expression?.SourceRef;
+  const withSource = (field: any, source: string) => JSON.parse(JSON.stringify(field).replace(/"SourceRef":\{[^}]*\}/, `"SourceRef":{"Source":"${source}"}`));
+  const from = [{ Name: "i", Entity: entity, Type: 0 }, ...(byEntity?.Entity && byEntity.Entity !== entity ? [{ Name: "o", Entity: byEntity.Entity, Type: 0, ...(byEntity.Schema && { Schema: byEntity.Schema }) }] : [])];
+  return {
+    name: newName(),
+    field: { Column: item },
+    type: "TopN",
+    filter: {
+      Version: 2,
+      From: [
+        { Name: "subquery", Expression: { Subquery: { Query: { Version: 2, From: from, Select: [{ Column: { Expression: { SourceRef: { Source: "i" } }, Property: item.Property }, Name: "field" }], OrderBy: [{ Direction: top.bottom ? 1 : 2, Expression: withSource(by, from.length > 1 ? "o" : "i") }], Top: Math.round(top.count) } } }, Type: 2 },
+        { Name: "i", Entity: entity, Type: 0 },
+      ],
+      Where: [{ Condition: { In: { Expressions: [{ Column: { Expression: { SourceRef: { Source: "i" } }, Property: item.Property } }], Table: { SourceRef: { Source: "subquery" } } } } }],
+    },
+  };
+}
 
 /** A new name (id) for a page or a visual, like Power BI's (20 hex characters). */
 export const newName = () => Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => b.toString(16).padStart(2, "0")).join("");
@@ -126,10 +160,14 @@ export function buildVisual(spec: VisualSpec, name: string, z: number, info: Mod
     }
     visual.query = query;
   }
+  const filterConfig = spec.top ? { filters: [topNFilter(queryState, spec.top, info, extension)] } : undefined;
   if (spec.type === "textbox" && spec.text) visual.objects = { general: [{ properties: { paragraphs: spec.text.split("\n").map((line) => ({ textRuns: [{ value: line }] })) } }] };
   if (spec.title) visual.visualContainerObjects = { title: [{ properties: { show: lit("true"), text: textLiteral(spec.title) } }] };
+  // A titled card or slicer would say its field twice (and a card's label is cut in a short box).
+  if (spec.title && spec.type === "card") visual.objects = { ...(visual.objects as object), categoryLabels: [{ properties: { show: lit("false") } }] };
+  if (spec.title && spec.type === "slicer") visual.objects = { ...(visual.objects as object), header: [{ properties: { show: lit("false") } }] };
   const round = (n: number) => Math.round(n);
-  return { $schema: schema, name, position: { x: round(spec.x), y: round(spec.y), z, width: round(spec.width), height: round(spec.height), tabOrder: z }, visual };
+  return { $schema: schema, name, position: { x: round(spec.x), y: round(spec.y), z, width: round(spec.width), height: round(spec.height), tabOrder: z }, visual, ...(filterConfig && { filterConfig }) };
 }
 
 /** page.json of a new page. */
@@ -208,11 +246,13 @@ export function formatOps(json: any, format: Format) {
   if (!objects) throw new Error(`No format catalog for "${type}": change it with update_visual.`);
   const ops: { op: "add"; path: string; value: unknown }[] = [];
   const errors: string[] = [];
+  /** Names that do not exist on this type: skipped (the rest is applied), and said in the result. */
+  const ignored: string[] = [];
   for (const [given, props] of Object.entries(format ?? {})) {
     const o = bareObject(given);
     const known = objects[o];
     if (!known) {
-      errors.push(`no object "${given}" (objects: ${Object.keys(objects).join(", ")})`);
+      ignored.push(`no object "${given}" on a ${type} (its objects: ${Object.keys(objects).join(", ")})`);
       continue;
     }
     if (!props || typeof props !== "object") {
@@ -225,7 +265,7 @@ export function formatOps(json: any, format: Format) {
     for (const [p, value] of Object.entries(props)) {
       const t = known[p];
       if (!t) {
-        errors.push(`${o} has no property "${p}" (its properties: ${Object.keys(known).join(", ")})`);
+        ignored.push(`${o}.${p} (no such property on a ${type}; ${o} has: ${Object.keys(known).join(", ")})`);
         continue;
       }
       try {
@@ -236,5 +276,20 @@ export function formatOps(json: any, format: Format) {
     }
   }
   if (errors.length) throw new Error(`${type}: ${errors.join("; ")}. Nothing was changed.`);
-  return ops;
+  return { ops, ignored };
+}
+
+/** What format results say about skipped names. */
+export const ignoredText = (ignored: string[]) => (ignored.length ? ` Ignored: ${ignored.join("; ")}.` : "");
+
+/** page.json operations for the page's colors: background (behind the visuals) and wallpaper (around the page). */
+export function pageFormatOps(json: any, format: { background?: string; wallpaper?: string }) {
+  const color = (c: string) => {
+    if (!/^#[0-9a-f]{6}$/i.test(c)) throw new Error(`a color "#RRGGBB", not ${JSON.stringify(c)}`);
+    return [{ properties: { color: { solid: { color: lit(`'${c}'`) } }, transparency: lit("0D") } }];
+  };
+  const objects = { ...(json.objects ?? {}) };
+  if (format.background) objects.background = color(format.background);
+  if (format.wallpaper) objects.outspace = color(format.wallpaper);
+  return [{ op: "add" as const, path: "/objects", value: objects }];
 }

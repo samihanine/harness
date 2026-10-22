@@ -106,7 +106,8 @@ async function connection(dataset: Ref): Promise<Part> {
       .catch(() => undefined);
     if (part) return part;
   }
-  return json("definition.pbir", { version: "4.0", datasetReference: { byConnection: { connectionString: `semanticmodelid=${dataset.id}` } } });
+  // The $schema is required: without it Fabric reads the old format (and asks for five more properties).
+  return json("definition.pbir", { $schema: "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json", version: "4.0", datasetReference: { byConnection: { connectionString: `semanticmodelid=${dataset.id}` } } });
 }
 
 /** Creates the report of a model (in the model's workspace) or rewrites its pages. */

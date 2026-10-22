@@ -50,7 +50,6 @@ export type Screen = keyof typeof SCREENS;
 /** Tabs of the report viewer (the report itself is always there). */
 export const VIEWER_TABS = {
   guides: true,
-  links: true,
 };
 
 /** Instructions added to the AI's own (company vocabulary, tone, rules): for every screen, and per screen. */

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { icons, BookOpenIcon, ChartColumnIcon, ChartPieIcon, CheckIcon, ChevronRightIcon, CopyIcon, DownloadIcon, LayoutPanelTopIcon, LinkIcon, PlusIcon, SparklesIcon } from "lucide-react";
+import { BookOpenIcon, ChartColumnIcon, ChartPieIcon, CheckIcon, ChevronRightIcon, CopyIcon, DownloadIcon, LayoutPanelTopIcon, PencilIcon, PlusIcon, SparklesIcon } from "lucide-react";
+import { withToast } from "@/components/entity";
 import { Markdown } from "@/components/markdown";
 import { ReportPicker } from "@/components/pickers";
 import { ReportActions } from "@/components/report-actions";
@@ -17,7 +18,7 @@ import { modelTools } from "@/agent/model-tools";
 import { DAX_RULES, bookmarksText, daxTool, viewerTools } from "@/agent/pbi-tools";
 import { useLast } from "@/lib/last";
 import { embedVisual, models, pageText, setVisualFilters, type Ref, type Report } from "@/lib/pbi";
-import { SWATCHES, isColor, type Row } from "@/lib/schema";
+import type { Row } from "@/lib/schema";
 import { addRows, updateRows, withRows, withUpdates } from "@/lib/excel";
 import { find, patch, useCollection, type DatasetEntry, type ReportEntry, type SchemaEntry } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
@@ -30,7 +31,7 @@ export const Route = createFileRoute("/viewer")({
   component: Viewer,
 });
 
-/** Rows of a built-in schema (guides, links) for one report: none until its Excel file is set. */
+/** Rows of the built-in Guides schema for one report: none until its Excel file is set. */
 function useReportRows(schema: SchemaEntry | undefined, reportId?: string) {
   const { table, error, write } = useTable(schema?.excel ? schema : undefined);
   const rows = useMemo(() => table?.rows.filter((r) => String(r.report_id ?? "").trim().toLowerCase() === reportId?.toLowerCase()) ?? [], [table, reportId]);
@@ -47,8 +48,8 @@ function useReportRows(schema: SchemaEntry | undefined, reportId?: string) {
 
 /**
  * Report viewer: a report in view mode with the AI on the left (it changes pages, filters, slicers and
- * reads the data), and tabs: the report, its guides (one per visual) and its links, both read from the
- * built-in schemas (one Excel file for every report, rows by report_id).
+ * reads the data), and tabs: the report and its guides (one per visual), read from the built-in Guides
+ * schema (one Excel file for every report, rows by report_id).
  */
 function Viewer() {
   const { report: reportId, tab } = Route.useSearch();
@@ -58,8 +59,16 @@ function Viewer() {
   const dataset = useCollection("datasets").find((d) => d.id === entry?.datasetId);
   const schemas = useCollection("schemas");
   const guides = useReportRows(schemas.find((s) => s.builtIn === "guides"), entry?.id);
-  const links = useReportRows(schemas.find((s) => s.builtIn === "links"), entry?.id);
   const { element, report, error, selection } = useEmbed(entry, "view");
+  const pages = usePages(report);
+  /** The left panel's tab: the assistant, or the guide of the visual clicked in the report. */
+  const [panelTab, setPanelTab] = useState("assistant");
+  const clicked = selection.page && selection.visual && pages.find((p) => p.name === selection.page)?.visuals.find((v) => v.name === selection.visual) ? { page: selection.page, visual: selection.visual } : undefined;
+  const guidesOn = VIEWER_TABS.guides && guides.ready;
+  // A click on a data visual shows its guide in the panel.
+  useEffect(() => {
+    if (clicked && guidesOn) setPanelTab("guide");
+  }, [clicked?.page, clicked?.visual]); // eslint-disable-line react-hooks/exhaustive-deps
   const [conversationId, setConversationId] = useState<string>();
   const conversationExists = useCollection("conversations").some((c) => c.id === conversationId);
   useReportView(report, conversationId, conversationExists);
@@ -98,14 +107,13 @@ ${DAX_RULES}`,
             icon: BookOpenIcon,
             count: guides.rows.length || undefined,
             content: guides.ready ? (
-              <GuidesTab rows={guides.rows} onAdd={guides.add} onUpdate={guides.update} reportRef={entry} report={report} selection={selection} dataset={dataset} entry={entry} />
+              <GuidesTab rows={guides.rows} onAdd={guides.add} onUpdate={guides.update} reportRef={entry} report={report} selection={selection} dataset={dataset} entry={entry} pages={pages} />
             ) : (
               <Empty icon={BookOpenIcon}>No guides file yet: set the Excel file of the built-in "Guides" schema in the Excel screen.</Empty>
             ),
           },
         ]
       : []),
-    ...(VIEWER_TABS.links && entry ? [{ id: "links", label: "Links", icon: LinkIcon, count: links.rows.length || undefined, content: links.rows.length ? <LinksTab rows={links.rows} /> : <Empty icon={LinkIcon}>No link for this report (rows of the built-in "Links" schema, Excel screen).</Empty> }] : []),
   ];
 
   return (
@@ -119,7 +127,43 @@ ${DAX_RULES}`,
           <Zoom report={report} />
         </>
       }
-      ai={{ scope: `viewer:${entry?.id}`, agent, placeholder: "Ask about this page, or to filter it…", empty: "Choose a report to talk about it.", onConversation: setConversationId }}
+      ai={{
+        scope: `viewer:${entry?.id}`,
+        agent,
+        placeholder: "Ask about this page, or to filter it…",
+        empty: "Choose a report to talk about it.",
+        onConversation: setConversationId,
+        tab: panelTab,
+        onTab: setPanelTab,
+        tabs:
+          entry && guidesOn
+            ? [
+                {
+                  id: "guide",
+                  label: "Guide",
+                  icon: BookOpenIcon,
+                  content: clicked ? (
+                    <div className="flex flex-col gap-3 p-4">
+                      <div>
+                        <p className="text-[11.5px] font-medium tracking-wide text-muted-foreground uppercase">{pages.find((p) => p.name === clicked.page)?.displayName}</p>
+                        <h2 className="text-[16px] font-semibold">{pages.find((p) => p.name === clicked.page)?.visuals.find((v) => v.name === clicked.visual)?.title ?? clicked.visual}</h2>
+                      </div>
+                      <GuideCard
+                        key={`${clicked.page}/${clicked.visual}`}
+                        guide={guides.rows.find((r) => String(r.page ?? "") === clicked.page && String(r.visual ?? "") === clicked.visual)}
+                        ids={{ report: entry.id, ...clicked }}
+                        title={pages.find((p) => p.name === clicked.page)?.visuals.find((v) => v.name === clicked.visual)?.title ?? clicked.visual}
+                        onAdd={guides.add}
+                        onUpdate={guides.update}
+                      />
+                    </div>
+                  ) : (
+                    <Empty icon={BookOpenIcon}>Click a visual of the report to read its guide here.</Empty>
+                  ),
+                },
+              ]
+            : undefined,
+      }}
       tabs={tabs}
       tab={tab}
       onTab={(t) => navigate({ search: (s) => ({ ...s, tab: t }), replace: true })}
@@ -169,36 +213,6 @@ function useReportView(report: Report | undefined, conversationId: string | unde
   }, [report, conversationId, exists]);
 }
 
-/* ---------------------------------- Links ---------------------------------- */
-
-const IconOf = ({ name }: { name?: unknown }) => {
-  const key = String(name ?? "").replace(/(^|[-_ ])(\w)/g, (_, __, c: string) => c.toUpperCase()) as keyof typeof icons;
-  const Icon = icons[key] ?? LinkIcon;
-  return <Icon className="size-4 shrink-0" />;
-};
-
-/** The report's links (rows of the Links schema): app-like tiles. Edited in the Excel screen. */
-function LinksTab({ rows }: { rows: Record<string, unknown>[] }) {
-  return (
-    <div className="min-h-0 flex-1 overflow-y-auto p-8">
-      <div className="mx-auto grid max-w-5xl grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-4">
-        {rows.map((row, i) => {
-          const color = String(row.color ?? "") || "gray";
-          return (
-            <a key={i} href={String(row.url ?? "#")} target="_blank" rel="noreferrer" title={String(row.description || row.url || "")} className="group flex min-w-0 flex-col items-center gap-3 rounded-xl border bg-card px-3 py-5 text-center shadow-xs transition-all hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md">
-              <span className={cn("flex size-14 items-center justify-center rounded-2xl text-white shadow-sm [&_svg]:size-7 [&_svg]:stroke-[1.75]", isColor(color) ? SWATCHES[color] : "bg-slate-400")}>
-                <IconOf name={row.icon} />
-              </span>
-              <span className="line-clamp-2 w-full text-[13.5px] leading-tight font-semibold">{String(row.label || row.url || "")}</span>
-              {row.description ? <span className="line-clamp-2 text-[12px] text-muted-foreground">{String(row.description)}</span> : null}
-            </a>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 /* ---------------------------------- Guides --------------------------------- */
 
 type Selection = { page?: string; visual?: string };
@@ -237,8 +251,7 @@ function usePages(report?: Report) {
  * with a guide), the open visual on the right: its live preview, PDF / PNG / Explain, and its guide. A
  * click on a visual in the Report tab opens it here.
  */
-function GuidesTab({ rows, onAdd, onUpdate, reportRef, report, selection, dataset, entry }: { rows: Record<string, unknown>[]; onAdd: (values: Row) => Promise<unknown>; onUpdate: (row: Row, values: Row) => Promise<unknown>; reportRef: Ref; report?: Report; selection: Selection; dataset?: DatasetEntry; entry: ReportEntry }) {
-  const pages = usePages(report);
+function GuidesTab({ rows, onAdd, onUpdate, reportRef, report, selection, dataset, entry, pages }: { rows: Record<string, unknown>[]; onAdd: (values: Row) => Promise<unknown>; onUpdate: (row: Row, values: Row) => Promise<unknown>; reportRef: Ref; report?: Report; selection: Selection; dataset?: DatasetEntry; entry: ReportEntry; pages: PageInfo[] }) {
   const [open, setOpen] = useState<{ page: string; visual: string }>();
   const [folded, setFolded] = useState<string[]>([]);
   const preview = useRef<PreviewHandle>(undefined);
@@ -301,22 +314,40 @@ function GuidesTab({ rows, onAdd, onUpdate, reportRef, report, selection, datase
             </div>
             {VISUAL_PREVIEW && report && <VisualPreview report={report} reportRef={reportRef} page={open.page} visual={open.visual} handle={preview} />}
             {report && (EXPORT.visualPdf || EXPORT.visualPng || VISUAL_EXPLAIN) && <VisualActions key={`${open.page}/${open.visual}`} report={report} page={open.page} visual={open.visual} title={visual?.title ?? open.visual} preview={preview} context={context} dataset={dataset} />}
-            <div className="rounded-xl border bg-card p-5 shadow-xs">
-              {guide && GUIDE_EDITOR ? (
-                <GuideForm key={String(guide.id ?? `${open.page}/${open.visual}`)} guide={guide} onSave={(values) => onUpdate(guide, values)} />
-              ) : guide ? (
-                <div className="flex flex-col gap-2">
-                  {guide.title ? <h3 className="text-[16px] font-semibold">{String(guide.title)}</h3> : null}
-                  {guide.content ? <Markdown>{String(guide.content)}</Markdown> : <p className="text-muted-foreground">This guide has no content yet.</p>}
-                </div>
-              ) : (
-                <p className="text-muted-foreground">No guide for this visual yet.</p>
-              )}
-            </div>
-            {GUIDE_EDITOR && <VisualIds report={entry.id} page={open.page} visual={open.visual} onCreate={guide ? undefined : () => onAdd({ page: open.page, visual: open.visual, title: visual?.title ?? open.visual })} />}
+            <GuideCard key={`${open.page}/${open.visual}`} guide={guide} ids={{ report: entry.id, ...open }} title={visual?.title ?? open.visual} onAdd={onAdd} onUpdate={onUpdate} />
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * A visual's guide, read only; the pencil (guide editor on) shows its form, or — no guide yet — the
+ * "Guide row" button and the visual's ids for the Guides schema.
+ */
+function GuideCard({ guide, ids, title, onAdd, onUpdate }: { guide?: Row; ids: { report: string; page: string; visual: string }; title: string; onAdd: (values: Row) => Promise<unknown>; onUpdate: (row: Row, values: Row) => Promise<unknown> }) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="relative rounded-xl border bg-card p-5 shadow-xs">
+        {GUIDE_EDITOR && (
+          <Button variant={editing ? "secondary" : "ghost"} size="icon" className="absolute top-2.5 right-2.5 size-7" aria-label={editing ? "Stop editing" : "Edit the guide"} title={editing ? "Stop editing" : "Edit the guide"} onClick={() => setEditing(!editing)}>
+            <PencilIcon />
+          </Button>
+        )}
+        {guide && editing ? (
+          <GuideForm key={String(guide.id ?? `${ids.page}/${ids.visual}`)} guide={guide} onSave={(values) => onUpdate(guide, values)} />
+        ) : guide ? (
+          <div className="flex flex-col gap-2 pr-8">
+            {guide.title ? <h3 className="text-[16px] font-semibold">{String(guide.title)}</h3> : null}
+            {guide.content ? <Markdown>{String(guide.content)}</Markdown> : <p className="text-muted-foreground">This guide has no content yet.</p>}
+          </div>
+        ) : (
+          <p className="pr-8 text-muted-foreground">No guide for this visual yet.</p>
+        )}
+      </div>
+      {GUIDE_EDITOR && editing && <VisualIds {...ids} onCreate={guide ? undefined : () => onAdd({ page: ids.page, visual: ids.visual, title: title.trim() || ids.visual })} />}
     </div>
   );
 }
@@ -357,7 +388,8 @@ function VisualIds({ report, page, visual, onCreate }: { report: string; page: s
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
   const create = () => {
     setState({ busy: true });
-    onCreate!().then(() => setState({}), (e) => setState({ error: describeError(e) }));
+    // Shown in a toast as well: the card may be replaced by the new guide's form once the row exists.
+    withToast("Adding the guide row…", onCreate!(), "Guide row added to the Excel file.").then(() => setState({}), (e) => setState({ error: describeError(e) }));
   };
   const row = (label: string, value: string) => (
     <div key={label} className="flex items-center gap-2">

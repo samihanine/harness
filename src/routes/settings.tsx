@@ -29,7 +29,6 @@ const LABELS: Record<string, string> = {
   guideEditor: "Guides: edit the guides in the viewer",
   excelUpload: "Excel: upload files into image / file columns",
   guides: "Viewer tab: Guides",
-  links: "Viewer tab: Links",
   visualPdf: "Visual as PDF (Guides)",
   visualPng: "Visual as PNG (Guides)",
   report: "Report export (PDF, .pbix)",

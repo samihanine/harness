@@ -7,7 +7,7 @@ import { z } from "zod";
 import { dax, findVisual, rowsText, visualText, type Ref, type Report } from "@/lib/pbi";
 import type { ModelInfo } from "@/lib/model";
 import { applyOp, deleteDraftFiles, discardDraft, draftFiles, patchDraftFile, pendingFiles, putDraftFile, readDraftFile, readDraftJson, undoLastSave, type PatchOp } from "@/lib/report-draft";
-import { ROLES, TYPE_NOTES, buildPage, buildVisual, formatOps, formatOptions, newName, type Format, type ReportMeasures } from "@/lib/visual-spec";
+import { ROLES, TYPE_NOTES, buildPage, buildVisual, formatOps, formatOptions, ignoredText, newName, pageFormatOps, topNFilter, type Format, type ReportMeasures } from "@/lib/visual-spec";
 import { tool, type Tool } from "./loop";
 
 const P = "definition/pages";
@@ -131,10 +131,12 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
     const others = visualsOf(f, page);
     const z = Math.max(0, ...others.map((v) => Number(v.json.position?.z ?? 0))) + 1000;
     const json = buildVisual(spec, name, z, ctx.info(), measuresOf(f), others[0]?.json.$schema);
-    // Formatted before it is written: a wrong property refuses the whole visual (nothing half made).
-    if (format) formatOps(json, format).forEach((op) => applyOp(json, op));
+    // Formatted before it is written: a wrong value refuses the whole visual (nothing half made);
+    // names that do not exist on this type are skipped and said.
+    const formatted = format ? formatOps(json, format) : { ops: [], ignored: [] };
+    formatted.ops.forEach((op) => applyOp(json, op));
     await putDraftFile(ref(), save, `${P}/${page}/visuals/${name}/visual.json`, json);
-    return name;
+    return { name, ignored: formatted.ignored };
   };
 
   return [
@@ -177,16 +179,35 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
     tool({
       name: "create_page",
       description: "Adds a page (empty) at the end, or after another page.",
-      args: z.object({ display_name: z.string(), width: z.number().optional(), height: z.number().optional(), after: z.string().optional().describe("Page name or display name") }),
-      run: async ({ display_name, width, height, after }) => {
+      args: z.object({
+        display_name: z.string(),
+        width: z.number().optional(),
+        height: z.number().optional(),
+        after: z.string().optional().describe("Page name or display name"),
+        background: z.string().optional().describe('Page color behind the visuals, e.g. "#F4F6FA"'),
+      }),
+      run: async ({ display_name, width, height, after, background }) => {
         const f = await files();
         const name = newName();
         const first = (await pagesOf(f))[0]?.json;
-        await putDraftFile(ref(), save, `${P}/${name}/page.json`, buildPage(name, display_name, width ?? first?.width ?? 1280, height ?? first?.height ?? 720, first?.$schema));
+        const json = buildPage(name, display_name, width ?? first?.width ?? 1280, height ?? first?.height ?? 720, first?.$schema);
+        if (background) pageFormatOps(json, { background, wallpaper: background }).forEach((op) => applyOp(json, op));
+        await putDraftFile(ref(), save, `${P}/${name}/page.json`, json);
         const order: string[] = [...((f.get(PAGES) as any)?.pageOrder ?? [])];
         order.splice(after ? order.indexOf((await pageOf(after)).name) + 1 : order.length, 0, name);
         await putDraftFile(ref(), save, PAGES, { ...(f.get(PAGES) as object), pageOrder: order });
         return `Page "${display_name}" created (name=${name}).`;
+      },
+    }),
+    tool({
+      name: "format_page",
+      description: 'Sets a page\'s colors: background (behind the visuals) and wallpaper (around the page), e.g. {"background": "#F4F6FA"}.',
+      args: z.object({ page: pageArg, background: z.string().optional(), wallpaper: z.string().optional() }),
+      run: async ({ page, background, wallpaper }) => {
+        const p = await pageOf(page);
+        const file = `${P}/${p.name}/page.json`;
+        await patch(file, pageFormatOps((await files()).get(file), { background, wallpaper }));
+        return `Page "${p.json.displayName}" colors set.`;
       },
     }),
     tool({
@@ -281,11 +302,24 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
         sort: z.object({ field: z.string(), descending: z.boolean().optional() }).optional(),
         text: z.string().optional().describe("textbox: its text"),
         format: formatArg.optional(),
+        top: z.object({ count: z.number(), by: z.string().describe("Measure or Sum('T'[col]) ordering the items"), bottom: z.boolean().optional() }).optional().describe("Keep the first N items of the category (Top N), e.g. {\"count\": 10, \"by\": \"[Total Sales]\"}"),
       }),
       run: async ({ page, format, ...spec }) => {
         const p = await pageOf(page);
-        const name = await writeVisual(p.name, spec, format as Format | undefined);
-        return `Visual created (name=${name}) on "${p.json.displayName}".`;
+        const { name, ignored } = await writeVisual(p.name, spec, format as Format | undefined);
+        return `Visual created (name=${name}) on "${p.json.displayName}".${ignoredText(ignored)}`;
+      },
+    }),
+    tool({
+      name: "set_visual_top_n",
+      description: "Keeps only the first N items of a visual's category by a value (Top N filter of the visual); count 0 removes it.",
+      args: z.object({ visual: visualArg, page: pageArg, count: z.number(), by: z.string().optional().describe("Measure or Sum('T'[col])"), bottom: z.boolean().optional() }),
+      run: async ({ visual, page, count, by, bottom }) => {
+        const { visual: v } = await visualOf(visual, page);
+        const others = (v.json.filterConfig?.filters ?? []).filter((f: any) => f.type !== "TopN");
+        if (count > 0 && !by) throw new Error('Give "by": the value ordering the items.');
+        const filters = count > 0 ? [...others, topNFilter(v.json.visual?.query?.queryState ?? {}, { count, by: by!, bottom }, ctx.info(), measuresOf(await files()))] : others;
+        return patch(v.file, [{ op: "add", path: "/filterConfig", value: { ...(v.json.filterConfig ?? {}), filters } }]);
       },
     }),
     tool({
@@ -312,9 +346,9 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
       run: async ({ visuals, page, format }) => {
         const targets = await Promise.all(visuals.map((v) => visualOf(v, page)));
         // Every visual checked before any is changed.
-        const planned = targets.map(({ visual: v }) => ({ v, ops: formatOps(v.json, format as Format) }));
-        for (const { v, ops } of planned) await patch(v.file, ops);
-        return `Formatted ${planned.length} visual(s): ${planned.map(({ v, ops }) => `${v.name} (${ops.length} properties)`).join(", ")}.`;
+        const planned = targets.map(({ visual: v }) => ({ v, ...formatOps(v.json, format as Format) }));
+        for (const { v, ops } of planned) if (ops.length) await patch(v.file, ops);
+        return `Formatted ${planned.length} visual(s): ${planned.map(({ v, ops }) => `${v.name} (${ops.length} properties)`).join(", ")}.${ignoredText([...new Set(planned.flatMap((p) => p.ignored))])}`;
       },
     }),
     tool({

@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { get, set } from "idb-keyval";
 import { readRows, type Table } from "./excel";
 import { errorText } from "./ms";
 import type { SchemaEntry } from "./store";
 
+/** The last rows read of each table, kept in this browser: shown at once while the file is read again. */
+const cacheKey = (key: string) => `table-cache:${key}`;
+
 /**
- * The rows of a schema's Excel table. Writes are optimistic: the change is shown at once, the requests
+ * The rows of a schema's Excel table (the copy kept in this browser first, then the file's). Writes are optimistic: the change is shown at once, the requests
  * run one after the other (row positions stay consistent), and a failure restores the file's content.
  */
 export function useTable(schema?: SchemaEntry) {
@@ -22,6 +26,8 @@ export function useTable(schema?: SchemaEntry) {
   const key = excel ? `${excel.itemId}|${excel.table}|${JSON.stringify(schema!.fields)}` : undefined;
   const id = useRef(key);
   id.current = key;
+  /** The rows shown come from the file (not the browser's copy): writes use row positions, so they wait for it. */
+  const fresh = useRef(false);
   const reload = useCallback(async () => {
     if (!excel || !schema) return show(undefined);
     try {
@@ -29,22 +35,34 @@ export function useTable(schema?: SchemaEntry) {
       // Another file was chosen meanwhile: its own read shows it.
       if (id.current !== key) return;
       show(t);
+      fresh.current = true;
       setError(undefined);
+      void set(cacheKey(key!), t).catch(() => undefined);
     } catch (e) {
       if (id.current === key) setError(errorText(e));
     }
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    // Not the previous file's rows (nor its error) while the new one loads.
+    // Not the previous file's rows (nor its error) while the new one loads; its last copy if any.
     show(undefined);
+    fresh.current = false;
     setError(undefined);
+    if (key)
+      void get<Table>(cacheKey(key))
+        .then((cached) => cached && id.current === key && !current.current && show(cached))
+        .catch(() => undefined);
     void reload();
-  }, [reload]);
+  }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const write = useCallback(
     (task: (t: Table) => Promise<unknown>, { refetch = false, optimistic }: { refetch?: boolean; optimistic?: (t: Table) => Table } = {}) => {
       const base = current.current;
       if (!base) return Promise.resolve();
+      if (!fresh.current) {
+        const e = new Error("The file is still being read (the rows shown are the copy kept in this browser): try again in a moment.");
+        setError(e.message);
+        return Promise.reject(e);
+      }
       let shown = base;
       try {
         if (optimistic) show((shown = optimistic(base)));

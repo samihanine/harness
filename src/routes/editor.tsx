@@ -7,15 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Empty, Workspace } from "@/components/workspace";
 import { Zoom } from "@/components/zoom";
-import { reportContext } from "@/agent/context";
-import { PBIR_GUIDE, editorState, editorTools } from "@/agent/editor-tools";
+import { builderAgent } from "@/agent/builder";
 import type { Agent } from "@/agent/loop";
-import { modelTools } from "@/agent/model-tools";
-import { DAX_RULES } from "@/agent/pbi-tools";
 import { useLast } from "@/lib/last";
 import { errorText } from "@/lib/ms";
 import { definition, partText } from "@/lib/report-def";
-import { pendingFiles, saveDraft } from "@/lib/report-draft";
 import { useCollection } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
 
@@ -65,43 +61,7 @@ function Editor() {
   // Read by the tools at call time (the agent object is made at each render).
   const live = useRef({ report, entry, dataset });
   live.current = { report, entry, dataset };
-  const ref = () => live.current.entry && { id: live.current.entry.id, groupId: live.current.entry.groupId };
-  const save = async () => live.current.report?.save();
-  const ctx = {
-    report: () => live.current.report,
-    ref,
-    dataset: () => live.current.entry && { id: live.current.entry.datasetId, groupId: live.current.dataset?.groupId ?? live.current.entry.datasetGroupId },
-    info: () => live.current.dataset?.info,
-  };
-
-  const agent: Agent | undefined = entry && {
-    instructions: `Screen: the BUILDER. You build and change a Power BI report without limit: pages, visuals, fields, formatting, theme, report measures. You work on its definition (PBIR JSON) through the tools; your changes go to a draft saved at the end (the editor then reloads): never ask the user to save.
-How to work (few, well-filled calls; several independent calls in one reply):
-- The page state lists the pages, the visuals of the current page (with their fields) and the report measures: no need to read what it already says.
-- New page: create_page, then create_visual for each visual WITH its "format" (title, background, border, labels…) in the same call. Then change_current_page to show it.
-- Formatting: format_visual with plain values (16, true, "#203247", "Outer"), several visuals at once when they share a style. Shared defaults (palette, fonts, background of every visual): update_theme. Unsure of a property name? get_format_options with the objects you need ("title, labels"). update_visual (JSON Patch) only for what format_visual cannot do (position, sort, filters, per-series colors).
-- A nice page: a light page background, white visuals with a rounded light-gray border, bold titles, readable labels, one palette.
-- Layout: keep visuals inside the page size, without overlap, aligned on a grid with even gaps.
-- Clicks: visuals of a page already filter each other when a row or bar is clicked; write visualInteractions only to change that.
-- Details of the clicked row: a card shows ONE value, so give it a report measure SELECTEDVALUE('T'[col], "—"); several values: multiRowCard or a tableEx.
-- Images: a column of category ImageUrl (URL or "data:image/…") shows as an image in a tableEx (grid.imageHeight / imageWidth) or a multiRowCard. The image visual cannot be bound to data with these tools.
-- get_visual_data shows the saved report: visuals created or changed in your draft show their data after your answer; check values with run_dax (report measures included).
-- Use only fields that exist (model summary, describe_table, search_model).
-${PBIR_GUIDE}
-${DAX_RULES}`,
-    tools: [...editorTools(ctx, save), ...modelTools(() => live.current.dataset)],
-    context: () => reportContext(entry, dataset),
-    state: () => editorState(ctx, save),
-    finish: async () => {
-      const r = ref();
-      const embed = live.current.report;
-      if (!r || !embed || !pendingFiles(r).length) return undefined;
-      const text = await saveDraft(r, save);
-      await embed.reload();
-      setVersion((v) => v + 1);
-      return text ? `✓ ${text}` : undefined;
-    },
-  };
+  const agent: Agent | undefined = entry && builderAgent({ entry: () => live.current.entry, dataset: () => live.current.dataset, report: () => live.current.report, onSaved: () => setVersion((v) => v + 1) });
 
   return (
     <Workspace

@@ -1,6 +1,7 @@
 /** Pieces of the AI context shared by the screens. */
 import { contextsText } from "@/lib/library";
 import { modelSummary } from "@/lib/model";
+import { modelSamples } from "@/lib/model-samples";
 import type { DatasetEntry, ReportEntry } from "@/lib/store";
 
 /**
@@ -13,14 +14,23 @@ export async function withContexts(parts: (string | false | undefined)[], contex
   return [...parts, contexts && `Context files from the user (background knowledge; follow their rules):\n${contexts}`].filter(Boolean).join("\n\n");
 }
 
-/** What the AI knows of a report and its model: their names, the user's rights, the model's structure, the linked contexts. */
-export const reportContext = (report: ReportEntry, dataset?: DatasetEntry) =>
+/**
+ * A model for the AI: its structure (tables, columns, measures, relationships) and, when the user may
+ * query it, examples of its data (values of each column, each measure's total).
+ */
+export async function datasetText(dataset: DatasetEntry) {
+  const head = `Semantic model "${dataset.name}" (id ${dataset.id}; right: ${dataset.access ?? "unknown"}${dataset.error ? `; ${dataset.error}` : ""})`;
+  if (!dataset.info) return `${head}\nStructure not read.`;
+  const samples = dataset.access === "view" ? "" : await modelSamples({ id: dataset.id, groupId: dataset.groupId }, dataset.info);
+  return [head, modelSummary(dataset.info), samples].filter(Boolean).join("\n");
+}
+
+/** What the AI knows of a report and its model: their names, the user's rights, the model's structure and data, the linked contexts. */
+export const reportContext = async (report: ReportEntry, dataset?: DatasetEntry) =>
   withContexts(
     [
       `Report "${report.name}" (id ${report.id}). The user's right on it: ${report.access ?? "unknown"}${report.accessNote ? ` (${report.accessNote})` : ""}.`,
-      dataset
-        ? `Semantic model "${dataset.name}" (right: ${dataset.access ?? "unknown"}${dataset.error ? `; ${dataset.error}` : ""})\n${dataset.info ? modelSummary(dataset.info) : "Structure not read."}`
-        : "The semantic model is not known to the app: DAX and field checks are not available.",
+      dataset ? await datasetText(dataset) : "The semantic model is not known to the app: DAX and field checks are not available.",
     ],
     [report.contextIds, dataset?.contextIds],
   );

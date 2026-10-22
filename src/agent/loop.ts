@@ -3,8 +3,8 @@
  * calls (`{"tools":[{"name","args"}]}`), parsed tolerantly; the application runs them and sends back
  * the results. A user message goes through two roles, each with its own prompt and tools:
  *
- * 1. The PLANNER (one LLM conversation per app conversation, read tools only) explores, then always
- *    asks the user to choose (`ask_user`: questions with options, shown as buttons in the chat) with
+ * 1. The PLANNER (one LLM conversation per app conversation, read tools only) explores, then answers
+ *    at once when nothing has to change, or asks the user to choose (`ask_user`: questions with options, shown as buttons in the chat) with
  *    the action plan it would follow. When the user has answered, it either asks again, answers
  *    (nothing to change) or hands the final plan to the implementer (`implement`).
  * 2. The IMPLEMENTER (a fresh LLM conversation per plan, dropped afterwards, every tool) does the plan
@@ -81,16 +81,17 @@ YOU ACT ONLY THROUGH TOOLS. To read data or change anything, call a tool by repl
 const PLANNER = `You are the PLANNER. You never change anything yourself: you READ (your tools are read-only), understand the request, find out what is possible, then make sure you understood by asking the user to choose. Another agent, the IMPLEMENTER, will make the changes from your plan once the user agreed.
 
 How to work:
-1. A new user request: read what you need first (names, values, current state), several tools per reply. Do not ask the user what you can find yourself.
-2. Then call ask_user ALONE:
+0. Nothing to change (a question, an explanation, figures, a DAX query to write or show): read what you need (often nothing: the context may already answer), then call answer directly — no question to the user. Be fast.
+1. A request that changes something: read what you need first (names, values, current state), several tools per reply. Do not ask the user what you can find yourself. The context and the page state already list the structure (tables, columns, measures, pages, visuals…): never read again what they show; read only what is missing (a value, a measure's DAX, a figure the user asked for), in one or two replies.
+2. Then (changes only) call ask_user ALONE:
    - message: short markdown for the user: what you found and understood; for a question, the answer itself (with the figures you read).
-   - questions: 1 to 3 questions, each with 2 to 4 short options; the most likely option FIRST. A simple request: ONE question to confirm (e.g. "Add the measure [Margin] = [Revenue] - [Cost] to 'Sales'?" → "Yes, do it" / "No"). A big or unclear request: one question per decision. A pure question (nothing to change): the answer in message, and a question on what to do next.
+   - questions: 1 to 3 questions, each with 2 to 4 short options; the most likely option FIRST. A simple change: ONE question to confirm (e.g. "Add the measure [Margin] = [Revenue] - [Cost] to 'Sales'?" → "Yes, do it" / "No"). A big or unclear request: one question per decision.
    - plan: the action plan for the implementer if the user agrees: numbered steps with the exact tools, names and values. Not shown to the user.
 3. The user's answers come in <user_answers> (they may also write freely). Then:
    - everything decided → call implement ALONE with the final plan (self-contained: every step, exact names and values, the user's choices);
    - a free answer that changes the request or leaves something unclear → read what you need, then ask_user again;
    - nothing to change (the user only wanted information) → answer.
-Never call implement or answer before the user has answered your questions. ask_user, implement and answer always come alone in their reply.`;
+Never call implement before the user has answered your questions. ask_user, implement and answer always come alone in their reply.`;
 
 const IMPLEMENTER = `You are the IMPLEMENTER. The user validated the plan below: do it now with your tools, step by step, checking each result. Do not ask the user anything (they already chose); fix what fails (read the error, correct, retry). When everything is done, call answer ALONE with a short summary of what was changed (and what failed, if anything).`;
 
@@ -313,8 +314,8 @@ export async function* runTurn({
       stage === "answers"
         ? "the user answered your questions. Everything decided → implement (final plan). Something unclear → read, then ask_user again. Nothing to change → answer."
         : stage === "new"
-          ? "a new request. Read what you need with your read tools, then call ask_user (message, questions with options, plan)."
-          : "keep reading what you need, then call ask_user (or implement / answer if the user already answered).",
+          ? "a new request. Nothing to change → answer now (read first only if needed). Changes → read what you need, then call ask_user (message, questions with options, plan)."
+          : "keep reading what you need, then answer (nothing to change) or call ask_user (changes; or implement if the user already answered).",
       stage === "answers" ? `{"tools": [{"name": "implement", "args": {"plan": "1. … 2. …"}}]}` : `{"tools": [{"name": "ask_user", "args": {"message": "…", "questions": [{"question": "…?", "options": ["Yes, do it", "No"]}], "plan": "1. …"}}]}`,
     );
   const first = [
@@ -343,7 +344,8 @@ export async function* runTurn({
         return changes(planner, yield* readShown("Reading the page again"));
       },
       tail: () => plannerTail(plannerStage),
-      refuse: (name) => (name !== "ask_user" && !answering ? `The user has not answered any question yet: first call ask_user (message, questions with options, plan). ${name === "answer" ? "Put your answer in its message." : ""}` : undefined),
+      // Changes need the user's agreement; a plain answer does not.
+      refuse: (name) => (name === "implement" && !answering ? "The user has not agreed to a plan yet: first call ask_user (message, questions with options, plan)." : undefined),
     });
   } catch (error) {
     // A failed exchange may have left the conversation incomplete: the next message starts a new one.

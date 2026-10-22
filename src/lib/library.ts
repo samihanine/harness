@@ -10,7 +10,7 @@ import { addSamples, readModel } from "./model";
 import { parseDatasetUrl, parseReportUrl, scope, type Ref } from "./pbi";
 import { definition, legacyDefinition } from "./report-def";
 import { COLORS, ID_FIELD, fieldsErrors, isIdField, type Field, type FormSection } from "./schema";
-import { all, find, patch, put, type ContextEntry, type DatasetEntry, type ExcelRef, type Name, type ReportEntry, type SchemaEntry } from "./store";
+import { all, find, patch, put, remove, type ContextEntry, type DatasetEntry, type ExcelRef, type Name, type ReportEntry, type SchemaEntry } from "./store";
 import { workspaceId } from "./tmdl";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -252,23 +252,15 @@ export const GUIDE_FIELDS: Field[] = [
   { name: "title", type: "string", required: true },
   { name: "content", type: "text", description: "The guide, in markdown" },
 ];
-export const LINK_FIELDS: Field[] = [
-  ID_FIELD,
-  { name: "report_id", type: "string", required: true, description: "Id of the Power BI report" },
-  { name: "label", type: "string", required: true },
-  { name: "url", type: "url", required: true },
-  { name: "icon", type: "string", description: "Lucide icon name (e.g. book-open, mail, video)" },
-  { name: "color", type: "option", options: COLORS.map((c) => ({ value: c, color: c })) },
-  { name: "description", type: "string" },
-];
 const BUILT_INS: SchemaEntry[] = [
   { id: "guides", builtIn: "guides", title: "Guides (report viewer)", fields: GUIDE_FIELDS, contextIds: [] },
-  { id: "links", builtIn: "links", title: "Links (report viewer)", fields: LINK_FIELDS, contextIds: [] },
 ];
 
 /** The built-in schemas exist in every library, with their current fields. */
 export async function ensureBuiltIns() {
   const schemas = await all("schemas");
+  // The Links feature was removed: its built-in schema goes too (the Excel file is kept).
+  if (schemas.some((s) => s.id === "links" && (s.builtIn as string) === "links")) await remove("schemas", "links");
   for (const b of BUILT_INS) {
     const old = schemas.find((s) => s.id === b.id);
     if (!old) await put("schemas", b);

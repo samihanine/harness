@@ -51,13 +51,13 @@ export type FormRef = { url: string; id: string; title: string };
 
 /**
  * A schema: an Excel table (required), the Microsoft Form filling it (optional) and the definition of
- * its columns. `builtIn` schemas (guides, links of the report viewer) have fixed fields: only their
+ * its columns. `builtIn` schemas (the report viewer's guides) have fixed fields: only their
  * Excel file can be set.
  */
 export type SchemaEntry = {
   id: string;
   title: string;
-  builtIn?: "guides" | "links";
+  builtIn?: "guides";
   excel?: ExcelRef;
   form?: FormRef;
   fields: Field[];
@@ -79,7 +79,7 @@ export type Conversation = { id: string; scope: string; title: string; messages:
 export type Settings = { aiKey?: string; model?: string; configLink?: string };
 
 /** A slide deck (its JSON: see src/slides). */
-export type DeckEntry = { id: string; name: string; deck: import("../slides").Deck; updatedAt: number };
+export type DeckEntry = { id: string; name: string; deck: import("../slides").Deck; updatedAt: number; sources?: { datasetIds: string[]; reportIds: string[]; schemaIds: string[] } };
 
 type Collections = { contexts: ContextEntry; reports: ReportEntry; datasets: DatasetEntry; schemas: SchemaEntry; researches: ResearchEntry; decks: DeckEntry; conversations: Conversation };
 export type Name = keyof Collections;

@@ -6,6 +6,7 @@
  *   bun run eval:agent slides-new       run one (or several) scenarios
  *   bun run eval:agent --all            run them all
  *   options: --model gpt-6-luna  --max-calls 30  --max-tokens 200000
+ *   bun run eval:live <name…>     the live scenarios (real test model: see sales.ts)
  *
  * Key: AI_KEY in .env.local (never committed). Usage is capped: past --max-calls model calls or
  * --max-tokens tokens for the whole run, every further call fails and the run stops.
@@ -14,7 +15,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { AI_BASE_URL, AI_MODELS } from "@/agent/llm";
 import { answersText, forgetSession, runTurn, type Agent, type Choices, type Update } from "@/agent/loop";
-import { SCENARIOS } from "./scenarios";
+import { SCENARIOS as OFFLINE } from "./scenarios";
+
+/** EVAL_LIVE=1 (bun run eval:live): the live scenarios on the real test model. */
+const SCENARIOS = process.env.EVAL_LIVE === "1" ? (await import("./live-scenarios")).LIVE_SCENARIOS : OFFLINE;
 
 const args = process.argv.slice(2);
 const option = (name: string, fallback: string) => {
@@ -28,7 +32,7 @@ const runAll = args.includes("--all");
 const names = args.filter((a) => !a.startsWith("--"));
 
 if (!runAll && !names.length) {
-  console.log("Scenarios (bun run eval:agent <name…> | --all):");
+  console.log(`Scenarios (bun run ${process.env.EVAL_LIVE === "1" ? "eval:live" : "eval:agent"} <name…> | --all):`);
   for (const s of SCENARIOS) console.log(`  ${s.name.padEnd(16)} ${s.description}`);
   process.exit(0);
 }

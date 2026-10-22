@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { z } from "zod";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import CodeMirror from "@uiw/react-codemirror";
 import { ArrowRightIcon, BookTextIcon, CalculatorIcon, DatabaseIcon, ExternalLinkIcon, FileSpreadsheetIcon, FileUpIcon, KeyRoundIcon, LayersIcon, PlayIcon, RefreshCwIcon, SigmaIcon, TerminalSquareIcon } from "lucide-react";
@@ -11,8 +12,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { Empty, StatusText, SubTabs, Workspace } from "@/components/workspace";
-import { withContexts } from "@/agent/context";
-import type { Agent } from "@/agent/loop";
+import { datasetText, withContexts } from "@/agent/context";
+import { tool, type Agent } from "@/agent/loop";
 import { STEPS_TEXT, modelEditorTools, modelState, saveModelDraft } from "@/agent/model-editor-tools";
 import { modelTools } from "@/agent/model-tools";
 import { DAX_RULES, daxTool } from "@/agent/pbi-tools";
@@ -20,7 +21,7 @@ import { last, useLast } from "@/lib/last";
 import { createDatasetFromExcel, refreshDataset } from "@/lib/library";
 import { fromTmdl, modelParameters, type ModelInfo } from "@/lib/model";
 import { errorText } from "@/lib/ms";
-import { REFRESH_QUOTA, dax, refreshesToday, type Rows } from "@/lib/pbi";
+import { REFRESH_QUOTA, dax, refreshesToday, rowsText, type Rows } from "@/lib/pbi";
 import { patch, remove, useCollection, type DatasetEntry } from "@/lib/store";
 import { readModelFiles } from "@/lib/tmdl";
 import { ModelDraft } from "@/lib/tmdl-edit";
@@ -106,9 +107,14 @@ Your changes go to a draft saved at the end. Measures and calculated columns are
           : `The user can only read this model (right: ${dataset.access ?? "unknown"}): you explain it, find fields and answer with DAX; changing it needs the edit right.`
       }
 ${DAX_RULES}`,
-      tools: editable ? [...modelEditorTools(ref), ...modelTools(() => live.current)] : [daxTool(() => ref()), ...modelTools(() => live.current)],
-      context: () => withContexts([`Semantic model "${dataset.name}" (id ${dataset.id}); the user's right: ${dataset.access ?? "unknown"}.`], [dataset.contextIds]),
-      state: editable ? () => modelState(ref(), lastRefresh.current?.id === live.current?.id ? lastRefresh.current?.text : undefined) : undefined,
+      tools: [...(editable ? modelEditorTools(ref) : [daxTool(() => ref())]), ...modelTools(() => live.current), daxEditorTool(() => navigate({ search: (x) => ({ ...x, tab: "dax" }), replace: true }))],
+      // The structure and examples of the data come at once: no exploring call for a simple question.
+      context: async () => withContexts([await datasetText(live.current ?? dataset)], [dataset.contextIds]),
+      state: async () => {
+        const editor = daxEditor.current ? `DAX editor (DAX tab) now:\n${daxEditor.current.query().slice(0, 1500)}` : "";
+        const model = editable ? await modelState(ref(), lastRefresh.current?.id === live.current?.id ? lastRefresh.current?.text : undefined) : "";
+        return [model, editor].filter(Boolean).join("\n\n");
+      },
       finish: editable
         ? async () => {
             const r = ref();
@@ -343,17 +349,57 @@ function SchemaTab({ model }: { model: Model }) {
 }
 
 /** Runs DAX queries on the model (Ctrl+Enter), results in a table; the last query is kept in this browser. */
+/** Writes a query in the DAX tab's editor (and runs it): the user sees it and can change it. */
+const daxEditorTool = (show: () => void) =>
+  tool({
+    name: "set_dax_editor",
+    description: "Writes a DAX query in the user's DAX editor (the DAX tab, shown) and runs it unless run is false; returns the first rows. Use it when the user wants a query to see, keep or change.",
+    args: z.object({ query: z.string().describe("DAX query starting with EVALUATE (or DEFINE)"), run: z.boolean().optional() }),
+    readOnly: true,
+    run: async ({ query, run = true }) => {
+      show();
+      // The DAX tab mounts its editor when shown.
+      for (let i = 0; i < 20 && !daxEditor.current; i++) await new Promise((r) => setTimeout(r, 100));
+      if (!daxEditor.current) throw new Error("The DAX editor is not open.");
+      const rows = await daxEditor.current.set(query, run);
+      return rows ? `Query written and run (${rows.length} rows):\n${rowsText(rows, 10)}` : "Query written in the editor (not run).";
+    },
+  });
+
+/** The DAX editor on screen, for the AI's set_dax_editor tool (the console registers itself). */
+const daxEditor: { current?: { query: () => string; set: (query: string, run: boolean) => Promise<Rows | undefined> } } = {};
+
 function DaxConsole({ dataset }: { dataset: DatasetEntry }) {
   const key = `dax:${dataset.id}`;
   const [query, setQuery] = useState(() => last.get(key) ?? `EVALUATE\nTOPN(20, '${dataset.info?.tables[0]?.name ?? "Table"}')`);
   const [result, setResult] = useState<{ rows?: Rows; ms?: number; busy?: boolean; error?: string }>({});
   const { resolved } = useTheme();
-  const run = () => {
-    last.set(key, query);
+  const execute = (text: string) => {
+    last.set(key, text);
     setResult({ busy: true });
     const t0 = performance.now();
-    dax(dataset, query).then((rows) => setResult({ rows, ms: Math.round(performance.now() - t0) }), (e) => setResult({ error: errorText(e) }));
+    return dax(dataset, text).then(
+      (rows) => (setResult({ rows, ms: Math.round(performance.now() - t0) }), rows),
+      (e) => {
+        setResult({ error: errorText(e) });
+        throw e;
+      },
+    );
   };
+  const run = () => void execute(query).catch(() => undefined);
+  const current = useRef(query);
+  current.current = query;
+  useEffect(() => {
+    daxEditor.current = {
+      query: () => current.current,
+      set: async (text, andRun) => {
+        setQuery(text);
+        last.set(key, text);
+        return andRun ? execute(text) : undefined;
+      },
+    };
+    return () => void (daxEditor.current = undefined);
+  }, [dataset.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const columns = result.rows?.[0] ? Object.keys(result.rows[0]) : [];
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden p-6">
