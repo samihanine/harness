@@ -53,6 +53,24 @@ export async function addReport(link: string): Promise<ReportEntry> {
   return entry;
 }
 
+/**
+ * A new report on a semantic model (its link or id), live-connected to it, created in My workspace in
+ * the format the Builder edits (PBIR), with one blank page; added to the app. Needs Build (or edit)
+ * on the model.
+ */
+export async function createReportFromModel(modelLink: string, name?: string) {
+  const model = await addDataset(modelLink);
+  if (model.access === "view") throw new Error(`You cannot build on "${model.name}": a report on it needs the Build permission on the semantic model.${model.error ? ` (${model.error})` : ""}`);
+  const title = name?.trim() || `${model.name} — report`;
+  const { createBlankReport } = await import("./research");
+  const id = await createBlankReport(title, { id: model.id, groupId: model.groupId });
+  return addReport(`https://app.powerbi.com/groups/me/reports/${id}`);
+}
+
+/** Why a report cannot be edited by the Builder, with the way out. */
+export const notEditable = (entry: ReportEntry) =>
+  `"${entry.name}" cannot be edited here: ${entry.accessNote ?? "its definition is not readable"} To edit a copy of it with the AI, create a new report from its semantic model (Builder › "New report from a semantic model…").`;
+
 export async function refreshReport(entry: ReportEntry) {
   return addReport(entry.appId ? `https://app.powerbi.com/groups/me/apps/${entry.appId}/reports/${entry.id}` : `https://app.powerbi.com/groups/${entry.groupId ?? "me"}/reports/${entry.id}`);
 }

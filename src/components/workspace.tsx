@@ -230,7 +230,7 @@ export function SubTabs({ tabs, value, onChange, toolbar }: { tabs: { id: string
 export type PickerItem = { id: string; label: string; hint?: string };
 
 /** The screen's item (report, dataset, file…): a searchable list, with an "Add" entry at the bottom. */
-export function EntityPicker({ items, value, onChange, placeholder, onAdd, addLabel = "Add…" }: { items: PickerItem[]; value?: string; onChange: (id: string) => void; placeholder: string; onAdd?: () => void; addLabel?: string }) {
+export function EntityPicker({ items, value, onChange, placeholder, onAdd, addLabel = "Add…", more }: { items: PickerItem[]; value?: string; onChange: (id: string) => void; placeholder: string; onAdd?: () => void; addLabel?: string; more?: { label: string; onSelect: () => void }[] }) {
   const [open, setOpen] = useState(false);
   const current = items.find((i) => i.id === value);
   return (
@@ -265,6 +265,11 @@ export function EntityPicker({ items, value, onChange, placeholder, onAdd, addLa
                   <CommandItem onSelect={() => (setOpen(false), onAdd())} className="gap-2 text-primary">
                     <PlusIcon className="size-4" /> {addLabel}
                   </CommandItem>
+                  {more?.map((m) => (
+                    <CommandItem key={m.label} onSelect={() => (setOpen(false), m.onSelect())} className="gap-2 text-primary">
+                      <PlusIcon className="size-4" /> {m.label}
+                    </CommandItem>
+                  ))}
                 </CommandGroup>
               </>
             )}

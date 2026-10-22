@@ -10,6 +10,7 @@ import { Zoom } from "@/components/zoom";
 import { builderAgent } from "@/agent/builder";
 import type { Agent } from "@/agent/loop";
 import { useLast } from "@/lib/last";
+import { notEditable } from "@/lib/library";
 import { errorText } from "@/lib/ms";
 import { definition, partText } from "@/lib/report-def";
 import { useCollection } from "@/lib/store";
@@ -53,7 +54,8 @@ function Editor() {
   const { report: reportId, tab } = Route.useSearch();
   const navigate = useNavigate({ from: "/editor" });
   useLast("editor:report", reportId, (report) => navigate({ search: { report }, replace: true }));
-  const entry = useCollection("reports").find((r) => r.id === reportId && r.access === "edit");
+  const chosen = useCollection("reports").find((r) => r.id === reportId);
+  const entry = chosen?.access === "edit" ? chosen : undefined;
   const dataset = useCollection("datasets").find((d) => d.id === entry?.datasetId);
   const { element, report, error } = useEmbed(entry, "edit");
   const [version, setVersion] = useState(0);
@@ -85,7 +87,7 @@ function Editor() {
           content: (
             <>
               {error && <p className="px-6 py-2 text-[13px] text-destructive">{error}</p>}
-              {!entry && <Empty icon={PencilRulerIcon}>Choose a report you can edit (its definition must be readable in PBIR format), or add one from its link.</Empty>}
+              {!entry && <Empty icon={PencilRulerIcon}>{chosen ? notEditable(chosen) : 'Choose a report you can edit, add one from its link, or create one from a semantic model (list at the top › "New report from a semantic model…").'}</Empty>}
               <div ref={element} className={entry ? "min-h-0 flex-1" : "hidden"} />
             </>
           ),

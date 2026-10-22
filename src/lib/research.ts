@@ -110,6 +110,33 @@ async function connection(dataset: Ref): Promise<Part> {
   return json("definition.pbir", { $schema: "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json", version: "4.0", datasetReference: { byConnection: { connectionString: `semanticmodelid=${dataset.id}` } } });
 }
 
+/**
+ * A new report in PBIR format (editable by the Builder's tools), live-connected to a semantic model,
+ * in a workspace (default: My workspace); returns its id.
+ */
+async function createReport(name: string, dataset: Ref, pagesParts: Part[], groupId?: string) {
+  const ws = await workspaceId(groupId);
+  const parts = [
+    await connection(dataset),
+    json("definition/version.json", { $schema: VERSION_SCHEMA, version: "2.0.0" }),
+    json("definition/report.json", { $schema: REPORT_SCHEMA, themeCollection: { baseTheme: { name: "CY24SU10", reportVersionAtImport: "5.61", type: "SharedResources" } }, layoutOptimization: "None", settings: { useStylableVisualContainerHeader: true, defaultDrillFilterOtherVisuals: true } }),
+    ...pagesParts,
+  ];
+  const created = await fabric(`/workspaces/${ws}/reports`, "POST", { displayName: name, definition: { parts } });
+  const id = (created?.id as string | undefined) ?? (await fabric(`/workspaces/${ws}/reports`)).value.find((r: { displayName: string }) => r.displayName === name)?.id;
+  if (!id) throw new Error("The report was created but could not be found: look for it in the workspace.");
+  return id as string;
+}
+
+/** An empty report (one blank page) on a model, in My workspace: the Builder's AI fills it. */
+export function createBlankReport(name: string, dataset: Ref) {
+  const page = newName();
+  return createReport(name, dataset, [
+    json("definition/pages/pages.json", { $schema: PAGES_SCHEMA, pageOrder: [page], activePageName: page }),
+    json(`definition/pages/${page}/page.json`, buildPage(page, "Page 1")),
+  ]);
+}
+
 /** Deletes a research's reports in Power BI (when the research is reset or deleted). */
 export async function deleteResearchReports(r: ResearchEntry) {
   for (const rep of Object.values(r.reports)) if (rep?.id) await fabric(`/workspaces/${await workspaceId(rep.groupId)}/reports/${rep.id}`, "DELETE").catch(() => undefined);
@@ -125,16 +152,7 @@ export async function saveResearchReport(name: string, dataset: Ref & { info?: M
     await writeDefinition(ref, [...old.filter((p) => !p.path.startsWith("definition/pages/")), ...pagesParts]);
     return { ...report, pages, dirty: false, saved: Date.now() };
   }
-  const ws = await workspaceId(dataset.groupId);
-  const parts = [
-    await connection(dataset),
-    json("definition/version.json", { $schema: VERSION_SCHEMA, version: "2.0.0" }),
-    json("definition/report.json", { $schema: REPORT_SCHEMA, themeCollection: { baseTheme: { name: "CY24SU10", reportVersionAtImport: "5.61", type: "SharedResources" } }, layoutOptimization: "None", settings: { useStylableVisualContainerHeader: true, defaultDrillFilterOtherVisuals: true } }),
-    ...pagesParts,
-  ];
-  const created = await fabric(`/workspaces/${ws}/reports`, "POST", { displayName: name, definition: { parts } });
-  const id = (created?.id as string | undefined) ?? (await fabric(`/workspaces/${ws}/reports`)).value.find((r: { displayName: string }) => r.displayName === name)?.id;
-  if (!id) throw new Error("The report was created but could not be found: look for it in the workspace.");
+  const id = await createReport(name, dataset, pagesParts, dataset.groupId);
   // My workspace: no group (the Power BI API refuses its id as a group).
   return { id, groupId: dataset.groupId, pages, dirty: false, saved: Date.now() };
 }
