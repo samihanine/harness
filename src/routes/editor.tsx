@@ -8,6 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Empty, Workspace } from "@/components/workspace";
 import { Zoom } from "@/components/zoom";
 import { builderAgent } from "@/agent/builder";
+import { builderSdkAgent } from "@/agent/builder-sdk";
 import type { Agent } from "@/agent/loop";
 import { useLast } from "@/lib/last";
 import { notEditable } from "@/lib/library";
@@ -55,15 +56,21 @@ function Editor() {
   const navigate = useNavigate({ from: "/editor" });
   useLast("editor:report", reportId, (report) => navigate({ search: { report }, replace: true }));
   const chosen = useCollection("reports").find((r) => r.id === reportId);
-  const entry = chosen?.access === "edit" ? chosen : undefined;
+  /**
+   * "pbir": the definition is readable (every tool); "editor": it is not (sensitivity label, older
+   * format…) but the report can be edited in Power BI: the AI works through the embedded editor.
+   */
+  const mode = chosen?.access === "edit" ? "pbir" : chosen && !chosen.appId ? "editor" : undefined;
+  const entry = mode ? chosen : undefined;
   const dataset = useCollection("datasets").find((d) => d.id === entry?.datasetId);
   const { element, report, error } = useEmbed(entry, "edit");
   const [version, setVersion] = useState(0);
-  const { measures, error: measuresError } = useReportMeasures(entry, version);
+  const { measures, error: measuresError } = useReportMeasures(mode === "pbir" ? entry : undefined, version);
   // Read by the tools at call time (the agent object is made at each render).
   const live = useRef({ report, entry, dataset });
   live.current = { report, entry, dataset };
-  const agent: Agent | undefined = entry && builderAgent({ entry: () => live.current.entry, dataset: () => live.current.dataset, report: () => live.current.report, onSaved: () => setVersion((v) => v + 1) });
+  const agentArgs = { entry: () => live.current.entry, dataset: () => live.current.dataset, report: () => live.current.report, onSaved: () => setVersion((v) => v + 1) };
+  const agent: Agent | undefined = entry && (mode === "pbir" ? builderAgent(agentArgs) : builderSdkAgent(agentArgs));
 
   return (
     <Workspace
@@ -87,12 +94,17 @@ function Editor() {
           content: (
             <>
               {error && <p className="px-6 py-2 text-[13px] text-destructive">{error}</p>}
+              {mode === "editor" && (
+                <p className="border-b bg-warning/10 px-6 py-2 text-[12.5px]">
+                  Editor mode: this report's definition cannot be read by the API ({chosen?.accessNote ?? "e.g. a sensitivity label"}), so the assistant edits it through this editor — pages, visuals, fields, formatting. Report measures and the theme file are not available here.
+                </p>
+              )}
               {!entry && <Empty icon={PencilRulerIcon}>{chosen ? notEditable(chosen) : 'Choose a report you can edit, add one from its link, or create one from a semantic model (list at the top › "New report from a semantic model…").'}</Empty>}
               <div ref={element} className={entry ? "min-h-0 flex-1" : "hidden"} />
             </>
           ),
         },
-        { id: "measures", label: "Measures", icon: SigmaIcon, count: measures?.length, content: <MeasuresTab measures={measures} error={measuresError} ready={!!entry} /> },
+        ...(mode === "editor" ? [] : [{ id: "measures", label: "Measures", icon: SigmaIcon, count: measures?.length, content: <MeasuresTab measures={measures} error={measuresError} ready={!!entry} /> }]),
       ]}
     />
   );

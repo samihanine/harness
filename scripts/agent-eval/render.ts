@@ -3,13 +3,15 @@
  * profile (.local/agent-eval/chrome): the dev server (bun dev, port 3300) gives it the Power BI
  * embed tokens, so reports render as the user would see them.
  *
- *   bun scripts/agent-eval/render.ts <seed.json> <path, e.g. /viewer?report=…> <out.png> [wait seconds]
+ *   bun scripts/agent-eval/render.ts <seed.json> <path, e.g. /viewer?report=…> <out.png> [wait seconds] [script.js]
+ *   script.js (optional): an async expression run in the page once loaded (its result is printed),
+ *   e.g. to drive the AI's tools against the embedded report; the screenshot is taken after it.
  *   seed.json: { "reports": [...], "datasets": [...], ... } (IndexedDB collections of the app)
  */
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
-const [seedFile, path, out, wait = "18"] = process.argv.slice(2);
+const [seedFile, path, out, wait = "18", script] = process.argv.slice(2);
 if (!out) throw new Error("bun scripts/agent-eval/render.ts <seed.json> <path> <out.png> [wait seconds]");
 const seed = JSON.parse(readFileSync(seedFile, "utf8"));
 const APP = "http://localhost:3300";
@@ -44,6 +46,11 @@ try {
   await send("Runtime.evaluate", { expression: put, awaitPromise: true });
   await send("Page.navigate", { url: `${APP}${path}` });
   await sleep(Number(wait) * 1000);
+  if (script) {
+    const result = await send("Runtime.evaluate", { expression: readFileSync(script, "utf8"), awaitPromise: true, returnByValue: true });
+    console.log(result.result?.exceptionDetails ? `Script error: ${JSON.stringify(result.result.exceptionDetails).slice(0, 800)}` : `Script result:\n${typeof result.result?.result?.value === "string" ? result.result.result.value : JSON.stringify(result.result?.result?.value, null, 2)}`);
+    await sleep(6000);
+  }
   const shot = await send("Page.captureScreenshot", { format: "png" });
   writeFileSync(out, Buffer.from(shot.result.data, "base64"));
   console.log(errors.length ? `Page errors:\n${errors.join("\n")}` : `Screenshot: ${out}`);

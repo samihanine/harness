@@ -10,12 +10,13 @@ import { useCollection } from "@/lib/store";
  * added that is not editable is refused with the reason; a new report can be made from a model.
  */
 export function ReportPicker({ value, onChange, editable = false }: { value?: string; onChange: (id: string) => void; editable?: boolean }) {
-  const reports = useCollection("reports").filter((r) => !editable || r.access === "edit");
+  // Builder: every report that is not an app's (definition closed → edited through the Power BI editor).
+  const reports = useCollection("reports").filter((r) => !editable || !r.appId);
   const [adding, setAdding] = useState<"link" | "model">();
   return (
     <>
       <EntityPicker
-        items={reports.map((r) => ({ id: r.id, label: r.name, hint: r.access === "view" ? "view only" : undefined }))}
+        items={reports.map((r) => ({ id: r.id, label: r.name, hint: editable ? (r.access === "edit" ? undefined : "editor mode") : r.access === "view" ? "view only" : undefined }))}
         value={value}
         onChange={onChange}
         placeholder={reports.length ? "Choose a report" : "Add a report"}
@@ -27,12 +28,12 @@ export function ReportPicker({ value, onChange, editable = false }: { value?: st
         open={adding === "link"}
         onOpenChange={(o) => setAdding(o ? "link" : undefined)}
         title="Add a report"
-        description={editable ? "Paste the link of a Power BI report saved in PBIR format (editable). A report made in the Power BI service is often in the older format: create a new report from its semantic model instead." : "Paste the link of a Power BI report (workspace or app). Its semantic model is added with it."}
+        description={editable ? "Paste the link of a Power BI report you can edit (a workspace report). When its definition cannot be read by the API, the assistant edits it through the Power BI editor." : "Paste the link of a Power BI report (workspace or app). Its semantic model is added with it."}
         fields={[{ name: "link", label: "Report link", placeholder: "https://app.powerbi.com/groups/…/reports/…" }]}
         onSubmit={async ({ link }) => {
           const entry = await addReport(link);
-          // Added to the app either way, but the Builder only opens what it can edit: say why.
-          if (editable && entry.access !== "edit") throw new Error(notEditable(entry));
+          // Reports of an app cannot be edited at all: said instead of doing nothing.
+          if (editable && entry.appId) throw new Error(notEditable(entry));
           onChange(entry.id);
         }}
       />

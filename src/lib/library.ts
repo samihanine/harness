@@ -67,9 +67,9 @@ export async function createReportFromModel(modelLink: string, name?: string) {
   return addReport(`https://app.powerbi.com/groups/me/reports/${id}`);
 }
 
-/** Why a report cannot be edited by the Builder, with the way out. */
+/** Why a report cannot be edited by the Builder (a report of a Power BI app), with the way out. */
 export const notEditable = (entry: ReportEntry) =>
-  `"${entry.name}" cannot be edited here: ${entry.accessNote ?? "its definition is not readable"} To edit a copy of it with the AI, create a new report from its semantic model (Builder › "New report from a semantic model…").`;
+  `"${entry.name}" is a report of a Power BI app: it cannot be edited. To build on the same data, create a new report from its semantic model (Builder › "New report from a semantic model…").`;
 
 export async function refreshReport(entry: ReportEntry) {
   return addReport(entry.appId ? `https://app.powerbi.com/groups/me/apps/${entry.appId}/reports/${entry.id}` : `https://app.powerbi.com/groups/${entry.groupId ?? "me"}/reports/${entry.id}`);
