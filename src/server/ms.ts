@@ -234,9 +234,14 @@ export const exportPbix = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string; groupId?: string }) => d)
   .handler(async ({ data }) => {
     const { token } = await accessToken("powerbi");
-    const base = `${BASES.powerbi}${data.groupId ? `/groups/${data.groupId}` : ""}/reports/${data.id}/Export`;
-    let r = await fetch(`${base}?downloadType=LiveConnect`, { headers: { Authorization: `Bearer ${token}` } });
-    if (!r.ok) r = await fetch(base, { headers: { Authorization: `Bearer ${token}` } });
+    const get = async (groupId?: string) => {
+      const base = `${BASES.powerbi}${groupId ? `/groups/${groupId}` : ""}/reports/${data.id}/Export`;
+      const live = await fetch(`${base}?downloadType=LiveConnect`, { headers: { Authorization: `Bearer ${token}` } });
+      return live.ok ? live : fetch(base, { headers: { Authorization: `Bearer ${token}` } });
+    };
+    let r = await get(data.groupId);
+    // My workspace has an id (Fabric) but no /groups path in the Power BI API: asked again without it.
+    if (!r.ok && data.groupId && /GroupNotAccessible|personal workspace/i.test(await r.clone().text())) r = await get();
     if (!r.ok) {
       const body = await r.text();
       throw new Error(`The report cannot be downloaded (${r.status}${body ? `: ${body.slice(0, 200)}` : ""}). Downloads may be disabled by the admin.`);

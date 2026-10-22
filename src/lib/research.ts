@@ -110,6 +110,11 @@ async function connection(dataset: Ref): Promise<Part> {
   return json("definition.pbir", { $schema: "https://developer.microsoft.com/json-schemas/fabric/item/report/definitionProperties/2.0.0/schema.json", version: "4.0", datasetReference: { byConnection: { connectionString: `semanticmodelid=${dataset.id}` } } });
 }
 
+/** Deletes a research's reports in Power BI (when the research is reset or deleted). */
+export async function deleteResearchReports(r: ResearchEntry) {
+  for (const rep of Object.values(r.reports)) if (rep?.id) await fabric(`/workspaces/${await workspaceId(rep.groupId)}/reports/${rep.id}`, "DELETE").catch(() => undefined);
+}
+
 /** Creates the report of a model (in the model's workspace) or rewrites its pages. */
 export async function saveResearchReport(name: string, dataset: Ref & { info?: ModelInfo }, report: ResearchReport | undefined, pages: MatrixPage[]): Promise<ResearchReport> {
   const pagesParts = pageParts(pages, dataset.info);
@@ -130,5 +135,6 @@ export async function saveResearchReport(name: string, dataset: Ref & { info?: M
   const created = await fabric(`/workspaces/${ws}/reports`, "POST", { displayName: name, definition: { parts } });
   const id = (created?.id as string | undefined) ?? (await fabric(`/workspaces/${ws}/reports`)).value.find((r: { displayName: string }) => r.displayName === name)?.id;
   if (!id) throw new Error("The report was created but could not be found: look for it in the workspace.");
-  return { id, groupId: dataset.groupId ?? ws, pages, dirty: false, saved: Date.now() };
+  // My workspace: no group (the Power BI API refuses its id as a group).
+  return { id, groupId: dataset.groupId, pages, dirty: false, saved: Date.now() };
 }

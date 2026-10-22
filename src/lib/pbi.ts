@@ -210,7 +210,8 @@ const loaded = (embed: PbiClient.Embed) =>
 
 /* ----------------------------- What the AI sees ---------------------------- */
 
-const fieldName = (t: Record<string, any>) => (t.measure ? `[${t.measure}]` : `'${t.table}'[${t.column ?? t.hierarchyLevel ?? t.hierarchy}]`);
+/** A field as DAX writes it; a field the SDK did not describe (it happens) is "?" rather than a crash. */
+const fieldName = (t?: Record<string, any> | null) => (!t ? "?" : t.measure ? `[${t.measure}]` : `'${t.table}'[${t.column ?? t.hierarchyLevel ?? t.hierarchy}]`);
 /** Active filters only ("All" / empty ones are noise for the AI). */
 const active = (filters: any[]) => filters.filter((f) => (f.values?.length && f.operator !== "All") || f.conditions?.length || f.hierarchyData?.length);
 /** Selected paths of a hierarchy filter ("2024 > Jan"): a node is selected whole, or through its children. */

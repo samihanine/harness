@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { DatabaseIcon, ExternalLinkIcon, FileDownIcon, FileUpIcon, FlaskConicalIcon, LayoutDashboardIcon, PlusIcon, RefreshCwIcon, SaveIcon, Table2Icon, TextIcon, Trash2Icon } from "lucide-react";
+import { DatabaseIcon, ExternalLinkIcon, FileDownIcon, FileUpIcon, FlaskConicalIcon, LayoutDashboardIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, SaveIcon, Table2Icon, TextIcon, Trash2Icon } from "lucide-react";
 import { CsvDialog } from "@/components/csv-dialog";
 import { DataTable } from "@/components/data-table";
 import { EntityMenu, withToast } from "@/components/entity";
@@ -15,7 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { EntityPicker, Empty, Section, Workspace } from "@/components/workspace";
 import { publishReports, researchAgent } from "@/agent/research-tools";
 import { useLast } from "@/lib/last";
-import { computeBlock, newResearch, readResearch, type Block, type ResearchEntry } from "@/lib/research";
+import { computeBlock, deleteResearchReports, newResearch, readResearch, type Block, type ResearchEntry } from "@/lib/research";
 import { patch, put, remove, useCollection, type DatasetEntry } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
 
@@ -54,6 +54,19 @@ function Research() {
       picker={<EntityPicker items={researches.map((r) => ({ id: r.id, label: r.name }))} value={researchId} onChange={(research) => navigate({ search: { research } })} placeholder={researches.length ? "Choose a research" : "New research"} onAdd={() => void create()} addLabel="New research…" />}
       actions={
         <>
+          {research && (
+            <Button
+              size="sm"
+              variant="outline"
+              title="Empty the canvas and the reports (the models and the conversations are kept)"
+              onClick={() =>
+                confirm(`Reset "${research.name}"? The canvas is emptied and its Power BI reports are deleted.`) &&
+                void withToast("Resetting…", deleteResearchReports(research).then(() => patch("researches", research.id, { blocks: [], reports: {}, updatedAt: Date.now() })), "Research reset.")
+              }
+            >
+              <RotateCcwIcon /> Reset
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={() => void create()}>
             <PlusIcon /> New
           </Button>
@@ -61,7 +74,7 @@ function Research() {
             kind="researches"
             entry={research}
             onRename={research && (() => { const name = prompt("Name of the research", research.name)?.trim(); if (name) void patch("researches", research.id, { name }); })}
-            onRemove={research && (() => confirm(`Delete the research "${research.name}"? (its reports stay in Power BI)`) && void remove("researches", research.id).then(() => navigate({ search: {} })))}
+            onRemove={research && (() => confirm(`Delete the research "${research.name}" and its Power BI reports?`) && void deleteResearchReports(research).then(() => remove("researches", research.id)).then(() => navigate({ search: {} })))}
           />
         </>
       }

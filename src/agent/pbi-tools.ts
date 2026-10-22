@@ -105,6 +105,36 @@ export function viewerTools(report: () => Report | undefined, dataset: () => Ref
   const filterArgs = { table: z.string(), column: z.string(), values: values.describe("Values kept, as they are in the data (empty: removes the filter on that column)") };
   return [
     tool({
+      name: "list_pages",
+      description: "Every page of the report with its visuals (type, title, name) and its filters: to find where something is before moving to it.",
+      args: z.object({}),
+      readOnly: true,
+      run: async () => {
+        const pages = await r().getPages();
+        const lines = await Promise.all(
+          pages.map(async (p) => {
+            const visuals = await p.getVisuals().catch(() => []);
+            const filters = await p.getFilters().catch(() => []);
+            const shown = visuals.filter((v) => v.layout.displayState?.mode !== 1 && !["shape", "basicShape", "image"].includes(v.type));
+            return `- "${p.displayName}" (name=${p.name}${p.isActive ? ", current" : ""}${p.visibility === 1 ? ", hidden" : ""}): ${shown.map((v) => `${v.type} "${v.title ?? ""}" (name=${v.name})`).join("; ") || "no visual"}${filters.length ? ` — ${filters.length} page filter(s)` : ""}`;
+          }),
+        );
+        return lines.join("\n");
+      },
+    }),
+    tool({
+      name: "read_page",
+      description: "A page in detail without showing it: its visuals with their fields, filters and slicer selections (data: true adds each visual's first rows; slower).",
+      args: z.object({ page: z.string().describe("Page name (id) or display name"), data: z.boolean().optional() }),
+      readOnly: true,
+      run: async ({ page, data = false }) => {
+        const p = await pageOf(r(), page);
+        const visuals = await p.getVisuals();
+        const parts = await Promise.all(visuals.map((v) => visualText(v, data, false, dataset())));
+        return [`page "${p.displayName}" (name=${p.name}${p.isActive ? ", current" : ""})`, ...parts].join("\n");
+      },
+    }),
+    tool({
       name: "change_current_page",
       description: "Shows another page of the report.",
       args: z.object({ page: z.string().describe("Page name (id) or display name") }),

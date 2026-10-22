@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { BookOpenIcon, ChartColumnIcon, ChartPieIcon, CheckIcon, ChevronRightIcon, CopyIcon, DownloadIcon, LayoutPanelTopIcon, PencilIcon, PlusIcon, SparklesIcon } from "lucide-react";
+import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
+import { BookOpenIcon, BookTextIcon, DatabaseIcon, ChartPieIcon, CheckIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, SparklesIcon } from "lucide-react";
 import { withToast } from "@/components/entity";
 import { Markdown } from "@/components/markdown";
 import { ReportPicker } from "@/components/pickers";
@@ -8,7 +8,9 @@ import { ReportActions } from "@/components/report-actions";
 import { RichText } from "@/components/rich-text";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Empty, Workspace } from "@/components/workspace";
+import { ContextLinks } from "@/components/context-links";
+import { DataTable } from "@/components/data-table";
+import { Empty, Section, Workspace } from "@/components/workspace";
 import { Zoom } from "@/components/zoom";
 import { EXPORT, GUIDE_EDITOR, VIEWER_TABS, VISUAL_EXPLAIN, VISUAL_PREVIEW } from "@/config";
 import { reportContext } from "@/agent/context";
@@ -65,9 +67,13 @@ function Viewer() {
   const [panelTab, setPanelTab] = useState("assistant");
   const clicked = selection.page && selection.visual && pages.find((p) => p.name === selection.page)?.visuals.find((v) => v.name === selection.visual) ? { page: selection.page, visual: selection.visual } : undefined;
   const guidesOn = VIEWER_TABS.guides && guides.ready;
+  /** The visual whose guide the panel shows: the last one clicked in the report, or picked in the panel. */
+  const [chosen, setChosen] = useState<{ page: string; visual: string }>();
   // A click on a data visual shows its guide in the panel.
   useEffect(() => {
-    if (clicked && guidesOn) setPanelTab("guide");
+    if (!clicked) return;
+    setChosen(clicked);
+    if (guidesOn) setPanelTab("guide");
   }, [clicked?.page, clicked?.visual]); // eslint-disable-line react-hooks/exhaustive-deps
   const [conversationId, setConversationId] = useState<string>();
   const conversationExists = useCollection("conversations").some((c) => c.id === conversationId);
@@ -76,7 +82,7 @@ function Viewer() {
   const datasetRef = entry && { id: entry.datasetId, groupId: dataset?.groupId ?? entry.datasetGroupId };
   const agent: Agent | undefined = entry && {
     instructions: `Screen: the REPORT VIEWER. The user reads a Power BI report (view only: the report itself cannot change). You can change its page, filters, slicers and bookmarks, read the data of its visuals and run DAX on its model to answer precisely. Explain numbers simply.
-Page state: the pages, the visuals of the current page (read a visual's data with get_visual_data) and the active filters, slicers and bookmarks.
+Page state: the pages, the visuals of the CURRENT page (read a visual's data with get_visual_data) and the active filters, slicers and bookmarks. Other pages: list_pages (every page with its visuals) and read_page (a page in detail, without moving); go there with change_current_page, then act — the page state is read again after each change.
 - Values: filter only on values that exist. A slicer lists its options in the page state; for any other column read the real values with run_dax. Translations and synonyms are fine (e.g. "automne" → the value "Fall").
 - To filter, use the FIRST that fits: 1. a slicer of the current page on that field (update_slicer_value); 2. a page filter (update_page_filter); 3. a report filter (update_report_filter), when it must apply to every page; 4. a visual filter (update_visual_filter), only for one visual.
 - After a change, give what changed and the key figures (read with get_visual_data).
@@ -99,19 +105,10 @@ ${DAX_RULES}`,
         </>
       ),
     },
-    ...(VIEWER_TABS.guides && entry
+    ...(entry
       ? [
-          {
-            id: "guides",
-            label: "Guides",
-            icon: BookOpenIcon,
-            count: guides.rows.length || undefined,
-            content: guides.ready ? (
-              <GuidesTab rows={guides.rows} onAdd={guides.add} onUpdate={guides.update} reportRef={entry} report={report} selection={selection} dataset={dataset} entry={entry} pages={pages} />
-            ) : (
-              <Empty icon={BookOpenIcon}>No guides file yet: set the Excel file of the built-in "Guides" schema in the Excel screen.</Empty>
-            ),
-          },
+          { id: "dataset", label: "Dataset", icon: DatabaseIcon, content: <DatasetTab entry={entry} dataset={dataset} /> },
+          { id: "context", label: "Context", icon: BookTextIcon, count: entry.contextIds.length, content: <ContextLinks what="report" ids={entry.contextIds} onChange={(contextIds) => void patch("reports", entry.id, { contextIds })} /> },
         ]
       : []),
   ];
@@ -142,24 +139,7 @@ ${DAX_RULES}`,
                   id: "guide",
                   label: "Guide",
                   icon: BookOpenIcon,
-                  content: clicked ? (
-                    <div className="flex flex-col gap-3 p-4">
-                      <div>
-                        <p className="text-[11.5px] font-medium tracking-wide text-muted-foreground uppercase">{pages.find((p) => p.name === clicked.page)?.displayName}</p>
-                        <h2 className="text-[16px] font-semibold">{pages.find((p) => p.name === clicked.page)?.visuals.find((v) => v.name === clicked.visual)?.title ?? clicked.visual}</h2>
-                      </div>
-                      <GuideCard
-                        key={`${clicked.page}/${clicked.visual}`}
-                        guide={guides.rows.find((r) => String(r.page ?? "") === clicked.page && String(r.visual ?? "") === clicked.visual)}
-                        ids={{ report: entry.id, ...clicked }}
-                        title={pages.find((p) => p.name === clicked.page)?.visuals.find((v) => v.name === clicked.visual)?.title ?? clicked.visual}
-                        onAdd={guides.add}
-                        onUpdate={guides.update}
-                      />
-                    </div>
-                  ) : (
-                    <Empty icon={BookOpenIcon}>Click a visual of the report to read its guide here.</Empty>
-                  ),
+                  content: <GuidePanel report={report} reportRef={entry} entry={entry} dataset={dataset} pages={pages} open={chosen} onOpen={setChosen} guides={guides} />,
                 },
               ]
             : undefined,
@@ -215,7 +195,6 @@ function useReportView(report: Report | undefined, conversationId: string | unde
 
 /* ---------------------------------- Guides --------------------------------- */
 
-type Selection = { page?: string; visual?: string };
 /** Visuals without data of their own (decoration, navigation): no guide, no preview, clicks ignored. */
 const DECORATIONS = new Set(["textbox", "shape", "basicShape", "image", "actionButton", "pageNavigator", "bookmarkNavigator", "visualGroup", "group"]);
 type VisualInfo = { name: string; title: string; type: string };
@@ -247,77 +226,112 @@ function usePages(report?: Report) {
 }
 
 /**
- * The report's guides, one per visual: the pages and their data visuals on the left (a book on those
- * with a guide), the open visual on the right: its live preview, PDF / PNG / Explain, and its guide. A
- * click on a visual in the Report tab opens it here.
+ * The guide of one visual, in the assistant's panel: the visual (the one clicked in the report, or
+ * picked here), its live preview, PDF / PNG / Explain, and its guide (editable with "Edit").
  */
-function GuidesTab({ rows, onAdd, onUpdate, reportRef, report, selection, dataset, entry, pages }: { rows: Record<string, unknown>[]; onAdd: (values: Row) => Promise<unknown>; onUpdate: (row: Row, values: Row) => Promise<unknown>; reportRef: Ref; report?: Report; selection: Selection; dataset?: DatasetEntry; entry: ReportEntry; pages: PageInfo[] }) {
-  const [open, setOpen] = useState<{ page: string; visual: string }>();
-  const [folded, setFolded] = useState<string[]>([]);
+function GuidePanel({ report, reportRef, entry, dataset, pages, open, onOpen, guides }: {
+  report?: Report;
+  reportRef: Ref;
+  entry: ReportEntry;
+  dataset?: DatasetEntry;
+  pages: PageInfo[];
+  open?: { page: string; visual: string };
+  onOpen: (v: { page: string; visual: string }) => void;
+  guides: { rows: Record<string, unknown>[]; add: (values: Row) => Promise<unknown>; update: (row: Row, values: Row) => Promise<unknown> };
+}) {
   const preview = useRef<PreviewHandle>(undefined);
   const [context, setContext] = useState("");
   useEffect(() => void reportContext(entry, dataset).then(setContext), [entry, dataset]);
-  // A click on a data visual of the report opens it here (guide or not); decorations are ignored.
-  useEffect(() => {
-    const { page, visual } = selection;
-    if (page && visual && pages.find((p) => p.name === page)?.visuals.some((v) => v.name === visual)) setOpen({ page, visual });
-  }, [selection.page, selection.visual, pages]); // eslint-disable-line react-hooks/exhaustive-deps
-  const guideOf = (p: string, v: string) => rows.find((r) => String(r.page ?? "") === p && String(r.visual ?? "") === v);
   const page = open && pages.find((p) => p.name === open.page);
   const visual = open && page?.visuals.find((v) => v.name === open.visual);
-  const guide = open && guideOf(open.page, open.visual);
-
+  const guide = open && guides.rows.find((r) => String(r.page ?? "") === open.page && String(r.visual ?? "") === open.visual);
+  const title = visual?.title ?? open?.visual ?? "";
   return (
-    <div className="flex min-h-0 flex-1">
-      <nav className="flex w-72 shrink-0 flex-col overflow-y-auto border-r bg-card p-2" aria-label="Pages and visuals">
-        {pages.length === 0 && <p className="px-3 py-2 text-[13px] text-muted-foreground">Loading the report…</p>}
-        {pages.map((p) => {
-          const isFolded = folded.includes(p.name);
-          const count = p.visuals.filter((v) => guideOf(p.name, v.name)).length;
-          return (
-            <div key={p.name} className="mb-1">
-              <button type="button" onClick={() => setFolded(isFolded ? folded.filter((x) => x !== p.name) : [...folded, p.name])} className="flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] font-semibold hover:bg-accent">
-                <ChevronRightIcon className={cn("size-3.5 shrink-0 text-muted-foreground transition-transform", !isFolded && "rotate-90")} />
-                <LayoutPanelTopIcon className="size-4 shrink-0 text-muted-foreground" />
-                <span className="truncate">{p.displayName}</span>
-                <span className="ml-auto text-[11px] font-normal text-muted-foreground tabular-nums">{count}/{p.visuals.length}</span>
-              </button>
-              {!isFolded && (
-                <ul className="ml-4 border-l pl-2">
-                  {p.visuals.map((v) => {
-                    const on = open?.page === p.name && open.visual === v.name;
-                    return (
-                      <li key={v.name}>
-                        <button type="button" onClick={() => setOpen({ page: p.name, visual: v.name })} className={cn("flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px]", on ? "bg-accent font-medium text-accent-foreground" : "hover:bg-muted")}>
-                          <ChartColumnIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                          <span className="truncate">{v.title}</span>
-                          {guideOf(p.name, v.name) && <BookOpenIcon className="ml-auto size-3.5 shrink-0 text-primary" aria-label="Has a guide" />}
-                        </button>
-                      </li>
-                    );
-                  })}
-                  {p.visuals.length === 0 && <li className="px-2 py-1.5 text-[12px] text-muted-foreground">No data visual.</li>}
-                </ul>
-              )}
-            </div>
-          );
-        })}
-      </nav>
-      <div className="min-w-0 flex-1 overflow-y-auto">
-        {!open ? (
-          <Empty icon={BookOpenIcon}>Choose a visual on the left, or click one in the Report tab, to read its guide.</Empty>
-        ) : (
-          <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
-            <div>
-              <p className="text-[12px] font-medium tracking-wide text-muted-foreground uppercase">{page?.displayName}</p>
-              <h2 className="text-[19px] font-semibold">{visual?.title ?? open.visual}</h2>
-            </div>
-            {VISUAL_PREVIEW && report && <VisualPreview report={report} reportRef={reportRef} page={open.page} visual={open.visual} handle={preview} />}
-            {report && (EXPORT.visualPdf || EXPORT.visualPng || VISUAL_EXPLAIN) && <VisualActions key={`${open.page}/${open.visual}`} report={report} page={open.page} visual={open.visual} title={visual?.title ?? open.visual} preview={preview} context={context} dataset={dataset} />}
-            <GuideCard key={`${open.page}/${open.visual}`} guide={guide} ids={{ report: entry.id, ...open }} title={visual?.title ?? open.visual} onAdd={onAdd} onUpdate={onUpdate} />
+    <div className="flex flex-col gap-3 p-4">
+      <select
+        className="input h-9"
+        aria-label="Visual"
+        value={open ? `${open.page}/${open.visual}` : ""}
+        onChange={(e) => {
+          const [p, v] = e.target.value.split("/");
+          if (p && v) onOpen({ page: p, visual: v });
+        }}
+      >
+        <option value="">{pages.length ? "Choose a visual (or click one in the report)" : "Loading the report…"}</option>
+        {pages.map((p) => (
+          <optgroup key={p.name} label={p.displayName}>
+            {p.visuals.map((v) => (
+              <option key={v.name} value={`${p.name}/${v.name}`}>
+                {v.title}
+                {guides.rows.some((r) => String(r.page ?? "") === p.name && String(r.visual ?? "") === v.name) ? " 📖" : ""}
+              </option>
+            ))}
+          </optgroup>
+        ))}
+      </select>
+      {!open ? (
+        <Empty icon={BookOpenIcon}>Click a visual of the report, or choose one above, to read its guide.</Empty>
+      ) : (
+        // Keyed by visual: its preview, buttons and explanation are made again for each one (never stacked).
+        <div key={`${open.page}/${open.visual}`} className="flex flex-col gap-3">
+          <div>
+            <p className="text-[11.5px] font-medium tracking-wide text-muted-foreground uppercase">{page?.displayName}</p>
+            <h2 className="text-[16px] font-semibold">{title}</h2>
           </div>
+          {VISUAL_PREVIEW && report && <VisualPreview report={report} reportRef={reportRef} page={open.page} visual={open.visual} handle={preview} />}
+          {report && (EXPORT.visualPdf || EXPORT.visualPng || VISUAL_EXPLAIN) && <VisualActions report={report} page={open.page} visual={open.visual} title={title} preview={preview} context={context} dataset={dataset} />}
+          <GuideCard guide={guide} ids={{ report: entry.id, ...open }} title={title} onAdd={guides.add} onUpdate={guides.update} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The report's semantic model: its tables (columns, measures) and relationships, as the AI reads it. */
+function DatasetTab({ entry, dataset }: { entry: ReportEntry; dataset?: DatasetEntry }) {
+  if (!dataset) return <Empty icon={DatabaseIcon}>The report's semantic model ({entry.datasetId}) is not in the app: add it in the Datasets screen to see it here.</Empty>;
+  const info = dataset.info;
+  return (
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 overflow-y-auto p-6">
+      <Section
+        title={dataset.name}
+        description={`Right: ${dataset.access ?? "unknown"}${dataset.error ? ` — ${dataset.error}` : ""}`}
+        actions={
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/datasets" search={{ dataset: dataset.id }}>
+              <DatabaseIcon /> Open in Datasets
+            </Link>
+          </Button>
+        }
+      >
+        {!info ? (
+          <p className="text-[13px] text-muted-foreground">Structure not read.</p>
+        ) : (
+          <DataTable
+            head={["Table", "Columns", "Measures"]}
+            rows={info.tables
+              .filter((t) => !t.hidden)
+              .map((t) => [
+                <span key="t" className="font-medium">{t.name}</span>,
+                <span key="c" className="block text-[12.5px] whitespace-normal text-muted-foreground">{t.columns.filter((c) => !c.hidden).map((c) => c.name).join(", ")}</span>,
+                <span key="m" className="block text-[12.5px] whitespace-normal">{t.measures.filter((m) => !m.hidden).map((m) => m.name).join(", ") || "—"}</span>,
+              ])}
+            empty="No table."
+          />
         )}
-      </div>
+      </Section>
+      {info && info.relationships.length > 0 && (
+        <Section title="Relationships">
+          <ul className="flex flex-col gap-1 font-mono text-[12px]">
+            {info.relationships.map((r, i) => (
+              <li key={i}>
+                {r.from} {r.cardinality} {r.to}
+                {r.active ? "" : " (inactive)"}
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
     </div>
   );
 }
@@ -330,21 +344,26 @@ function GuideCard({ guide, ids, title, onAdd, onUpdate }: { guide?: Row; ids: {
   const [editing, setEditing] = useState(false);
   return (
     <div className="flex flex-col gap-3">
-      <div className="relative rounded-xl border bg-card p-5 shadow-xs">
-        {GUIDE_EDITOR && (
-          <Button variant={editing ? "secondary" : "ghost"} size="icon" className="absolute top-2.5 right-2.5 size-7" aria-label={editing ? "Stop editing" : "Edit the guide"} title={editing ? "Stop editing" : "Edit the guide"} onClick={() => setEditing(!editing)}>
-            <PencilIcon />
-          </Button>
-        )}
+      <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-xs">
+        <div className="flex items-center gap-2">
+          <span className="flex items-center gap-1.5 text-[12px] font-medium tracking-wide text-muted-foreground uppercase">
+            <BookOpenIcon className="size-3.5" /> Guide
+          </span>
+          {GUIDE_EDITOR && (
+            <Button variant={editing ? "secondary" : "outline"} size="sm" className="ml-auto h-7 text-[12px]" onClick={() => setEditing(!editing)}>
+              <PencilIcon /> {editing ? "Done" : "Edit"}
+            </Button>
+          )}
+        </div>
         {guide && editing ? (
           <GuideForm key={String(guide.id ?? `${ids.page}/${ids.visual}`)} guide={guide} onSave={(values) => onUpdate(guide, values)} />
         ) : guide ? (
-          <div className="flex flex-col gap-2 pr-8">
-            {guide.title ? <h3 className="text-[16px] font-semibold">{String(guide.title)}</h3> : null}
+          <div className="flex flex-col gap-2">
+            {guide.title ? <h3 className="text-[15px] font-semibold">{String(guide.title)}</h3> : null}
             {guide.content ? <Markdown>{String(guide.content)}</Markdown> : <p className="text-muted-foreground">This guide has no content yet.</p>}
           </div>
         ) : (
-          <p className="pr-8 text-muted-foreground">No guide for this visual yet.</p>
+          <p className="text-[13.5px] text-muted-foreground">No guide for this visual yet.{GUIDE_EDITOR && !editing ? " Click Edit to add one." : ""}</p>
         )}
       </div>
       {GUIDE_EDITOR && editing && <VisualIds {...ids} onCreate={guide ? undefined : () => onAdd({ page: ids.page, visual: ids.visual, title: title.trim() || ids.visual })} />}
