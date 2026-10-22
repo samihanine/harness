@@ -38,7 +38,18 @@ function target(spec: string, dataset?: DatasetEntry) {
 const value = (v: unknown) => ({ schema: PROPERTY, value: v });
 
 const FORMAT_HELP =
-  'By object, plain values: {"title": {"visible": true, "titleText": "Sales", "fontColor": "#203247", "textSize": 14, "alignment": "left"}, "background": {"visible": true, "color": "#FFFFFF", "transparency": 0}, "border": {"visible": true, "color": "#E5E7EB", "radius": 8}, "legend": {"visible": true, "position": "Top"}, "dataLabels": {"visible": true}, "categoryAxis": {"visible": true}, "valueAxis": {"visible": false}}';
+  'The frame of a visual, plain values: {"title": {"visible": true, "titleText": "Sales", "fontColor": "#203247", "textSize": 14, "alignment": "left"}, "background": {"visible": true, "color": "#FFFFFF", "transparency": 0}, "border": {"visible": true, "color": "#E5E7EB", "radius": 8}, "dropShadow": {"visible": true}, "visualHeader": {"visible": false}, "legend": {"visible": true, "position": "Top"}, "categoryAxis": {"visible": true}, "valueAxis": {"visible": false}}. The inside of a chart or matrix (headers, grid, values, labels, colors) is not reachable here: use update_theme "styles".';
+
+/** A theme style value: "#RRGGBB" becomes the theme's color form, the rest is kept. */
+const themeValue = (v: unknown) => (typeof v === "string" && /^#[0-9a-f]{3,8}$/i.test(v) ? { solid: { color: v } } : v);
+
+/** Deep merge of plain objects (lists replaced). */
+const merge = (a: any, b: any): any => {
+  if (!a || typeof a !== "object" || Array.isArray(a) || !b || typeof b !== "object" || Array.isArray(b)) return b;
+  const out = { ...a };
+  for (const [k, v] of Object.entries(b)) out[k] = merge(a[k], v);
+  return out;
+};
 
 export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: () => ReportEntry | undefined; dataset: () => DatasetEntry | undefined; report: () => Report | undefined; onSaved?: () => void }): Agent {
   const r = () => {
@@ -60,8 +71,8 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
     const refused: string[] = [];
     for (const [objectName, props] of Object.entries(given ?? {}))
       for (const [propertyName, v0] of Object.entries(props ?? {}))
-        await v.setProperty({ objectName, propertyName }, value(v0)).catch((e: unknown) => refused.push(`${objectName}.${propertyName} (${e instanceof Error ? e.message : JSON.stringify(e)})`));
-    return refused.length ? ` Not applied: ${refused.join("; ")}.` : "";
+        await v.setProperty({ objectName, propertyName }, value(v0)).catch((e: unknown) => refused.push(`${objectName}.${propertyName}${/unsupported/i.test(JSON.stringify(e)) ? "" : ` (${e instanceof Error ? e.message : JSON.stringify(e)})`}`));
+    return refused.length ? ` Not applied (not reachable on a visual in this mode): ${refused.join(", ")} — for these, use update_theme "styles" (by visual type).` : "";
   };
   const setFields = async (v: Awaited<ReturnType<typeof visualOf>>, fields: Record<string, string[]>) => {
     // Every field checked before the visual changes.
@@ -91,7 +102,10 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
   const formatArg = z.record(z.string(), z.record(z.string(), z.unknown())).describe(FORMAT_HELP);
   const topArg = z.object({ count: z.number(), by: z.string(), bottom: z.boolean().optional() });
   const mark = (t: Tool): Tool => (t.readOnly ? t : { ...t, run: async (args) => ((changed = true), t.run(args)) });
-  const viewer = viewerTools(report, datasetRef, () => dataset()?.info).filter((t) => ["list_pages", "read_page", "change_current_page", "get_visual_data"].includes(t.name));
+  // The viewer's reading and filter tools: in the editor, filters set this way are saved with the report.
+  const viewer = viewerTools(report, datasetRef, () => dataset()?.info).filter((t) =>
+    ["list_pages", "read_page", "change_current_page", "get_visual_data", "update_report_filter", "update_page_filter", "update_visual_filter", "update_slicer_value", "reset_filters"].includes(t.name),
+  );
 
   const tools: Tool[] = [
     ...viewer,
@@ -194,12 +208,35 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
         return `Visual ${v.name} deleted.`;
       },
     }),
+    tool({
+      name: "update_theme",
+      description:
+        'Changes the report theme (kept with the report when saved): palette, page colors, and "styles" — the formatting of the inside of a visual type, for every visual of that type ("*": all types). E.g. {"dataColors": ["#16A34A", "#2563EB"], "styles": {"pivotTable": {"columnHeaders": {"fontColor": "#FFFFFF", "backColor": "#16A34A", "bold": true}, "grid": {"gridHorizontal": true, "gridHorizontalColor": "#E5E7EB"}, "values": {"fontSize": 11}}, "*": {"title": {"fontSize": 14, "bold": true}}}}. Values plain ("#RRGGBB", numbers, true/false); the rest of the theme is kept.',
+      args: z.object({
+        dataColors: z.array(z.string()).optional(),
+        background: z.string().optional(),
+        foreground: z.string().optional(),
+        tableAccent: z.string().optional(),
+        styles: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))).optional().describe("visual type (pivotTable, tableEx, card, lineChart… or *) → object → property → value"),
+      }),
+      run: async ({ styles, ...colors }) => {
+        const current = ((await r().getTheme().catch(() => undefined)) as { themeJson?: Record<string, unknown> } | undefined)?.themeJson ?? { name: "Hub theme" };
+        const given = Object.fromEntries(Object.entries(colors).filter(([, v]) => v !== undefined));
+        const visualStyles = Object.fromEntries(
+          Object.entries(styles ?? {}).map(([type, objects]) => [type, { "*": Object.fromEntries(Object.entries(objects).map(([o, props]) => [o, [Object.fromEntries(Object.entries(props).map(([p, v]) => [p, themeValue(v)]))]])) }]),
+        );
+        await r().applyTheme({ themeJson: merge(current, { ...given, ...(styles && { visualStyles }) }) });
+        return `Theme updated (${[...Object.keys(given), ...Object.keys(styles ?? {}).map((t) => `styles of ${t}`)].join(", ") || "nothing"}).`;
+      },
+    }),
     daxTool(datasetRef),
     ...modelTools(dataset),
   ].map(mark);
 
   return {
-    instructions: `Screen: the BUILDER, in "Power BI editor" mode: this report's definition cannot be read by the API (e.g. a sensitivity label), so you change it through the editor shown to the user — pages, visuals, fields, formatting, Top N, layout. Changes show at once and the report is saved when your answer is done. Not possible here: report measures, the theme file (say so if asked; measures can be added to the model in the Datasets screen when the user may edit it).
+    instructions: `Screen: the BUILDER, in "Power BI editor" mode: this report's definition cannot be read by the API (e.g. a sensitivity label), so you change it through the editor shown to the user — pages, visuals, fields, filters, formatting, theme, Top N, layout. Changes show at once and the report is saved when your answer is done. Not possible here: report measures (they can be added to the model in the Datasets screen when the user may edit it).
+- Filters: update_visual_filter / update_page_filter / update_report_filter (values as in the data: check them with run_dax when unsure), update_slicer_value for a slicer; they act on the CURRENT page (change_current_page first). Never use set_visual_fields to filter.
+- Formatting: format_visual for a visual's frame (title, background, border, shadow, header, legend, axes); the inside of charts and matrices (headers, grid, values, labels) and the palette: update_theme "styles" (by visual type: it applies to every visual of that type).
 How to work (few, well-filled calls; several independent calls in one reply):
 - The page state lists the pages and the visuals of the current page; list_pages / read_page for the others.
 - New page: create_page (it is shown), then create_visual for each visual with its title, fields and format, in one reply.
