@@ -68,7 +68,8 @@ export function describeError(error: unknown): string {
 }
 
 /** sessionChars: past this size the planner's conversation is restarted (with a summary of the app conversation). */
-const LIMITS = { plannerSteps: 12, implementerSteps: 24, retries: 2, resultChars: 6_000, historyChars: 12_000, sessionChars: 150_000 };
+/** emptyRetries: clean sessions tried when the first reply is empty (the model returns nothing on ~1 call in 3, at random). */
+const LIMITS = { plannerSteps: 12, implementerSteps: 24, retries: 2, emptyRetries: 4, resultChars: 6_000, historyChars: 12_000, sessionChars: 150_000 };
 
 const tag = (name: string, body: string, attrs = "") => `<${name}${attrs ? ` ${attrs}` : ""}>\n${body.trim()}\n</${name}>`;
 
@@ -178,8 +179,16 @@ async function* drive(opts: {
   tail: () => string;
   /** A final tool refused now (e.g. implement before the user answered): the reason sent back. */
   refuse?: (name: string, args: Record<string, unknown>) => string | undefined;
+  /**
+   * A new session, when this one has nothing yet but `first`: an empty first reply (the model sometimes
+   * returns nothing on a long prompt) is asked again in a clean session, not after the empty answer.
+   */
+  fresh?: () => Session;
 }): AsyncGenerator<Update, Ended> {
   const { turn, signal } = opts;
+  let session = opts.session;
+  let exchanges = 0;
+  let empties = 0;
   const byName = new Map(opts.tools.map((t) => [t.name, t]));
   let prompt = opts.first;
   let retries = 0;
@@ -190,12 +199,20 @@ async function* drive(opts: {
     turn.llm.push(call);
     yield { ...turn, status: { label: opts.role === "planner" ? (turn.steps.length ? "Exploring" : "Understanding your request") : "Working on the plan" } };
     const started = performance.now();
-    const reply = await opts.session.send(call.prompt, signal).catch((error: unknown) => {
+    exchanges++;
+    const reply = await session.send(call.prompt, signal).catch((error: unknown) => {
       call.error = describeError(error);
       throw error;
     });
     Object.assign(call, { reply, ms: Math.round(performance.now() - started) });
-    turn.remote ??= await opts.session.remote();
+    turn.remote ??= await session.remote();
+    if (!reply.trim() && exchanges === 1 && opts.fresh && empties < LIMITS.emptyRetries) {
+      empties++;
+      session = opts.fresh();
+      exchanges = 0;
+      n--;
+      continue;
+    }
     let calls;
     try {
       calls = parseReply(reply);
@@ -344,6 +361,8 @@ export async function* runTurn({
       ended = yield* drive({
         role: "planner",
         session: planner.session,
+        // A new conversation has only this message: an empty reply is asked again in a clean one.
+        fresh: fresh ? () => (planner.session = openSession(model, "planner", conversationId)) : undefined,
         first,
         tools: readTools,
         max: LIMITS.plannerSteps,
@@ -374,7 +393,7 @@ export async function* runTurn({
   const plan = String(ended.args.plan ?? "");
   if (!agent.direct) turn.steps.push({ id: crypto.randomUUID(), name: "implement", args: { plan }, result: "" });
   yield { ...turn };
-  const session = openSession(model, "implementer", conversationId);
+  let session = openSession(model, "implementer", conversationId);
   const seen: Seen = {};
   const tools = [...agent.tools, ANSWER];
   const implementerTail = () => format(tools, "do the next steps of the plan with your tools; when everything is done, answer.", `{"tools": [{"name": "${agent.tools.find((t) => !t.readOnly)?.name ?? "answer"}", "args": {…}}]}`);
@@ -398,6 +417,7 @@ export async function* runTurn({
         role: "implementer",
         session,
         first: saveRetried ? `${tag("save_failed", note ?? "")}\n\n${implementerTail()}` : start,
+        fresh: saveRetried ? undefined : () => (session = openSession(model, "implementer", conversationId)),
         tools,
         max: LIMITS.implementerSteps,
         turn,

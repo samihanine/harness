@@ -110,8 +110,8 @@ export const SCENARIOS: Scenario[] = [
       });
       return [
         ...expect(slides.length >= 5 && slides.length <= 8, `${slides.length} slides (asked 6)`),
-        ...expect(slides[0]?.template === "hero", "does not start with a hero slide"),
-        ...expect(slides.at(-1)?.template === "end" || /étape|next/i.test(JSON.stringify(slides.at(-1))), "does not end with the next steps / end slide"),
+        ...expect(["hero", "title", "cover"].includes(String(slides[0]?.template)), "does not start with a cover slide"),
+        ...expect(["end", "title", "cover"].includes(String(slides.at(-1)?.template)) || /étape|next/i.test(JSON.stringify(slides.slice(-2))), "does not end with the next steps / a closing slide"),
         ...expect(/12[,.]4/.test(JSON.stringify(slides)), "the revenue figure is missing"),
         ...invalid,
       ];

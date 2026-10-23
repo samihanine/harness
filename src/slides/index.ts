@@ -108,12 +108,24 @@ export function deckInfo(deck: Deck): DeckInfo[] {
 
 const KIND_LABELS: Record<NonNullable<Template<z.ZodObject>["kind"]>, string> = { cover: "cover page", section: "part title page", subsection: "subpart title page", summary: "summary page", content: "content page", end: "closing page" };
 
-/** For the AI: each template with its kind and args (from the zod schemas). */
+type JsonShape = { type?: string | string[]; properties?: Record<string, JsonShape>; required?: string[]; items?: JsonShape; enum?: unknown[] };
+
+/** An args shape in short: {title, items[{text, type?}], colors?} — names and nesting, no types. */
+function signature(shape: JsonShape): string {
+  if (shape.items) return `[${signature(shape.items)}]`;
+  if (!shape.properties) return shape.enum ? `(${shape.enum.join("|")})` : "";
+  const names = Object.keys(shape.properties);
+  const ordered = [...names.filter((k) => shape.required?.includes(k)), ...names.filter((k) => !shape.required?.includes(k))];
+  return `{${ordered.map((k) => `${k}${shape.required?.includes(k) ? "" : "?"}${signature(shape.properties![k]).replace(/^\(.*\)$/, "")}`).join(", ")}}`;
+}
+
+/**
+ * For the AI: each template in one short line — its kind, what it is for, its args (required first,
+ * optional with "?"). Short on purpose: a long list made the model return empty replies.
+ */
 export const templatesText = () =>
   TEMPLATES.map((t) => {
-    const shape = z.toJSONSchema(t.args) as { properties?: Record<string, { type?: string; description?: string }>; required?: string[] };
-    const args = Object.entries(shape.properties ?? {}).map(([k, v]) => `${k}${shape.required?.includes(k) ? "" : "?"}: ${v.type ?? "object"}${v.description ? ` (${v.description})` : ""}`);
-    return `- ${t.id} [${KIND_LABELS[t.kind ?? "content"]}]: ${t.description} Args: ${args.join(", ")}`;
+    return `- ${t.id} (${KIND_LABELS[t.kind ?? "content"]}): ${t.description.length > 240 ? `${t.description.slice(0, 240)}…` : t.description} ${signature(z.toJSONSchema(t.args) as JsonShape)}`;
   }).join("\n");
 
 export const EXAMPLE_DECK: Deck = {
