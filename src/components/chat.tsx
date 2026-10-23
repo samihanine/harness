@@ -73,7 +73,7 @@ function adapter(agent: { current: Agent }, conversationId: string, scope: strin
       // Files added since the last answer go with this message (also after a reload of the page).
       const since = messages.slice(messages.map((m) => m.role).lastIndexOf("assistant") + 1);
       for (const part of since.flatMap((m) => [...m.content] as { type: string; data?: string }[])) if (part.type === "file") await addFileToConversation(conversationId, part.data ?? "");
-      const { model } = await settings.get();
+      const { model, implementerModel } = await settings.get();
       const startedAt = new Date().toISOString();
       const t0 = performance.now();
       // Full trace kept with the message (exported with the conversation): model exchanges, tool timings.
@@ -83,11 +83,11 @@ function adapter(agent: { current: Agent }, conversationId: string, scope: strin
           // The private LLM's markdown is not always well formed (one-line lists, fences): fixed here.
           ...(text ? [{ type: "text" as const, text: cleanMarkdown(text) }] : []),
         ],
-        metadata: { custom: { status: u.status, trace: { model: model ?? AI_MODELS[0], startedAt, ms: Math.round(performance.now() - t0), remote: u.remote, steps: u.steps, llm: u.llm } } },
+        metadata: { custom: { status: u.status, trace: { model: model ?? AI_MODELS[0], implementerModel: implementerModel ?? model ?? AI_MODELS[0], startedAt, ms: Math.round(performance.now() - t0), remote: u.remote, steps: u.steps, llm: u.llm } } },
       });
       let latest: Update = { steps: [], llm: [] };
       try {
-        for await (const update of runTurn({ agent: withAdmin(agent.current, scope), model: model ?? AI_MODELS[0], conversationId, history: previous.map(historyOf).join("\n\n"), request: textOf(messages.at(-1)!), answering, signal: abortSignal })) {
+        for await (const update of runTurn({ agent: withAdmin(agent.current, scope), model: model ?? AI_MODELS[0], implementerModel: implementerModel ?? model ?? AI_MODELS[0], conversationId, history: previous.map(historyOf).join("\n\n"), request: textOf(messages.at(-1)!), answering, signal: abortSignal, scope })) {
           latest = update;
           yield parts(update, update.answer);
         }

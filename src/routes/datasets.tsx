@@ -17,7 +17,7 @@ import { tool, type Agent } from "@/agent/loop";
 import { STEPS_TEXT, modelEditorTools, modelState, saveModelDraft } from "@/agent/model-editor-tools";
 import { modelTools } from "@/agent/model-tools";
 import { profileModel } from "@/lib/model-samples";
-import { DAX_RULES, daxTool } from "@/agent/pbi-tools";
+import { DAX_RULES, daxTool, queryTool } from "@/agent/pbi-tools";
 import { last, useLast } from "@/lib/last";
 import { createDatasetFromExcel, refreshDataset } from "@/lib/library";
 import { fromTmdl, modelParameters, type ModelInfo } from "@/lib/model";
@@ -108,9 +108,9 @@ Your changes go to a draft saved at the end. Measures and calculated columns are
           : `The user can only read this model (right: ${dataset.access ?? "unknown"}): you explain it, find fields and answer with DAX; changing it needs the edit right.`
       }
 ${DAX_RULES}`,
-      tools: [...(editable ? modelEditorTools(ref) : [daxTool(() => ref())]), ...modelTools(() => live.current), daxEditorTool(() => navigate({ search: (x) => ({ ...x, tab: "dax" }), replace: true }))],
+      tools: [...(editable ? modelEditorTools(ref) : [daxTool(() => ref())]), ...modelTools(() => live.current), queryTool(() => ref() && { ...ref()!, info: live.current?.info }), daxEditorTool(() => navigate({ search: (x) => ({ ...x, tab: "dax" }), replace: true }))],
       // The structure and examples of the data come at once: no exploring call for a simple question.
-      context: async () => withContexts([await datasetText(live.current ?? dataset)], [dataset.contextIds]),
+      context: async (focus) => withContexts([await datasetText(live.current ?? dataset, focus)], [dataset.contextIds]),
       state: async () => {
         const editor = daxEditor.current ? `DAX editor (DAX tab) now:\n${daxEditor.current.query().slice(0, 1500)}` : "";
         const model = editable ? await modelState(ref(), lastRefresh.current?.id === live.current?.id ? lastRefresh.current?.text : undefined) : "";

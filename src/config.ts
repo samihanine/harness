@@ -20,6 +20,10 @@ export let VISUAL_PREVIEW = true;
 export let VISUAL_EXPLAIN = true;
 /** Report viewer › Guides: guides written in the viewer (title, content, new guide rows, ids); false = read only. */
 export let GUIDE_EDITOR = true;
+/** AI: the failed tool calls are kept in this browser and the latest ones shown to the AI as mistakes not to repeat (Settings downloads them). */
+export let LEARN_FROM_MISTAKES = true;
+/** Report viewer › Guides: "Why did it change?" button of a time chart (the app breaks the change down by dimension, the AI tells it). */
+export let VISUAL_WHY = true;
 /** Excel editor: uploading files into image / file fields (to the schema's uploads folder, set in the Schema editor). */
 export let EXCEL_UPLOAD = true;
 
@@ -48,6 +52,12 @@ export const SCREENS = {
   slides: true,
 };
 export type Screen = keyof typeof SCREENS;
+
+/** Tabs of the Builder (the report itself is always there): its report measures, the reference reports given to the AI. */
+export const BUILDER_TABS = {
+  measures: true,
+  reports: true,
+};
 
 /** Tabs of the report viewer (the report itself is always there). */
 export const VIEWER_TABS = {
@@ -81,8 +91,11 @@ export type HubConfig = {
   visualExplain: boolean;
   guideEditor: boolean;
   excelUpload: boolean;
+  learnFromMistakes: boolean;
+  visualWhy: boolean;
   screens: typeof SCREENS;
   viewerTabs: typeof VIEWER_TABS;
+  builderTabs: typeof BUILDER_TABS;
   export: typeof EXPORT;
   prompts: typeof PROMPTS;
 };
@@ -97,8 +110,11 @@ export const currentConfig = (): HubConfig =>
     visualExplain: VISUAL_EXPLAIN,
     guideEditor: GUIDE_EDITOR,
     excelUpload: EXCEL_UPLOAD,
+    learnFromMistakes: LEARN_FROM_MISTAKES,
+    visualWhy: VISUAL_WHY,
     screens: SCREENS,
     viewerTabs: VIEWER_TABS,
+    builderTabs: BUILDER_TABS,
     export: EXPORT,
     prompts: PROMPTS,
   });
@@ -126,8 +142,11 @@ export function applyConfig(given: Partial<HubConfig>, { cache = true } = {}) {
   VISUAL_EXPLAIN = pick(given.visualExplain, VISUAL_EXPLAIN);
   GUIDE_EDITOR = pick(given.guideEditor, GUIDE_EDITOR);
   EXCEL_UPLOAD = pick(given.excelUpload, EXCEL_UPLOAD);
+  LEARN_FROM_MISTAKES = pick(given.learnFromMistakes, LEARN_FROM_MISTAKES);
+  VISUAL_WHY = pick(given.visualWhy, VISUAL_WHY);
   take(SCREENS, given.screens);
   take(VIEWER_TABS, given.viewerTabs);
+  take(BUILDER_TABS, given.builderTabs);
   take(EXPORT, given.export);
   take(PROMPTS, given.prompts);
   if (typeof document !== "undefined") {

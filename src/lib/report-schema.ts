@@ -128,15 +128,17 @@ export const schemaText = (s: ReportSchema) =>
     .filter(Boolean)
     .join("\n\n");
 
-/** Example reports for the Builder's AI: each one's schema (made when missing), cut to stay short. */
-export async function examplesText(ids: string[] = []) {
-  if (!ids.length) return "";
+/** The Builder's reference reports (Reports tab) with their schemas (made when missing). */
+export async function referenceReports(ids: string[] = []) {
+  if (!ids.length) return [];
   const reports = (await all("reports")).filter((r) => ids.includes(r.id));
-  const parts = await Promise.all(
-    reports.map(async (r) => {
-      const schema = r.schema ?? (await describeReport(r).catch(() => undefined));
-      return schema ? `### Example report "${r.name}"\n${schemaText(schema).slice(0, 4000)}` : `### Example report "${r.name}": its structure could not be read.`;
-    }),
-  );
-  return `Example reports chosen by the user (follow their layout, visual types, fields and style when it fits the request):\n${parts.join("\n\n")}`;
+  return Promise.all(reports.map(async (r) => ({ name: r.name, schema: r.schema ?? (await describeReport(r).catch(() => undefined)) })));
+}
+
+/** Reference reports for the Builder's AI: each one's schema, cut to stay short. */
+export async function examplesText(ids: string[] = []) {
+  const reports = await referenceReports(ids);
+  if (!reports.length) return "";
+  const parts = reports.map((r) => (r.schema ? `### Reference report "${r.name}"\n${schemaText(r.schema).slice(0, 4000)}` : `### Reference report "${r.name}": its structure could not be read.`));
+  return `Reference reports chosen by the user (Reports tab): context for inspiration, not to change. The user may refer to them ("like …", "the page … of …"); follow their layout, visual types and fields when it fits, and copy_report_page rebuilds one of their pages here.\n${parts.join("\n\n")}`;
 }

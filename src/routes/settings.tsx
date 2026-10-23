@@ -12,6 +12,7 @@ import { AI_MODELS } from "@/agent/llm";
 import { DEFAULT_CONFIG, SCREEN_LABELS, applyConfig, currentConfig, type HubConfig } from "@/config";
 import { loadHubConfig, saveHubConfig } from "@/lib/hub-config";
 import { errorText } from "@/lib/ms";
+import { allMistakes, clearMistakes } from "@/lib/mistakes";
 import { settings } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { authStatus, signIn, signOut } from "@/server/ms";
@@ -26,9 +27,13 @@ const LABELS: Record<string, string> = {
   aiPanel: "AI panel on every screen",
   visualPreview: "Guides: live preview of the clicked visual",
   visualExplain: 'Guides: "Explain" button',
+  visualWhy: 'Guides: "Why did it change?" button (time charts)',
+  learnFromMistakes: "Show the AI its past mistakes (kept in this browser)",
   guideEditor: "Guides: edit the guides in the viewer",
   excelUpload: "Excel: upload files into image / file columns",
   guides: "Viewer tab: Guides",
+  measures: "Builder tab: Measures",
+  reports: "Builder tab: Reports (reference reports)",
   visualPdf: "Visual as PDF (Guides)",
   visualPng: "Visual as PNG (Guides)",
   report: "Report export (PDF, .pbix)",
@@ -72,6 +77,7 @@ function Settings() {
           content: (
             <Page>
               <AiKey />
+              <Mistakes learn={draft.learnFromMistakes} onLearn={(v) => set("learnFromMistakes", v)} />
               <Section title="Instructions" description="Added to the AI's own instructions (company vocabulary, tone, rules): for every screen, and per screen.">
                 <div className="flex flex-col gap-4">
                   {(Object.keys(draft.prompts) as (keyof HubConfig["prompts"])[]).map((k) => (
@@ -95,8 +101,11 @@ function Settings() {
               <Section title="Viewer" description="Tabs and tools of the report viewer.">
                 <Flags value={{ ...draft.viewerTabs }} onChange={(v) => set("viewerTabs", v)} />
                 <div className="mt-3 border-t pt-3">
-                  <Flags value={{ visualPreview: draft.visualPreview, visualExplain: draft.visualExplain, guideEditor: draft.guideEditor }} onChange={(v) => (setDraft((d) => ({ ...d, ...v })), setApplied(false))} />
+                  <Flags value={{ visualPreview: draft.visualPreview, visualExplain: draft.visualExplain, visualWhy: draft.visualWhy, guideEditor: draft.guideEditor }} onChange={(v) => (setDraft((d) => ({ ...d, ...v })), setApplied(false))} />
                 </div>
+              </Section>
+              <Section title="Builder" description="Tabs of the Builder.">
+                <Flags value={{ ...draft.builderTabs }} onChange={(v) => set("builderTabs", v)} />
               </Section>
               <Section title="Exports" description="The Power BI export API needs a Premium capacity: on Pro, PDF goes through the browser's print dialog.">
                 <Flags value={draft.export} onChange={(v) => set("export", v)} />
@@ -232,14 +241,24 @@ function Microsoft() {
 /* ----------------------------------- AI ----------------------------------- */
 
 function AiKey() {
-  const [values, setValues] = useState({ aiKey: "", model: AI_MODELS[0] as string });
+  const [values, setValues] = useState({ aiKey: "", model: AI_MODELS[0] as string, implementerModel: AI_MODELS[0] as string });
   const [saved, setSaved] = useState(false);
-  useEffect(() => void settings.get().then((s) => setValues({ aiKey: s.aiKey ?? "", model: s.model ?? AI_MODELS[0] })), []);
+  useEffect(() => void settings.get().then((s) => setValues({ aiKey: s.aiKey ?? "", model: s.model ?? AI_MODELS[0], implementerModel: s.implementerModel ?? s.model ?? AI_MODELS[0] })), []);
   const set = (v: Partial<typeof values>) => (setValues({ ...values, ...v }), setSaved(false));
+  const select = (id: string, label: string, key: "model" | "implementerModel") => (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <select id={id} className="input h-9" value={values[key]} onChange={(e) => set({ [key]: e.target.value })}>
+        {AI_MODELS.map((m) => (
+          <option key={m}>{m}</option>
+        ))}
+      </select>
+    </div>
+  );
   return (
     <Section
-      title="Key and model"
-      description="Kept in this browser only: the AI API is called from the browser with this key."
+      title="Key and models"
+      description="Kept in this browser only: the AI API is called from the browser with this key. The planner explores and asks (few calls); the implementer makes the changes (many calls)."
       actions={
         <>
           {saved && <span className="text-[12.5px] text-success">Saved.</span>}
@@ -254,15 +273,41 @@ function AiKey() {
           <Label htmlFor="ai-key">AI key (token, or NAME=value lines)</Label>
           <Textarea id="ai-key" rows={3} className="font-mono text-[13px]" value={values.aiKey} onChange={(e) => set({ aiKey: e.target.value })} />
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="ai-model">Model</Label>
-          <select id="ai-model" className="input h-9" value={values.model} onChange={(e) => set({ model: e.target.value })}>
-            {AI_MODELS.map((m) => (
-              <option key={m}>{m}</option>
-            ))}
-          </select>
+        <div className="flex flex-col gap-3">
+          {select("ai-model", "Planner model", "model")}
+          {select("ai-implementer-model", "Implementer model", "implementerModel")}
         </div>
       </div>
+    </Section>
+  );
+}
+
+/** The AI's failed tool calls kept in this browser: shown to it as mistakes not to repeat; downloaded to improve prompts and tools. */
+function Mistakes({ learn, onLearn }: { learn: boolean; onLearn: (v: boolean) => void }) {
+  const [count, setCount] = useState<number>();
+  useEffect(() => void allMistakes().then((m) => setCount(m.length)), []);
+  const download = async () => {
+    const json = JSON.stringify({ exportedAt: new Date().toISOString(), mistakes: await allMistakes() }, null, 2);
+    const url = URL.createObjectURL(new Blob([json], { type: "application/json" }));
+    Object.assign(document.createElement("a"), { href: url, download: `ai-mistakes-${new Date().toISOString().slice(0, 10)}.json` }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  };
+  return (
+    <Section
+      title="Mistakes"
+      description="Each failed tool call of the AI, with the call that fixed it. The latest ones of a screen are shown to the AI as examples not to follow."
+      actions={
+        <>
+          <Button size="sm" variant="outline" disabled={!count} onClick={() => void download()}>
+            <DownloadIcon /> Download ({count ?? "…"})
+          </Button>
+          <Button size="sm" variant="ghost" disabled={!count} onClick={() => void clearMistakes().then(() => setCount(0))}>
+            Clear
+          </Button>
+        </>
+      }
+    >
+      <Flags value={{ learnFromMistakes: learn }} onChange={(v) => onLearn(v.learnFromMistakes)} />
     </Section>
   );
 }

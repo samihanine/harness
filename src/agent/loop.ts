@@ -15,6 +15,8 @@
 import { z } from "zod";
 import { deleteRemoteConversation, openSession, type Session } from "./llm";
 import { ReplyError, parseReply } from "./reply";
+import { LEARN_FROM_MISTAKES } from "@/config";
+import { addMistakes, mistakesText, type Mistake } from "@/lib/mistakes";
 
 export type Tool = {
   name: string;
@@ -31,8 +33,11 @@ export type Agent = {
   /** What this screen is, what the AI can do there and how (shared by the planner and the implementer). */
   instructions: string;
   tools: Tool[];
-  /** What the AI works on (model, file, notes…): sent at the start of a conversation, again only when it changes. */
-  context: () => Promise<string>;
+  /**
+   * What the AI works on (model, file, notes…): sent at the start of a conversation, again only when it
+   * changes. `focus`: the user's request (a big model then details only the tables it is about).
+   */
+  context: (focus?: string) => Promise<string>;
   /** What the user sees now (page, filters, rows…): re-read before each model call, sent when it changed. */
   state?: (progress?: Progress) => Promise<string>;
   /**
@@ -156,7 +161,8 @@ const live = new Map<string, Live>();
 /** Drops the planner conversation of an app conversation (deleted). */
 export const forgetSession = (conversationId: string) => void live.delete(conversationId);
 
-type Turn = { steps: Step[]; llm: LlmCall[]; remote?: string };
+/** `invalid`: replies that could not be read (kept as mistakes). */
+type Turn = { steps: Step[]; llm: LlmCall[]; remote?: string; invalid?: string[] };
 /** How a role ended: its final tool, or a message for the user when it could not finish. */
 type Ended = { name: string; args: Record<string, unknown> } | { giveUp: string };
 type Seen = { context?: string; state?: string };
@@ -222,6 +228,7 @@ async function* drive(opts: {
     } catch (error) {
       if (!(error instanceof ReplyError)) throw error;
       // Plain prose: the model talking to the user. Sent back once to get the proper final tool.
+      (turn.invalid ??= []).push(`${error.message} — reply: ${reply.slice(0, 300)}`);
       if (++retries > LIMITS.retries) return { giveUp: !reply.includes("{") && reply.trim() ? reply.trim() : `⚠️ The assistant's reply could not be read (${error.message}). Ask again.` };
       prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\nReply again with the JSON object only (shorter if needed: fewer calls; count the brackets).`)}\n\n${opts.tail()}`;
       n--;
@@ -277,17 +284,31 @@ async function* drive(opts: {
 /** The user's answers to the questions, as sent back to the planner. */
 export const answersText = (choices: Choices, answers: string[][]) => choices.questions.map((q, i) => `- ${q.question} → ${answers[i]?.join(", ") || "(no answer)"}`).join("\n");
 
-export async function* runTurn({
-  agent,
-  model,
-  conversationId,
-  history,
-  request,
-  answering,
-  signal,
-}: {
+/** The turn's failed calls, each with the call of the same tool that worked after it (if any). */
+function mistakesOf(turn: Turn, scope: string): Mistake[] {
+  const at = new Date().toISOString();
+  const args = (s: Step) => JSON.stringify(s.args).slice(0, 400);
+  return [
+    ...turn.steps.flatMap((s, i) => {
+      if (!s.error) return [];
+      const fix = turn.steps.slice(i + 1).find((t) => t.name === s.name && !t.error);
+      return [{ at, scope, tool: s.name, args: args(s), error: String(s.result ?? "").slice(0, 500), fix: fix && args(fix) }];
+    }),
+    ...(turn.invalid ?? []).map((error) => ({ at, scope, tool: "(reply)", args: "", error })),
+  ];
+}
+
+type TurnArgs = Parameters<typeof runTurn>[0];
+/** The request each app conversation is about (kept while the user answers the planner's questions). */
+const focusOf = new Map<string, string>();
+
+/** One user message: planner then implementer (see the top of this file); the mistakes made are kept. */
+export async function* runTurn(args: {
   agent: Agent;
+  /** The planner's model. */
   model: string;
+  /** The implementer's model (Settings › AI: often a different one than the planner's). */
+  implementerModel?: string;
   /** App conversation: its planner conversation is reused from one message to the next. */
   conversationId: string;
   /** The conversation so far, as text: only used to start a new planner conversation (e.g. after a reload). */
@@ -296,10 +317,26 @@ export async function* runTurn({
   /** The message answers the planner's last questions (the planner may then implement or answer). */
   answering: boolean;
   signal: AbortSignal;
+  /** The screen (kept with the mistakes). */
+  scope?: string;
 }): AsyncGenerator<Update> {
   const turn: Turn = { steps: [], llm: [] };
+  try {
+    yield* turnOf(args, turn);
+  } finally {
+    void addMistakes(mistakesOf(turn, args.scope ?? ""));
+  }
+}
+
+async function* turnOf({ agent, model, implementerModel = model, conversationId, history, request, answering, signal }: TurnArgs, turn: Turn): AsyncGenerator<Update> {
+  // Past mistakes of this screen's tools: shown once to each new conversation, as examples not to follow.
+  const mistakes = LEARN_FROM_MISTAKES ? await mistakesText(agent.tools.map((t) => t.name)) : "";
+  const mistakesTag = mistakes && tag("past_mistakes", `Calls that failed before on this screen (do not repeat them; "worked instead" is the call that fixed it):
+${mistakes}`);
+  if (!answering || !focusOf.has(conversationId)) focusOf.set(conversationId, request);
+  const focus = focusOf.get(conversationId);
   const read = async (progress?: Progress) => ({
-    context: await agent.context().catch((e) => `Context unavailable: ${describeError(e)}`),
+    context: await agent.context(focus).catch((e) => `Context unavailable: ${describeError(e)}`),
     state: agent.state ? await agent.state(progress).catch((e) => `Page state unavailable: ${describeError(e)}`) : undefined,
   });
   /** `read`, telling the user what is happening (with progress) when it takes more than a moment. */
@@ -346,7 +383,7 @@ export async function* runTurn({
         stage === "answers" ? `{"tools": [{"name": "implement", "args": {"plan": "1. … 2. …"}}]}` : `{"tools": [{"name": "ask_user", "args": {"message": "…", "questions": [{"question": "…?", "options": ["Yes, do it", "No"]}], "plan": "1. …"}}]}`,
       );
     const first = [
-      ...(fresh ? [tag("protocol", PROTOCOL), tag("role", PLANNER), tag("app_instructions", agent.instructions), tag("tools", readTools.map(signature).join("\n"))] : []),
+      ...(fresh ? [tag("protocol", PROTOCOL), tag("role", PLANNER), tag("app_instructions", agent.instructions), tag("tools", readTools.map(signature).join("\n")), mistakesTag] : []),
       ...changes(planner, now, fresh),
       fresh && history && tag("conversation_so_far", history.slice(-LIMITS.historyChars)),
       planner.note && tag("since_your_last_message", planner.note),
@@ -402,11 +439,14 @@ export async function* runTurn({
     tag("role", agent.direct ? DIRECT : IMPLEMENTER),
     tag("app_instructions", agent.instructions),
     tag("tools", tools.map(signature).join("\n")),
+    mistakesTag,
     ...changes(seen, yield* readShown("Reading what you see")),
     tag("conversation", `${history.slice(-3000)}\n\nuser: ${request}`.trim()),
     tag("plan", plan),
     implementerTail(),
-  ].join("\n\n");
+  ]
+    .filter(Boolean)
+    .join("\n\n");
   const implemented = turn.steps.length;
   let result: Ended = { giveUp: "" };
   let saveRetried = false;

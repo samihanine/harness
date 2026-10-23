@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { CopyIcon, LibraryIcon, PencilRulerIcon, SigmaIcon } from "lucide-react";
+import { BUILDER_TABS } from "@/config";
 import { ReportPicker } from "@/components/pickers";
 import { ReportActions } from "@/components/report-actions";
 import { Button } from "@/components/ui/button";
@@ -105,8 +106,8 @@ function Editor() {
             </>
           ),
         },
-        ...(mode === "editor" ? [] : [{ id: "measures", label: "Measures", icon: SigmaIcon, count: measures?.length, content: <MeasuresTab measures={measures} error={measuresError} ready={!!entry} /> }]),
-        ...(entry ? [{ id: "examples", label: "Examples", icon: LibraryIcon, count: entry.exampleIds?.length || undefined, content: <ExamplesTab entry={entry} /> }] : []),
+        ...(mode === "editor" || !BUILDER_TABS.measures ? [] : [{ id: "measures", label: "Measures", icon: SigmaIcon, count: measures?.length, content: <MeasuresTab measures={measures} error={measuresError} ready={!!entry} /> }]),
+        ...(entry && BUILDER_TABS.reports ? [{ id: "examples", label: "Reports", icon: LibraryIcon, count: entry.exampleIds?.length || undefined, content: <ExamplesTab entry={entry} /> }] : []),
       ]}
     />
   );
@@ -159,8 +160,9 @@ function MeasuresTab({ measures, error, ready }: { measures?: ReportMeasure[]; e
 }
 
 /**
- * Reports given to the AI as examples (their pages, visuals and fields): it follows their layout and
- * style. Kept with the edited report; schemas are made when missing (Reports screen to regenerate).
+ * Reference reports given to the AI (their pages, visuals, fields, layout): context for inspiration the
+ * user can refer to, and pages the AI can rebuild here (copy_report_page), even from a report whose
+ * definition is closed. Kept with the edited report; schemas are made when missing (Reports screen to regenerate).
  */
 function ExamplesTab({ entry }: { entry: ReportEntry }) {
   const reports = useCollection("reports").filter((r) => r.id !== entry.id);
@@ -168,7 +170,7 @@ function ExamplesTab({ entry }: { entry: ReportEntry }) {
   const toggle = (id: string, on: boolean) => void patch("reports", entry.id, { exampleIds: on ? [...chosen, id] : chosen.filter((x) => x !== id) });
   return (
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 overflow-y-auto p-6">
-      <Section title="Example reports" description="The assistant reads their structure (pages, visuals, fields, layout) and builds in the same spirit. None by default.">
+      <Section title="Reference reports" description='The assistant reads their structure (pages, visuals, fields, layout) as inspiration: refer to them in your requests ("like the sales report", "rebuild its Overview page here"). Several can be chosen; none by default.'>
         {!reports.length && <p className="text-[13px] text-muted-foreground">No other report in the app: add some in the Reports screen.</p>}
         <div className="flex flex-col divide-y">
           {reports.map((r) => (

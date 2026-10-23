@@ -6,12 +6,14 @@
  */
 import type { VisualDescriptor } from "powerbi-client";
 import { AI_MODELS, openSession } from "./llm";
-import { pageText, visualText, type Report } from "@/lib/pbi";
+import { dataFacts } from "@/lib/facts";
+import { models, pageText, visualText, type Report } from "@/lib/pbi";
 import { settings, type DatasetEntry } from "@/lib/store";
 
 const PROMPT = `You are a sharp data analyst. A business user clicked ONE visual of a Power BI report and asks: "what does this tell me?". Below are the visual (type, fields, filters, its data as exported), the page it sits on (other visuals, filters, slicers) and notes about the report.
 
 Your job is to make the visual SPEAK: tell the user what they would only see after studying it for a few minutes.
+- <facts> (when given) are computed by the application from the visual's data: exact, use them rather than computing again.
 - Find what matters in the data: the leader and how far ahead it is, the concentration (e.g. "the top 3 make 72 %"), the gap between best and worst, the trend and where it breaks, outliers, what is unexpectedly low or missing, a value that changes the story once compared with the total or another visual of the page. Compute these yourself (shares, differences, ratios, averages) from the rows given.
 - Fit the form to the visual and the data — no fixed template:
   · a time series: trend, peak, dip, turning point, the latest value vs the usual level;
@@ -37,7 +39,9 @@ export async function explainVisual(report: Report, page: string, visual: string
   const v = (await target?.getVisuals())?.find((x) => x.name === visual);
   if (!v) throw new Error("Visual not found on the page.");
   const ref = dataset && { id: dataset.id, groupId: dataset.groupId };
-  const [described, pageState] = await Promise.all([visualText(v, true, false, ref), pageText(report, false)]);
+  const m = await models();
+  const [described, pageState, exported] = await Promise.all([visualText(v, true, false, ref), pageText(report, false), v.type === "slicer" ? undefined : v.exportData(m.ExportDataType.Summarized, 200).catch(() => undefined)]);
+  const facts = exported?.data ? dataFacts(exported.data) : "";
   // A slicer has no data of its own: what its field is (model description, type, values) explains it.
   const fields = v.type === "slicer" ? await slicerFields(v, dataset) : "";
   const { model } = await settings.get();
@@ -45,6 +49,7 @@ export async function explainVisual(report: Report, page: string, visual: string
     PROMPT,
     context && `<report>\n${context}\n</report>`,
     `<visual>\n${described}${fields ? `\n${fields}` : ""}\n</visual>`,
+    facts && `<facts>\n${facts}\n</facts>`,
     `<page>\n${pageState}\n</page>`,
   ]
     .filter(Boolean)

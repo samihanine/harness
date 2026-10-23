@@ -5,7 +5,7 @@
 import { z } from "zod";
 import { datasetText, withContexts } from "./context";
 import { tool, type Agent, type Tool } from "./loop";
-import { DAX_RULES, daxTool } from "./pbi-tools";
+import { DAX_RULES, daxTool, queryTool } from "./pbi-tools";
 import { readRows } from "@/lib/excel";
 import { rowsText } from "@/lib/pbi";
 import { describeReport } from "@/lib/report-schema";
@@ -25,7 +25,7 @@ export type DeckSources = { datasets: DatasetEntry[]; reports: ReportEntry[]; sc
 function sourceTools(sources: () => DeckSources): Tool[] {
   const s = sources();
   return [
-    ...(s.datasets.length ? [daxTool(() => undefined, () => sources().datasets.map((d) => ({ id: d.id, groupId: d.groupId, name: d.name })))] : []),
+    ...(s.datasets.length ? [daxTool(() => undefined, () => sources().datasets.map((d) => ({ id: d.id, groupId: d.groupId, name: d.name }))), queryTool(() => undefined, () => sources().datasets.map((d) => ({ id: d.id, groupId: d.groupId, name: d.name, info: d.info })))] : []),
     ...(s.schemas.length
       ? [
           tool({
@@ -64,7 +64,7 @@ async function sourcesText(s: DeckSources) {
     }),
   );
   return [
-    ...(await Promise.all(s.datasets.map(datasetText))),
+    ...(await Promise.all(s.datasets.map((d) => datasetText(d)))),
     reports.length ? `Reports for the report / visual / compare templates. Give "report" (its id), "page" (a page's name) and, for one visual, its "crop" (already on a 1280×720 page):\n${reports.join("\n")}` : "",
     s.schemas.length ? `Excel tables (read_excel_rows): ${s.schemas.map((x) => `"${x.title}" (columns: ${x.fields.map((f) => f.name).join(", ")})`).join("; ")}` : "",
   ].filter(Boolean);

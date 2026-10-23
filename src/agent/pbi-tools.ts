@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { basicFilter, checkValues, columnValues, dax, findVisual, models, rowsText, settled, visualText, type Ref, type Report } from "@/lib/pbi";
 import { checkName, type ModelInfo } from "@/lib/model";
+import { QUERY_HELP, queryDax, type DefinedMeasure } from "@/lib/query-spec";
 import { tool, type Tool } from "./loop";
 
 /** How to write DAX that runs the first time (given to every agent writing queries). */
@@ -10,10 +11,20 @@ export const DAX_RULES = `DAX rules (follow them, queries fail otherwise):
 - Syntax: 'Table'[Column], [Measure], text in "double quotes". Count rows with COUNTROWS('Table') or an existing measure.
 - Grouping: SUMMARIZECOLUMNS('T'[a], 'T'[b], "Label", [Measure]). A plain list of value pairs of ONE table: DISTINCT(SELECTCOLUMNS('T', "A", 'T'[a], "B", 'T'[b])). Columns of two tables together only if they are related (see the relationships).
 - ORDER BY only columns of the result. Count the parentheses before sending.
+- Plain figures (values by groups, filtered, top N): the query tool writes the DAX for you. Raw DAX (run_dax) for the rest: time intelligence, filters on a measure, calculations.
 - A failed query: read the error, it names the problem (a missing name, or a (line, column) position) — fix exactly that and retry. To explain a failure to the user, quote the error; never invent a cause.`;
 
-/** run_dax: on the screen's model, or (`several`) on one of its models chosen by id. A thinking tool: results are capped. */
-export const daxTool = (dataset: () => Ref | undefined, several?: () => (Ref & { name: string })[]): Tool =>
+/** Report measures (`defined`) put in a query's DEFINE: they may use each other. */
+export function withDefined(query: string, defined: DefinedMeasure[]) {
+  const defs = defined.filter((m) => m.expression).map((m) => `MEASURE '${m.table.replace(/'/g, "''")}'[${m.name}] = ${m.expression}`).join("\n");
+  return !defs ? query : /^\s*DEFINE\b/i.test(query) ? query.replace(/^\s*DEFINE\b/i, `DEFINE\n${defs}`) : `DEFINE\n${defs}\n${query}`;
+}
+
+/**
+ * run_dax: on the screen's model, or (`several`) on one of its models chosen by id; `defined`: the
+ * report measures of that model, usable in the query. A thinking tool: results are capped.
+ */
+export const daxTool = (dataset: () => Ref | undefined, several?: () => (Ref & { name: string })[], defined?: (dataset: Ref) => Promise<DefinedMeasure[]>): Tool =>
   tool({
     name: "run_dax",
     description: `Runs a DAX query (EVALUATE …) on ${several ? "one of the semantic models (dataset_id)" : "the semantic model"} and returns the rows (max 50 shown). Use it to check values, totals or names before acting. Use TOPN / SUMMARIZECOLUMNS to keep results small. Exact names only (see the DAX rules).`,
@@ -23,7 +34,46 @@ export const daxTool = (dataset: () => Ref | undefined, several?: () => (Ref & {
       const list = several?.() ?? [];
       const ref = dataset_id ? list.find((d) => d.id === dataset_id || d.name === dataset_id) : (dataset() ?? (list.length === 1 ? list[0] : undefined));
       if (!ref) throw new Error(list.length ? `Give dataset_id: one of ${list.map((d) => `${d.id} (${d.name})`).join(", ")}.` : "No semantic model selected.");
-      return rowsText(await dax(ref, query));
+      return rowsText(await dax(ref, defined ? withDefined(query, await defined(ref)) : query));
+    },
+  });
+
+const scalar = z.union([z.string(), z.number(), z.boolean()]);
+/** A list given as one value, or as "a, b" (weak models do both). */
+const list = z.preprocess((v) => (typeof v === "string" ? v.split(/,(?![^[]*\])/).map((x) => x.trim()).filter(Boolean) : v), z.array(z.string()));
+export const querySpecArgs = {
+  values: list.default([]).describe("Measures [M] (model or report measures) or Sum('T'[col]) / Avg / Count / DistinctCount / Min / Max"),
+  group_by: list.optional().describe("Columns 'T'[col] to group by (rows of the result)"),
+  filters: z.array(z.object({ field: z.string().describe("A column 'T'[col]"), op: z.enum(["in", "not_in", ">", ">=", "<", "<=", "between", "contains"]).optional().describe("Default in"), values: z.array(scalar).optional().describe("in / not_in: the values (dates YYYY-MM-DD)"), value: z.union([z.string(), z.number()]).optional(), to: z.union([z.string(), z.number()]).optional().describe("between: the upper bound") })).optional(),
+  top: z.object({ count: z.number(), by: z.string().optional().describe("A value of the result (default: the first)"), ascending: z.boolean().optional().describe("true: the bottom N") }).optional(),
+  order_by: z.array(z.object({ field: z.string(), descending: z.boolean().optional() })).optional(),
+};
+
+/**
+ * query: a spec written as DAX by the app (query-spec.ts), on the screen's model or (`several`) one of
+ * its models; `defined`: the report's own measures, usable as values.
+ */
+export const queryTool = (dataset: () => (Ref & { info?: ModelInfo }) | undefined, several?: () => (Ref & { name: string; info?: ModelInfo })[], defined?: (dataset: Ref) => Promise<DefinedMeasure[]>): Tool =>
+  tool({
+    name: "query",
+    description: `${QUERY_HELP} Returns the rows (max 50 shown) and the DAX it ran.`,
+    args: z.object({ ...querySpecArgs, ...(several ? { dataset_id: z.string().optional().describe("Model id (when there are several)") } : {}) }),
+    readOnly: true,
+    run: async ({ dataset_id, ...spec }: any) => {
+      const list = several?.() ?? [];
+      const d = dataset_id ? list.find((x) => x.id === dataset_id || x.name === dataset_id) : (dataset() ?? (list.length === 1 ? list[0] : undefined));
+      if (!d) throw new Error(list.length ? `Give dataset_id: one of ${list.map((x) => `${x.id} (${x.name})`).join(", ")}.` : "No semantic model selected.");
+      const query = queryDax(spec, d.info, (await defined?.(d)) ?? []);
+      try {
+        return `${rowsText(await dax(d, query))}
+
+DAX used:
+${query}`;
+      } catch (error) {
+        throw new Error(`${error instanceof Error ? error.message : String(error)}
+DAX used:
+${query}`);
+      }
     },
   });
 

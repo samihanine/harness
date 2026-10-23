@@ -79,8 +79,8 @@ export type ResearchEntry = import("./research").ResearchEntry;
 
 /** `viewState`: the report as the user left it in this conversation (filters, slicers, page: a bookmark state). */
 export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number; viewState?: string };
-/** `configLink`: the SharePoint JSON file holding the app's options (read at start). */
-export type Settings = { aiKey?: string; model?: string; configLink?: string };
+/** `model`: the planner's (and of the one-call features); `implementerModel`: the implementer's (default: `model`). `configLink`: the SharePoint JSON file holding the app's options (read at start). */
+export type Settings = { aiKey?: string; model?: string; implementerModel?: string; configLink?: string };
 
 /** A slide deck (its JSON: see src/slides). */
 export type DeckEntry = { id: string; name: string; deck: import("../slides").Deck; updatedAt: number; sources?: { datasetIds: string[]; reportIds: string[]; schemaIds: string[] } };

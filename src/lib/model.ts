@@ -265,23 +265,47 @@ export async function addSamples(ref: Ref, info: ModelInfo) {
 
 const flags = (t: TableInfo) => [t.kind, t.hidden && "hidden", t.rows !== undefined && `${t.rows} rows`].filter(Boolean).join(", ");
 
-/** Always in the AI context: tables (one line each), measure names by folder, relationships. Details through the model tools. */
-export function modelSummary(info: ModelInfo) {
+const words = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3);
+
+/**
+ * The tables a request is about (`focus`: the user's words): those whose name, columns, measures or
+ * description share a word with it, plus the tables they are related to. Empty without a focus.
+ */
+export function relevantTables(info: ModelInfo, focus?: string) {
+  const asked = new Set(words(focus ?? ""));
+  if (!asked.size) return new Set<string>();
+  const score = (t: TableInfo) => [t.name, t.description ?? "", ...t.columns.map((c) => c.name), ...t.measures.map((m) => m.name)].flatMap(words).filter((w) => asked.has(w) || [...asked].some((a) => a.length >= 5 && (w.startsWith(a) || a.startsWith(w)))).length;
+  const hits = info.tables.map((t) => ({ t: t.name, s: score(t) })).filter((x) => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 8).map((x) => x.t);
+  const out = new Set(hits);
+  const table = (side: string) => side.replace(/^'?([^'[]+)'?\[.*$/, "$1").trim();
+  for (const r of info.relationships) {
+    if (hits.includes(table(r.from))) out.add(table(r.to));
+    if (hits.includes(table(r.to))) out.add(table(r.from));
+  }
+  return out;
+}
+
+/**
+ * Always in the AI context: tables (one line each), measure names by folder, relationships. Details
+ * through the model tools. A big model names the columns only of the tables the request is about.
+ */
+export function modelSummary(info: ModelInfo, focus?: string) {
   // Column names (with a short type) when the model is small enough: the AI then needs no describe_table to name them.
   const visible = info.tables.reduce((n, t) => n + t.columns.filter((c) => !c.hidden).length, 0);
   const named = visible <= 160;
+  const relevant = named ? new Set<string>() : relevantTables(info, focus);
   const typeOf = (c: Column) => { const t = (c.type ?? "").toLowerCase(); return /date/.test(t) ? " (date)" : /int|double|decimal|number/.test(t) ? " (number)" : ""; };
   const lines = [
     info.source === "tmdl" ? "Model read in full (DAX of every measure available)." : "Model read partially (with Build rights).",
     ...info.warnings.map((w) => `Limit: ${w}`),
-    named ? "Tables (columns and measures below are exact names; a measure's DAX: get_measure; values / descriptions: describe_table):" : "Tables (details: describe_table; a measure: get_measure; search: search_model):",
+    named ? "Tables (columns and measures below are exact names; a measure's DAX: get_measure; values / descriptions: describe_table):" : `Tables (big model: columns named only for the tables of the request${relevant.size ? "" : " — none matched"}; others: describe_table; a measure: get_measure; search: search_model):`,
   ];
   for (const t of info.tables) {
     const folders = new Map<string, string[]>();
     for (const m of t.measures.filter((m) => !m.hidden)) folders.set(m.folder ?? "", [...(folders.get(m.folder ?? "") ?? []), `[${m.name}]`]);
     const measures = [...folders].map(([f, names]) => (f ? `${f}: ${names.join(", ")}` : names.join(", "))).join("; ");
     lines.push(
-      `- '${t.name}'${flags(t) ? ` (${flags(t)})` : ""}${t.description ? ` — ${short(t.description, 120)}` : ""}: ${named ? `columns ${t.columns.filter((c) => !c.hidden).map((c) => `${c.name}${typeOf(c)}`).join(", ") || "none shown"}` : `${t.columns.filter((c) => !c.hidden).length} columns`}${measures ? `; measures: ${measures}` : ""}`,
+      `- '${t.name}'${flags(t) ? ` (${flags(t)})` : ""}${t.description ? ` — ${short(t.description, 120)}` : ""}: ${named || relevant.has(t.name) ? `columns ${t.columns.filter((c) => !c.hidden).map((c) => `${c.name}${typeOf(c)}`).join(", ") || "none shown"}` : `${t.columns.filter((c) => !c.hidden).length} columns`}${measures ? `; measures: ${measures}` : ""}`,
     );
   }
   if (info.relationships.length) lines.push("Relationships (many→one unless noted):", ...info.relationships.map((r) => `- ${r.from} ${r.cardinality} ${r.to}${r.both ? " (both directions)" : ""}${r.active ? "" : " (inactive: USERELATIONSHIP)"}`));

@@ -12,7 +12,7 @@ import { Empty, SubTabs, Workspace } from "@/components/workspace";
 import { reportContext } from "@/agent/context";
 import { tool, type Agent } from "@/agent/loop";
 import { modelTools } from "@/agent/model-tools";
-import { DAX_RULES, daxTool } from "@/agent/pbi-tools";
+import { DAX_RULES, daxTool, queryTool } from "@/agent/pbi-tools";
 import { useLast } from "@/lib/last";
 import { refreshReport } from "@/lib/library";
 import { errorText } from "@/lib/ms";
@@ -79,9 +79,10 @@ ${DAX_RULES}`,
         },
       }),
       daxTool(() => datasetRef),
+      queryTool(() => datasetRef && { ...datasetRef, info: dataset?.info }),
       ...modelTools(() => dataset),
     ],
-    context: () => reportContext(entry, dataset),
+    context: (focus) => reportContext(entry, dataset, focus),
     state: async () => {
       const s = live.current.schema;
       const contexts = (await all("contexts")).map((c) => `${c.name}${live.current.entry?.contextIds.includes(c.id) ? " (linked)" : ""}`);

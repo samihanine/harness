@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
-import { BookOpenIcon, BookTextIcon, DatabaseIcon, ChartPieIcon, CheckIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, SparklesIcon } from "lucide-react";
+import { BookOpenIcon, BookTextIcon, DatabaseIcon, ChartPieIcon, CheckIcon, CopyIcon, DownloadIcon, PencilIcon, PlusIcon, SparklesIcon, TrendingUpIcon } from "lucide-react";
 import { withToast } from "@/components/entity";
 import { Markdown } from "@/components/markdown";
 import { ReportPicker } from "@/components/pickers";
@@ -12,12 +12,13 @@ import { ContextLinks } from "@/components/context-links";
 import { DataTable } from "@/components/data-table";
 import { Empty, Section, Workspace } from "@/components/workspace";
 import { Zoom } from "@/components/zoom";
-import { EXPORT, GUIDE_EDITOR, VIEWER_TABS, VISUAL_EXPLAIN, VISUAL_PREVIEW } from "@/config";
+import { EXPORT, GUIDE_EDITOR, VIEWER_TABS, VISUAL_EXPLAIN, VISUAL_PREVIEW, VISUAL_WHY } from "@/config";
 import { reportContext } from "@/agent/context";
 import { explainVisual } from "@/agent/explain";
+import { whyChanged, whyTarget } from "@/agent/why";
 import { describeError, type Agent } from "@/agent/loop";
 import { modelTools } from "@/agent/model-tools";
-import { DAX_RULES, bookmarksText, daxTool, viewerTools } from "@/agent/pbi-tools";
+import { DAX_RULES, bookmarksText, daxTool, queryTool, viewerTools } from "@/agent/pbi-tools";
 import { useLast } from "@/lib/last";
 import { embedVisual, models, pageText, setVisualFilters, type Ref, type Report } from "@/lib/pbi";
 import type { Row } from "@/lib/schema";
@@ -87,10 +88,10 @@ Page state: the pages, the visuals of the CURRENT page (read a visual's data wit
 - To filter, use the FIRST that fits: 1. a slicer of the current page on that field (update_slicer_value); 2. a page filter (update_page_filter); 3. a report filter (update_report_filter), when it must apply to every page; 4. a visual filter (update_visual_filter), only for one visual.
 - Be fast. To change a filter, a slicer or the page: just do it (one call when possible) and say in one line what changed. Do NOT read the visuals' data (get_visual_data, read_page with data) unless the user asks about values or figures.
 ${DAX_RULES}`,
-    tools: [...viewerTools(() => report, () => datasetRef, () => dataset?.info), daxTool(() => datasetRef), ...modelTools(() => dataset)],
+    tools: [...viewerTools(() => report, () => datasetRef, () => dataset?.info), daxTool(() => datasetRef), queryTool(() => datasetRef && { ...datasetRef, info: dataset?.info }), ...modelTools(() => dataset)],
     // Filters, slicers and pages are harmless and undone in a click: the agent acts at once (no plan, no question).
     direct: true,
-    context: () => reportContext(entry, dataset),
+    context: (focus) => reportContext(entry, dataset, focus),
     state: async () => (report ? `What the user sees now:\n${await pageText(report, false, datasetRef)}\n${await bookmarksText(report)}` : "The report is not loaded yet."),
   };
 
@@ -284,7 +285,7 @@ function GuidePanel({ report, reportRef, entry, dataset, pages, open, onOpen, gu
             <h2 className="text-[16px] font-semibold">{title}</h2>
           </div>
           {VISUAL_PREVIEW && report && <VisualPreview report={report} reportRef={reportRef} page={open.page} visual={open.visual} handle={preview} />}
-          {report && (EXPORT.visualPdf || EXPORT.visualPng || VISUAL_EXPLAIN) && <VisualActions report={report} page={open.page} visual={open.visual} title={title} preview={preview} context={context} dataset={dataset} />}
+          {report && (EXPORT.visualPdf || EXPORT.visualPng || VISUAL_EXPLAIN || VISUAL_WHY) && <VisualActions report={report} page={open.page} visual={open.visual} title={title} preview={preview} context={context} dataset={dataset} />}
           <GuideCard guide={guide} ids={{ report: entry.id, ...open }} title={title} onAdd={guides.add} onUpdate={guides.update} />
         </div>
       )}
@@ -518,12 +519,30 @@ function VisualPreview({ report, reportRef, page, visual, handle }: { report: Re
   );
 }
 
-/** The open visual's buttons: PDF, PNG, Explain (the AI reads its data and explains it). */
+/**
+ * The open visual's buttons: PDF, PNG, Explain (the AI reads its data and explains it), and on a time
+ * chart "Why did it change?" (the change between the last two periods broken down by the page's dimensions).
+ */
 function VisualActions({ report, page, visual, title, preview, context, dataset }: { report: Report; page: string; visual: string; title: string; preview: { current?: PreviewHandle }; context: string; dataset?: DatasetEntry }) {
-  const [state, setState] = useState<{ busy?: "pdf" | "png" | "explain"; error?: string; explanation?: string }>({});
+  const [state, setState] = useState<{ busy?: "pdf" | "png" | "explain" | "why"; error?: string; explanation?: string }>({});
+  const [timeChart, setTimeChart] = useState(false);
+  useEffect(() => {
+    if (!VISUAL_WHY || !dataset) return;
+    let live = true;
+    void (async () => {
+      const v = (await (await report.getPages()).find((p) => p.name === page)?.getVisuals())?.find((x) => x.name === visual);
+      const target = v && (await whyTarget(v, dataset.info).catch(() => undefined));
+      if (live) setTimeChart(!!target);
+    })().catch(() => undefined);
+    return () => void (live = false);
+  }, [report, page, visual, dataset]);
   const explain = () => {
     setState({ busy: "explain" });
     explainVisual(report, page, visual, context, dataset).then((explanation) => setState({ explanation }), (e) => setState({ error: describeError(e) }));
+  };
+  const why = () => {
+    setState({ busy: "why" });
+    whyChanged(report, page, visual, context, dataset!).then((explanation) => setState({ explanation }), (e) => setState({ error: describeError(e) }));
   };
   const run = (kind: "pdf" | "png") => {
     setState({ busy: kind });
@@ -537,6 +556,11 @@ function VisualActions({ report, page, visual, title, preview, context, dataset 
         {VISUAL_EXPLAIN && (
           <Button size="sm" disabled={!!state.busy} onClick={explain}>
             <SparklesIcon /> {state.busy === "explain" ? "Reading…" : "Explain"}
+          </Button>
+        )}
+        {VISUAL_WHY && timeChart && (
+          <Button size="sm" variant="outline" disabled={!!state.busy} onClick={why}>
+            <TrendingUpIcon /> {state.busy === "why" ? "Comparing…" : "Why did it change?"}
           </Button>
         )}
         {EXPORT.visualPdf && (

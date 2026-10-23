@@ -6,7 +6,7 @@
  */
 import { z } from "zod";
 import { dax, rowsText, type Ref } from "@/lib/pbi";
-import { fromTmdl } from "@/lib/model";
+import { fromTmdl, resolveField, type ModelInfo } from "@/lib/model";
 import { readModelFiles, writeModelFiles } from "@/lib/tmdl";
 import { ModelDraft, STEP_KINDS, daxRef, dynamicSource, imageSources, parseTable, type ModelFile, type Step } from "@/lib/tmdl-edit";
 import { ms } from "@/server/ms";
@@ -27,6 +27,35 @@ async function open(ref: Ref) {
 }
 
 export const modelDraft = (ref: Ref) => drafts.get(ref.id);
+/** The model with the draft's unsaved changes (e.g. a field parameter just added), or undefined without a draft. */
+export const draftInfo = (ref: Ref): ModelInfo | undefined => {
+  const state = drafts.get(ref.id);
+  return state?.changes.length ? fromTmdl(state.draft.toFiles()) : undefined;
+};
+
+/**
+ * create_field_parameter: a table of fields a slicer switches in visuals (measures or columns), in the
+ * model's draft (saved with the screen's other changes; its values come with the next refresh).
+ */
+export const fieldParameterTool = (dataset: () => Ref | undefined): Tool =>
+  tool({
+    name: "create_field_parameter",
+    description: "Creates a field parameter in the semantic model: a slicer on it lets the user switch the measure (or the axis column) of the visuals using it. Then use 'Name'[Name] as a slicer's field and in a visual's role instead of the field. Its values come after the user refreshes the data.",
+    args: z.object({ name: z.string().describe('Table name, e.g. "Metric"'), fields: z.array(z.string()).min(2).describe("Measures [M] or columns 'T'[col], in order"), labels: z.array(z.string()).optional().describe("Names shown in the slicer (default: the field names)") }),
+    run: async ({ name, fields, labels }) => {
+      const r = dataset();
+      if (!r) throw new Error("No semantic model.");
+      const state = await open(r);
+      const info = fromTmdl(state.draft.toFiles());
+      const items = fields.map((f, i) => {
+        const known = resolveField(info, f);
+        return { label: labels?.[i] ?? known.name, ref: daxRef(known.table, known.name) };
+      });
+      const text = state.draft.addFieldParameter(name, items);
+      state.changes.push(`field parameter '${name}' created`);
+      return `${text} (in the model's draft; saved at the end of your answer)`;
+    },
+  });
 export const discardModelDraft = (ref: Ref) => void drafts.delete(ref.id);
 
 /**
@@ -118,6 +147,7 @@ export function modelEditorTools(dataset: () => Ref | undefined): Tool[] {
       run: async ({ table, ...rest }: any) => change(`step ${kind} on '${table}'`, (d) => d.addStep(table, { kind, ...rest } as Step)),
     });
   return [
+    fieldParameterTool(dataset),
     tool({
       name: "create_measure",
       description: "Creates a measure (checked on the model first).",

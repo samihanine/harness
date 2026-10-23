@@ -13,15 +13,15 @@ export const ROLES: Record<string, string[]> = {
   card: ["Values"],
   cardVisual: ["Data"],
   multiRowCard: ["Values"],
-  lineChart: ["Category", "Y", "Series", "Tooltips"],
-  areaChart: ["Category", "Y", "Series", "Tooltips"],
-  clusteredBarChart: ["Category", "Y", "Series", "Tooltips"],
-  clusteredColumnChart: ["Category", "Y", "Series", "Tooltips"],
-  barChart: ["Category", "Y", "Series", "Tooltips"],
-  columnChart: ["Category", "Y", "Series", "Tooltips"],
-  hundredPercentStackedBarChart: ["Category", "Y", "Series", "Tooltips"],
-  hundredPercentStackedColumnChart: ["Category", "Y", "Series", "Tooltips"],
-  lineClusteredColumnComboChart: ["Category", "Y", "Y2", "Series", "Tooltips"],
+  lineChart: ["Category", "Y", "Series", "SmallMultiples", "Tooltips"],
+  areaChart: ["Category", "Y", "Series", "SmallMultiples", "Tooltips"],
+  clusteredBarChart: ["Category", "Y", "Series", "SmallMultiples", "Tooltips"],
+  clusteredColumnChart: ["Category", "Y", "Series", "SmallMultiples", "Tooltips"],
+  barChart: ["Category", "Y", "Series", "SmallMultiples", "Tooltips"],
+  columnChart: ["Category", "Y", "Series", "SmallMultiples", "Tooltips"],
+  hundredPercentStackedBarChart: ["Category", "Y", "Series", "SmallMultiples", "Tooltips"],
+  hundredPercentStackedColumnChart: ["Category", "Y", "Series", "SmallMultiples", "Tooltips"],
+  lineClusteredColumnComboChart: ["Category", "Y", "Y2", "Series", "SmallMultiples", "Tooltips"],
   pieChart: ["Category", "Y", "Tooltips"],
   donutChart: ["Category", "Y", "Tooltips"],
   slicer: ["Values"],
@@ -29,8 +29,11 @@ export const ROLES: Record<string, string[]> = {
   gauge: ["Y", "MinValue", "MaxValue", "TargetValue"],
   textbox: [],
   shape: [],
+  actionButton: [],
 };
-export const TYPE_NOTES = "barChart = stacked bars, columnChart = stacked columns, clustered* = side by side, hundredPercentStacked* = 100 %";
+export const TYPE_NOTES = "barChart = stacked bars, columnChart = stacked columns, clustered* = side by side, hundredPercentStacked* = 100 %; SmallMultiples = one small chart per value of a column (grid: format smallMultiplesLayout); actionButton = a button (create_button)";
+/** A role as PBIR names it (the small multiples are the "Rows" of a chart). */
+export const roleKey = (role: string) => (role === "SmallMultiples" ? "Rows" : role);
 
 const AGGREGATIONS = ["sum", "avg", "count", "min", "max", "countnonnull"];
 const lit = (value: string) => ({ expr: { Literal: { Value: value } } });
@@ -150,7 +153,7 @@ export function buildVisual(spec: VisualSpec, name: string, z: number, info: Mod
   const wrong = given.map(([role]) => role).filter((r) => !roles.includes(r));
   if (wrong.length) throw new Error(`A ${spec.type} has no role ${wrong.join(", ")}. Its roles: ${roles.join(", ") || "none"}.`);
   // Every field checked before anything is written (a wrong name is refused with the closest ones).
-  const queryState = Object.fromEntries(given.map(([role, list]) => [role, { projections: list.map((f) => (SINGLE_VALUE.includes(spec.type) ? oneValue(projection(f, info, extension), info) : projection(f, info, extension))) }]));
+  const queryState = Object.fromEntries(given.map(([role, list]) => [roleKey(role), { projections: list.map((f) => (SINGLE_VALUE.includes(spec.type) ? oneValue(projection(f, info, extension), info) : projection(f, info, extension))) }]));
   const visual: Record<string, unknown> = { visualType: spec.type, drillFilterOtherVisuals: true };
   if (given.length) {
     const query: Record<string, unknown> = { queryState };

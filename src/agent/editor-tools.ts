@@ -7,8 +7,14 @@ import { z } from "zod";
 import { dax, findVisual, rowsText, visualText, type Ref, type Report } from "@/lib/pbi";
 import type { ModelInfo } from "@/lib/model";
 import { applyOp, deleteDraftFiles, discardDraft, draftFiles, patchDraftFile, pendingFiles, putDraftFile, readDraftFile, readDraftJson, undoLastSave, type PatchOp } from "@/lib/report-draft";
-import { ROLES, TYPE_NOTES, buildPage, buildVisual, formatOps, formatOptions, ignoredText, newName, pageFormatOps, topNFilter, type Format, type ReportMeasures } from "@/lib/visual-spec";
+import { ROLES, TYPE_NOTES, roleKey, buildPage, buildVisual, formatOps, formatOptions, ignoredText, newName, pageFormatOps, topNFilter, type Format, type ReportMeasures } from "@/lib/visual-spec";
 import { tool, type Tool } from "./loop";
+import { queryTool } from "./pbi-tools";
+import { LAYOUT_HELP, layoutProblems, layoutRows } from "@/lib/layout";
+import type { DefinedMeasure } from "@/lib/query-spec";
+import { pageCopy } from "@/lib/report-copy";
+import type { ReportSchema } from "@/lib/report-schema";
+import { buttonVisual, conditionalOps, linkProperties, referenceLineOps, type Action } from "@/lib/visual-extras";
 
 const P = "definition/pages";
 const REPORT = "definition/report.json";
@@ -31,7 +37,40 @@ type Ctx = {
   ref: () => Ref | undefined;
   dataset: () => Ref | undefined;
   info: () => ModelInfo | undefined;
+  /** The reference reports chosen by the user (Builder › Reports), with their schemas. */
+  references?: () => Promise<{ name: string; schema?: ReportSchema }[]>;
 };
+
+/** Where a visual given without a place goes: under the page's other visuals (layout_page then arranges them). */
+function freeSpot(others: { json: any }[], page: { width?: number; height?: number }) {
+  const bottom = Math.max(0, ...others.map((v) => Number(v.json.position?.y ?? 0) + Number(v.json.position?.height ?? 0)));
+  const height = 240;
+  const y = Math.min(bottom + 16, Math.max(0, (page.height ?? 720) - height));
+  return { x: 20, y, width: Math.min(420, (page.width ?? 1280) - 40), height };
+}
+
+/**
+ * What is wrong in the draft, found by code: visuals overlapping or out of their page, report measures
+ * whose DAX fails. Empty when all is fine.
+ */
+export async function draftProblems(ctx: Ctx, save: () => Promise<unknown>, pages?: string[]) {
+  const ref = ctx.ref();
+  if (!ref) return [];
+  const files = await draftFiles(ref, save);
+  const problems: string[] = [];
+  for (const p of await pagesOf(files)) {
+    if (pages && !pages.includes(p.name)) continue;
+    const visuals = visualsOf(files, p.name).filter((v) => !v.json.parentGroupName).map((v) => ({ name: v.name, hidden: !!v.json.isHidden, x: Number(v.json.position?.x ?? 0), y: Number(v.json.position?.y ?? 0), width: Number(v.json.position?.width ?? 0), height: Number(v.json.position?.height ?? 0) }));
+    for (const x of layoutProblems(visuals, { width: p.json.width ?? 1280, height: p.json.height ?? 720 })) problems.push(`page "${p.json.displayName}": ${x}`);
+  }
+  const dataset = ctx.dataset();
+  const measures = (measuresOf(files) as (ReportMeasures[number] & { expression?: string })[]).filter((m) => m.expression);
+  if (dataset && measures.length) {
+    const defs = measures.map((m) => `MEASURE '${m.table.replace(/'/g, "''")}'[${m.name}] = ${m.expression}`).join("\n");
+    for (const m of measures) await dax(dataset, `DEFINE\n${defs}\nEVALUATE ROW("v", [${m.name}])`).catch((e) => problems.push(`report measure [${m.name}] fails: ${e instanceof Error ? e.message.split("\n")[0].slice(0, 200) : e}`));
+  }
+  return problems;
+}
 
 const ops = z.array(z.object({ op: z.enum(["add", "replace", "remove"]), path: z.string().describe("JSON Pointer, e.g. /visual/objects/legend/0/properties/show"), value: z.unknown().optional() }));
 
@@ -297,10 +336,10 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
       args: z.object({
         page: pageArg,
         type: z.string(),
-        x: z.number(),
-        y: z.number(),
-        width: z.number(),
-        height: z.number(),
+        x: z.number().optional().describe("Free position: only when layout_page cannot say it (leave x, y, width, height out, then call layout_page)"),
+        y: z.number().optional(),
+        width: z.number().optional(),
+        height: z.number().optional(),
         fields: z.record(z.string(), z.array(z.string())).optional().describe('By role, e.g. {"Category": ["\'Sales\'[Region]"], "Y": ["[Revenue]"]}'),
         title: z.string().optional(),
         sort: z.object({ field: z.string(), descending: z.boolean().optional() }).optional(),
@@ -308,10 +347,164 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
         format: formatArg.optional(),
         top: z.object({ count: z.number(), by: z.string().describe("Measure or Sum('T'[col]) ordering the items"), bottom: z.boolean().optional() }).optional().describe("Keep the first N items of the category (Top N), e.g. {\"count\": 10, \"by\": \"[Total Sales]\"}"),
       }),
-      run: async ({ page, format, ...spec }) => {
+      run: async ({ page, format, x, y, width, height, ...spec }) => {
         const p = await pageOf(page);
-        const { name, ignored } = await writeVisual(p.name, spec, format as Format | undefined);
-        return `Visual created (name=${name}) on "${p.json.displayName}".${ignoredText(ignored)}`;
+        const placed = x !== undefined && y !== undefined && width && height;
+        const box = placed ? { x, y, width, height } : { ...freeSpot(visualsOf(await files(), p.name), p.json), ...(width && { width }), ...(height && { height }) };
+        const { name, ignored } = await writeVisual(p.name, { ...spec, ...box }, format as Format | undefined);
+        return `Visual created (name=${name}) on "${p.json.displayName}"${placed ? "" : " (placed for now: arrange the page with layout_page)"}.${ignoredText(ignored)}`;
+      },
+    }),
+    tool({
+      name: "layout_page",
+      description: `${LAYOUT_HELP} margin / gap: px (default 20 / 16); top: space kept at the top (e.g. for a title bar).`,
+      args: z.object({
+        page: pageArg,
+        rows: z.array(z.object({ height: z.number().optional(), items: z.array(z.object({ visual: z.string().describe("Visual name (id) or title"), width: z.number().optional().describe("Relative weight (default 1)") })) })),
+        margin: z.number().optional(),
+        gap: z.number().optional(),
+        top: z.number().optional(),
+      }),
+      run: async ({ page, rows, margin, gap, top }) => {
+        const p = await pageOf(page);
+        const visuals = visualsOf(await files(), p.name);
+        // Names first (a title is accepted when no other visual has it).
+        const named = rows.map((row) => ({ ...row, items: row.items.map((i) => ({ ...i, visual: findVisual(visuals, i.visual).name })) }));
+        const boxes = layoutRows(named, { width: p.json.width ?? 1280, height: p.json.height ?? 720 }, { margin, gap, top });
+        for (const b of boxes) {
+          const v = visuals.find((x) => x.name === b.visual)!;
+          await patch(v.file, [{ op: "add", path: "/position", value: { ...v.json.position, x: b.x, y: b.y, width: b.width, height: b.height } }]);
+        }
+        const left = visuals.filter((v) => !v.json.isHidden && !v.json.parentGroupName && !boxes.some((b) => b.visual === v.name));
+        return `Placed ${boxes.length} visual(s): ${boxes.map((b) => `${b.visual} x=${b.x} y=${b.y} w=${b.width} h=${b.height}`).join("; ")}.${left.length ? ` Not in the rows (kept where they are): ${left.map((v) => v.name).join(", ")}.` : ""}`;
+      },
+    }),
+    tool({
+      name: "create_button",
+      description: 'Creates a button with an action: "page" (go to a page of the report), "back" (previous page) or "url" (open a web link). Leave x, y, width, height out to place it with layout_page.',
+      args: z.object({
+        page: pageArg,
+        text: z.string(),
+        action: z.object({ type: z.enum(["page", "back", "url"]), page: z.string().optional().describe("page: the target page (name or display name)"), url: z.string().optional(), tooltip: z.string().optional() }),
+        fill: z.string().optional().describe('Button color "#RRGGBB"'),
+        font_color: z.string().optional(),
+        x: z.number().optional(),
+        y: z.number().optional(),
+        width: z.number().optional(),
+        height: z.number().optional(),
+      }),
+      run: async ({ page, text, action, fill, font_color, x, y, width, height }) => {
+        const p = await pageOf(page);
+        const f = await files();
+        const others = visualsOf(f, p.name);
+        const target = action.type === "page" ? await pageOf(action.page) : undefined;
+        const spot = x !== undefined && y !== undefined ? { x, y, width: width ?? 160, height: height ?? 40 } : { ...freeSpot(others, p.json), width: width ?? 160, height: height ?? 40 };
+        const name = newName();
+        const z = Math.max(0, ...others.map((v) => Number(v.json.position?.z ?? 0))) + 1000;
+        const json = buttonVisual({ name, z, ...spot, text, fill, fontColor: font_color, action: action as Action, pageName: target?.name, schema: others[0]?.json.$schema ?? "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.14.0/schema.json" });
+        await putDraftFile(ref(), save, `${P}/${p.name}/visuals/${name}/visual.json`, json);
+        return `Button created (name=${name}) on "${p.json.displayName}"${target ? `, going to "${target.json.displayName}"` : ""}.`;
+      },
+    }),
+    tool({
+      name: "set_visual_action",
+      description: 'Gives any visual (button, shape, card, image) a click action: "page", "back" or "url"; "none" removes it.',
+      args: z.object({ visual: visualArg, page: pageArg, action: z.object({ type: z.enum(["page", "back", "url", "none"]), page: z.string().optional(), url: z.string().optional(), tooltip: z.string().optional() }) }),
+      run: async ({ visual, page, action }) => {
+        const { visual: v } = await visualOf(visual, page);
+        if (action.type === "none") return patch(v.file, [{ op: "add", path: "/visual/visualContainerObjects/visualLink", value: [{ properties: { show: { expr: { Literal: { Value: "false" } } } } }] }]);
+        const target = action.type === "page" ? await pageOf(action.page) : undefined;
+        return patch(v.file, [{ op: "add", path: "/visual/visualContainerObjects", value: { ...(v.json.visual?.visualContainerObjects ?? {}), visualLink: linkProperties(action as Action, target?.name) } }]);
+      },
+    }),
+    tool({
+      name: "set_conditional_format",
+      description: 'Conditional formatting of a visual: a table / matrix colors the cells of a field ("background" or "font"), a chart its bars / points, a card its value. One of: "gradient" {min, max, mid?} colors; "rules" [{op: ">", value: 0, color: "#2E7D32"}, …] (first matching rule wins); "from_field": true with based_on = a measure returning "#RRGGBB". based_on: the value deciding the color (default: field itself). Replaces the earlier format of that target.',
+      args: z.object({
+        visual: visualArg,
+        page: pageArg,
+        field: z.string().describe("A field of the visual, as in create_visual"),
+        target: z.enum(["background", "font", "color"]).optional(),
+        based_on: z.string().optional(),
+        gradient: z.object({ min: z.string(), max: z.string(), mid: z.string().optional() }).optional(),
+        rules: z.array(z.object({ op: z.enum([">", ">=", "<", "<=", "="]), value: z.number(), color: z.string() })).optional(),
+        from_field: z.boolean().optional(),
+      }),
+      run: async ({ visual, page, ...spec }) => {
+        const { visual: v } = await visualOf(visual, page);
+        await patch(v.file, conditionalOps(v.json, spec, ctx.info(), measuresOf(await files())));
+        return `Conditional format set on ${v.name} (${spec.field}).`;
+      },
+    }),
+    tool({
+      name: "set_reference_lines",
+      description: 'Constant lines of a chart: a target, a threshold, an average… value = a number or a measure ([Target]). axis "y" (default) or "x". Replaces the lines of that axis; [] removes them.',
+      args: z.object({
+        visual: visualArg,
+        page: pageArg,
+        lines: z.array(z.object({ value: z.union([z.number(), z.string()]), axis: z.enum(["y", "x"]).optional(), label: z.string().optional(), color: z.string().optional(), style: z.enum(["solid", "dashed", "dotted"]).optional(), show_label: z.boolean().optional() })),
+      }),
+      run: async ({ visual, page, lines }) => {
+        const { visual: v } = await visualOf(visual, page);
+        const operations = lines.length ? referenceLineOps(v.json, lines, ctx.info(), measuresOf(await files())) : ["y1AxisReferenceLine", "xAxisReferenceLine"].filter((o) => v.json.visual?.objects?.[o]).map((o) => ({ op: "remove" as const, path: `/visual/objects/${o}` }));
+        if (operations.length) await patch(v.file, operations);
+        return `${lines.length} reference line(s) on ${v.name}.`;
+      },
+    }),
+    tool({
+      name: "copy_report_page",
+      description: "Rebuilds a page of a reference report (Reports tab) in this report: same visual types, titles, fields and layout (scaled to the page), even when that report's definition is closed. Fields missing in this model are left out and listed. Formatting is not copied: format the new visuals after.",
+      args: z.object({ report: z.string().describe("Reference report name"), page: z.string().describe("Its page (display name)"), display_name: z.string().optional().describe("Name of the new page (default: the same)") }),
+      run: async ({ report, page, display_name }) => {
+        const list = (await ctx.references?.()) ?? [];
+        const source = list.find((x) => x.name.toLowerCase() === report.toLowerCase()) ?? list.find((x) => x.name.toLowerCase().includes(report.toLowerCase()));
+        if (!source) throw new Error(list.length ? `No reference report "${report}". Reference reports: ${list.map((x) => `"${x.name}"`).join(", ")}.` : "No reference report: the user chooses them in the Reports tab.");
+        if (!source.schema) throw new Error(`The structure of "${source.name}" could not be read (Reports screen › regenerate its schema).`);
+        let f = await files();
+        const first = (await pagesOf(f))[0]?.json;
+        const size = { width: first?.width ?? 1280, height: first?.height ?? 720 };
+        const copy = pageCopy(source.schema, page, ctx.info(), measuresOf(f), size);
+        // The reference report's own measures the visuals use: made here when missing (checked by check_report).
+        const missing = copy.measures.filter((m) => !measuresOf(f).some((x) => x.name === m.name));
+        if (missing.length) {
+          const ext = structuredClone((f.get(EXTENSION) as any) ?? { $schema: "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/reportExtension/1.0.0/schema.json", name: "extension", entities: [] });
+          for (const m of missing) {
+            const entity = ext.entities.find((e: any) => e.name === m.table) ?? (ext.entities.push({ name: m.table, measures: [] }), ext.entities.at(-1));
+            entity.measures.push({ name: m.name, dataType: "Double", expression: m.expression });
+          }
+          await putDraftFile(ref(), save, EXTENSION, ext);
+          f = await files();
+        }
+        const name = newName();
+        await putDraftFile(ref(), save, `${P}/${name}/page.json`, buildPage(name, display_name ?? copy.page.displayName, size.width, size.height, first?.$schema));
+        await putDraftFile(ref(), save, PAGES, { ...(f.get(PAGES) as object), pageOrder: [...((f.get(PAGES) as any)?.pageOrder ?? []), name] });
+        const made: string[] = [];
+        const failed: string[] = [];
+        for (const { source: id, ...spec } of copy.visuals) {
+          try {
+            made.push(`${(await writeVisual(name, spec)).name} (${spec.type}${spec.title ? ` "${spec.title}"` : ""})`);
+          } catch (e) {
+            failed.push(`${spec.type} ${id}: ${e instanceof Error ? e.message : e}`);
+          }
+        }
+        return [
+          `Page "${display_name ?? copy.page.displayName}" (name=${name}) rebuilt from "${source.name}": ${made.length} visual(s): ${made.join(", ") || "none"}.`,
+          missing.length && `Report measures copied from it: ${missing.map((m) => `[${m.name}]`).join(", ")}.`,
+          [...copy.dropped, ...failed].length && `Left out: ${[...copy.dropped, ...failed].join("; ")}.`,
+          "Next: format the visuals (format_visual / update_theme) in the style asked, then change_current_page.",
+        ]
+          .filter(Boolean)
+          .join("\n");
+      },
+    }),
+    tool({
+      name: "check_report",
+      description: "Checks the draft by code: visuals overlapping or out of the page, report measures whose DAX fails. Also run for you before saving.",
+      args: z.object({}),
+      readOnly: true,
+      run: async () => {
+        const problems = await draftProblems(ctx, save);
+        return problems.length ? `Problems:\n${problems.map((x) => `- ${x}`).join("\n")}` : "No problem found.";
       },
     }),
     tool({
@@ -337,8 +530,8 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
         const built = buildVisual({ type, x: 0, y: 0, width: 1, height: 1, fields: Object.fromEntries(Object.entries(fields).filter(([, l]) => l.length)) }, v.name, 0, ctx.info(), measuresOf(await files()));
         const fresh = ((built.visual as any).query?.queryState ?? {}) as Record<string, unknown>;
         for (const [role, list] of Object.entries(fields)) {
-          if (list.length) state[role] = fresh[role];
-          else delete state[role];
+          if (list.length) state[roleKey(role)] = fresh[roleKey(role)];
+          else delete state[roleKey(role)];
         }
         return patch(v.file, [{ op: "add", path: "/visual/query/queryState", value: state }]);
       },
@@ -488,6 +681,7 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
         return text;
       },
     }),
+    queryTool(() => ctx.dataset() && { ...ctx.dataset()!, info: ctx.info() }, undefined, async () => measuresOf(await files()) as DefinedMeasure[]),
     tool({
       name: "run_dax",
       description: "Runs a DAX query (EVALUATE …) on the report's model, report measures included (max 50 rows shown): check names, values and totals before using them.",

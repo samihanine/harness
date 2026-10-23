@@ -7,14 +7,16 @@
  */
 import { z } from "zod";
 import { reportContext } from "./context";
-import { examplesText } from "@/lib/report-schema";
-import { tool, type Agent, type Tool } from "./loop";
+import { examplesText, referenceReports } from "@/lib/report-schema";
+import { LAYOUT_HELP, layoutRows } from "@/lib/layout";
+import { pageCopy } from "@/lib/report-copy";
+import { describeError, tool, type Agent, type Tool } from "./loop";
 import { modelTools } from "./model-tools";
-import { DAX_RULES, daxTool, viewerTools } from "./pbi-tools";
+import { DAX_RULES, daxTool, queryTool, viewerTools } from "./pbi-tools";
 import { resolveField } from "@/lib/model";
 import { findVisual, models, pageText, type Report } from "@/lib/pbi";
 import type { DatasetEntry, ReportEntry } from "@/lib/store";
-import { ROLES, TYPE_NOTES } from "@/lib/visual-spec";
+import { ROLES, TYPE_NOTES, roleKey } from "@/lib/visual-spec";
 
 const PROPERTY = "http://powerbi.com/product/schema#property";
 const AGGREGATIONS: Record<string, string> = { sum: "Sum", avg: "Average", average: "Average", count: "Count", countnonnull: "CountNonNull", min: "Min", max: "Max" };
@@ -78,7 +80,8 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
   const setFields = async (v: Awaited<ReturnType<typeof visualOf>>, fields: Record<string, string[]>) => {
     // Every field checked before the visual changes.
     const targets = Object.entries(fields).map(([role, list]) => [role, list.map((f) => target(f, dataset()))] as const);
-    for (const [role, list] of targets) {
+    for (const [given, list] of targets) {
+      const role = roleKey(given);
       const current = await v.getDataFields(role).catch(() => []);
       for (let i = current.length - 1; i >= 0; i--) await v.removeDataField(role, i);
       for (const t of list) await v.addDataField(role, t as never);
@@ -102,6 +105,26 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
   const fieldsArg = z.record(z.string(), z.array(z.string())).describe('By role, e.g. {"Category": ["\'Sales\'[Region]"], "Y": ["[Revenue]"]}');
   const formatArg = z.record(z.string(), z.record(z.string(), z.unknown())).describe(FORMAT_HELP);
   const topArg = z.object({ count: z.number(), by: z.string(), bottom: z.boolean().optional() });
+  type Spec = { type: string; x?: number; y?: number; width?: number; height?: number; fields?: Record<string, string[]>; title?: string; format?: Record<string, Record<string, unknown>>; top?: { count: number; by: string; bottom?: boolean } };
+  /** One visual on a page: fields checked first (nothing half made on a wrong name); without a place, under the others. */
+  const createOne = async (p: Awaited<ReturnType<typeof pageOf>>, { type, x, y, width, height, fields, title, format: given, top }: Spec) => {
+    Object.values(fields ?? {}).flat().forEach((f) => target(f, dataset()));
+    let box = { x: x ?? 20, y: y ?? 20, width: width ?? 420, height: height ?? 240 };
+    if (x === undefined || y === undefined) {
+      const bottom = Math.max(0, ...(await p.getVisuals()).map((o) => (o.layout.y ?? 0) + (o.layout.height ?? 0)));
+      box = { ...box, x: 20, y: Math.min(bottom + 16, Math.max(0, (p.defaultSize?.height ?? 720) - box.height)) };
+    }
+    // Without an explicit display state the SDK makes the visual hidden.
+    const { visual } = await p.createVisual(type, { ...box, displayState: { mode: 0 } });
+    await p.setVisualDisplayState(visual.name, 0).catch(() => undefined);
+    const v = findVisual(await p.getVisuals(), visual.name);
+    if (fields) await setFields(v, fields);
+    // A titled card would say its field twice (its label is also cut in a short box).
+    const style = { ...(title && type === "card" && { categoryLabels: { visible: false } }), ...(given ?? {}), ...(title && { title: { visible: true, titleText: title, ...(given?.title ?? {}) } }) };
+    const note = await format(v, style);
+    if (top) await topN(v, top);
+    return { name: visual.name, note };
+  };
   const mark = (t: Tool): Tool => (t.readOnly ? t : { ...t, run: async (args) => ((changed = true), t.run(args)) });
   // The viewer's reading and filter tools: in the editor, filters set this way are saved with the report.
   const viewer = viewerTools(report, datasetRef, () => dataset()?.info).filter((t) =>
@@ -142,21 +165,11 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
     tool({
       name: "create_visual",
       description: `Creates a visual on a page (default: the current one) with its fields (checked against the model), title, format and Top N. Types and roles: ${Object.entries(ROLES).filter(([t]) => !["textbox", "shape"].includes(t)).map(([t, roles]) => `${t} (${roles.join(", ")})`).join("; ")}. ${TYPE_NOTES}. Fields: 'Table'[Column], [Measure] or Sum('Table'[Column]).`,
-      args: z.object({ page: z.string().optional(), type: z.string(), x: z.number(), y: z.number(), width: z.number(), height: z.number(), fields: fieldsArg.optional(), title: z.string().optional(), format: formatArg.optional(), top: topArg.optional() }),
-      run: async ({ page, type, x, y, width, height, fields, title, format: given, top }) => {
+      args: z.object({ page: z.string().optional(), type: z.string(), x: z.number().optional().describe("Free position: only when layout_page cannot say it (leave x, y, width, height out, then layout_page)"), y: z.number().optional(), width: z.number().optional(), height: z.number().optional(), fields: fieldsArg.optional(), title: z.string().optional(), format: formatArg.optional(), top: topArg.optional() }),
+      run: async ({ page, ...spec }) => {
         const p = await pageOf(page);
-        // Fields checked before anything is created (nothing half made on a wrong name).
-        Object.values(fields ?? {}).flat().forEach((f) => target(f, dataset()));
-        // Without an explicit display state the SDK makes the visual hidden.
-        const { visual } = await p.createVisual(type, { x, y, width, height, displayState: { mode: 0 } });
-        await p.setVisualDisplayState(visual.name, 0).catch(() => undefined);
-        const v = findVisual(await p.getVisuals(), visual.name);
-        if (fields) await setFields(v, fields);
-        // A titled card would say its field twice (its label is also cut in a short box).
-        const style = { ...(title && type === "card" && { categoryLabels: { visible: false } }), ...(given ?? {}), ...(title && { title: { visible: true, titleText: title, ...(given?.title ?? {}) } }) };
-        const note = await format(v, style);
-        if (top) await topN(v, top);
-        return `Visual created (name=${visual.name}) on "${p.displayName}".${note}`;
+        const { name, note } = await createOne(p, spec);
+        return `Visual created (name=${name}) on "${p.displayName}"${spec.x === undefined ? " (placed for now: arrange the page with layout_page)" : ""}.${note}`;
       },
     }),
     tool({
@@ -187,6 +200,54 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
         if (x !== undefined || y !== undefined) await v.moveVisual(x ?? v.layout.x ?? 0, y ?? v.layout.y ?? 0);
         if (width !== undefined || height !== undefined) await v.resizeVisual(width ?? v.layout.width ?? 300, height ?? v.layout.height ?? 200);
         return "Visual moved.";
+      },
+    }),
+    tool({
+      name: "layout_page",
+      description: `${LAYOUT_HELP} margin / gap: px (default 20 / 16); top: space kept at the top.`,
+      args: z.object({
+        page: z.string().optional(),
+        rows: z.array(z.object({ height: z.number().optional(), items: z.array(z.object({ visual: z.string(), width: z.number().optional() })) })),
+        margin: z.number().optional(),
+        gap: z.number().optional(),
+        top: z.number().optional(),
+      }),
+      run: async ({ page, rows, margin, gap, top }) => {
+        const p = await pageOf(page);
+        const visuals = await p.getVisuals();
+        const named = rows.map((row) => ({ ...row, items: row.items.map((i) => ({ ...i, visual: findVisual(visuals, i.visual).name })) }));
+        const boxes = layoutRows(named, { width: p.defaultSize?.width ?? 1280, height: p.defaultSize?.height ?? 720 }, { margin, gap, top });
+        for (const b of boxes) {
+          const v = visuals.find((x) => x.name === b.visual)!;
+          await v.moveVisual(b.x, b.y);
+          await v.resizeVisual(b.width, b.height);
+        }
+        return `Placed ${boxes.length} visual(s): ${boxes.map((b) => `${b.visual} x=${b.x} y=${b.y} w=${b.width} h=${b.height}`).join("; ")}.`;
+      },
+    }),
+    tool({
+      name: "copy_report_page",
+      description: "Rebuilds a page of a reference report (Reports tab) in this report: same visual types, titles, fields and layout (scaled), even when that report's definition is closed. Fields missing in this model, and that report's own measures, are left out and listed. Formatting is not copied: format after.",
+      args: z.object({ report: z.string(), page: z.string(), display_name: z.string().optional() }),
+      run: async ({ report: name, page, display_name }) => {
+        const list = await referenceReports(entry()?.exampleIds);
+        const source = list.find((x) => x.name.toLowerCase() === name.toLowerCase()) ?? list.find((x) => x.name.toLowerCase().includes(name.toLowerCase()));
+        if (!source) throw new Error(list.length ? `No reference report "${name}". Reference reports: ${list.map((x) => `"${x.name}"`).join(", ")}.` : "No reference report: the user chooses them in the Reports tab.");
+        if (!source.schema) throw new Error(`The structure of "${source.name}" could not be read.`);
+        const first = (await r().getPages())[0];
+        // No report measures in this mode: the reference report's own measures are left out.
+        const copy = pageCopy(source.schema, page, dataset()?.info, [], { width: first?.defaultSize?.width ?? 1280, height: first?.defaultSize?.height ?? 720 });
+        const p = await r().addPage(display_name ?? copy.page.displayName);
+        await p.setActive();
+        const made: string[] = [];
+        const failed: string[] = [];
+        for (const { source: id, ...spec } of copy.visuals) {
+          await createOne(p, spec).then(
+            (v) => made.push(`${v.name} (${spec.type})`),
+            (e) => failed.push(`${spec.type} ${id}: ${describeError(e)}`),
+          );
+        }
+        return [`Page "${p.displayName}" rebuilt from "${source.name}": ${made.length} visual(s): ${made.join(", ") || "none"}.`, [...copy.dropped, ...failed].length && `Left out: ${[...copy.dropped, ...failed].join("; ")}.`].filter(Boolean).join("\n");
       },
     }),
     tool({
@@ -248,6 +309,7 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
       },
     }),
     daxTool(datasetRef),
+    queryTool(() => datasetRef() && { ...datasetRef()!, info: dataset()?.info }),
     ...modelTools(dataset),
   ].map(mark);
 
@@ -257,14 +319,15 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
 - Formatting: format_visual for a visual's frame (title, background, border, shadow, header, legend, axes); the inside of charts and matrices (headers, grid, values, labels) and the palette: update_theme "styles" (by visual type: it applies to every visual of that type).
 How to work (few, well-filled calls; several independent calls in one reply):
 - The page state lists the pages and the visuals of the current page; list_pages / read_page for the others.
-- New page: create_page (it is shown), then create_visual for each visual with its title, fields and format, in one reply.
+- New page: create_page (it is shown), then create_visual for each visual with its title, fields and format and WITHOUT x / y / width / height, in one reply; then ONE layout_page with the rows of the page.
 - KPI cards: one card per value. Top N: create_visual "top": {"count": 10, "by": "[Measure]"}.
-- Layout on 1280×720: 20 px margins, 16 px gaps, a row of cards (y 20, height 110), charts below, inside the page, no overlap.
+- Layout: layout_page by default (rows of visuals, the app computes the positions), also to rearrange; a KPI row (height 110) then charts. Explicit positions (create_visual x/y, move_visual) only when rows cannot say it.
+- Reference reports (context, chosen in the Reports tab): inspiration the user may refer to; copy_report_page rebuilds one of their pages here, then format it.
 - Titles and texts in the user's language. Use only fields that exist (model summary).
 ${DAX_RULES}`,
     tools,
-    // The example reports the user chose (Examples tab) come with the context.
-    context: async () => [await reportContext(entry()!, dataset()), await examplesText(entry()?.exampleIds)].filter(Boolean).join("\n\n"),
+    // The reference reports the user chose (Reports tab) come with the context.
+    context: async (focus) => [await reportContext(entry()!, dataset(), focus), await examplesText(entry()?.exampleIds)].filter(Boolean).join("\n\n"),
     state: async () => (report() ? `Editor mode (definition closed). What the editor shows:\n${await pageText(report()!, false, datasetRef())}` : "The report is loading in the editor."),
     finish: async () => {
       if (!changed) return undefined;

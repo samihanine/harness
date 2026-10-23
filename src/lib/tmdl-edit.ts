@@ -125,6 +125,61 @@ export class ModelDraft {
     return b;
   }
 
+  /**
+   * A field parameter: a calculated table listing fields (columns or measures, `ref` = 'Table'[Name])
+   * that a slicer switches in the visuals using its column. Its values come with the next refresh.
+   */
+  addFieldParameter(name: string, items: { label: string; ref: string }[]) {
+    if (this.tables().some((t) => t.toLowerCase() === name.toLowerCase())) throw new Error(`A table "${name}" already exists.`);
+    if (items.length < 2) throw new Error("A field parameter lists at least 2 fields.");
+    const fields = `${name} Fields`;
+    const order = `${name} Order`;
+    const rows = items.map((it, i) => `\t\t\t\t    ("${it.label.replace(/"/g, '""')}", NAMEOF(${it.ref}), ${i})`).join(",\n");
+    const text = [
+      `table ${q(name)}`,
+      "",
+      `\tcolumn ${q(name)}`,
+      "\t\tdataType: string",
+      "\t\tsummarizeBy: none",
+      "\t\tsourceColumn: [Value1]",
+      `\t\tsortByColumn: ${q(order)}`,
+      "",
+      "\t\trelatedColumnDetails",
+      `\t\t\tgroupByColumn: ${q(fields)}`,
+      "",
+      `\tcolumn ${q(fields)}`,
+      "\t\tdataType: string",
+      "\t\tisHidden",
+      "\t\tsummarizeBy: none",
+      "\t\tsourceColumn: [Value2]",
+      "",
+      "\t\textendedProperty ParameterMetadata =",
+      "\t\t\t\t{",
+      '\t\t\t\t  "version": 3,',
+      '\t\t\t\t  "kind": 2',
+      "\t\t\t\t}",
+      "",
+      `\tcolumn ${q(order)}`,
+      "\t\tdataType: int64",
+      "\t\tisHidden",
+      "\t\tsummarizeBy: sum",
+      "\t\tsourceColumn: [Value3]",
+      "",
+      `\tpartition ${q(name)} = calculated`,
+      "\t\tmode: import",
+      "\t\tsource =",
+      "\t\t\t\t{",
+      rows,
+      "\t\t\t\t}",
+      "",
+    ].join("\n");
+    this.files.set(`definition/tables/${name.replace(/[\\/:*?"<>|]/g, "_")}.tmdl`, text);
+    // The model lists its tables (their order) when it does: the new one is added there too.
+    const model = this.files.get("definition/model.tmdl");
+    if (model && /^ref table /m.test(model) && !new RegExp(`^ref table ${q(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m").test(model)) this.files.set("definition/model.tmdl", `${model.replace(/\s+$/, "")}\nref table ${q(name)}\n`);
+    return `Field parameter '${name}' created (${items.length} fields): put '${name}'[${name}] in a slicer, and in a visual's role instead of a field.`;
+  }
+
   /* Measures */
   setMeasure(table: string, m: { name: string; expression?: string; format?: string; folder?: string; description?: string; hidden?: boolean }, create: boolean) {
     return this.edit(table, (t, tn) => {

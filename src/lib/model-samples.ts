@@ -4,7 +4,7 @@
  * that would only look at the data to learn its shape (formats, codes, dates…).
  */
 import { dax, type Ref } from "./pbi";
-import type { ModelInfo } from "./model";
+import { relevantTables, type ModelInfo } from "./model";
 
 const TTL = 5 * 60_000;
 const MAX = 4_000;
@@ -140,9 +140,12 @@ export async function profileModel(ref: Ref, info: ModelInfo, progress?: Profile
 }
 
 /** The profile in short for the AI's context (the full values are in describe_table). */
-export function profileText(info: ModelInfo) {
+export function profileText(info: ModelInfo, focus?: string) {
+  // The tables of the request first: a long profile is cut at the end.
+  const relevant = relevantTables(info, focus);
   const lines = info.tables
     .filter((t) => !t.hidden)
+    .sort((a, b) => Number(relevant.has(b.name)) - Number(relevant.has(a.name)))
     .map((t) => {
       const cols = t.columns.filter((c) => !c.hidden && c.values).map((c) => `${c.name}: ${c.values!.length > 160 ? `${c.values!.slice(0, 160)}…` : c.values}`);
       const ms = t.measures.filter((m) => !m.hidden && m.total).map((m) => `[${m.name}] = ${m.total}`);

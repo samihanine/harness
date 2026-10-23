@@ -2,7 +2,7 @@
 
 TanStack Start app for Power BI work. Every screen is a `Workspace` (`src/components/workspace.tsx`):
 the AI assistant on the left (foldable), a header (screen / chosen item, actions) and tabs on the right.
-Screens: Viewer (Report / Dataset / Context; the guide of the clicked visual is a tab of the AI panel), Builder (Report / Measures / Examples), Research (Canvas / Report /
+Screens: Viewer (Report / Dataset / Context; the guide of the clicked visual is a tab of the AI panel), Builder (Report / Measures / Reports), Research (Canvas / Report /
 Datasets), Reports (Schema / Context), Datasets (Schema / DAX / Context), Excel (Data / Schema /
 Context), Contexts, Slides (Preview / Content), Settings (AI / Power BI / General). There is no
 library screen: each screen adds and manages its own items (`EntityPicker`, `EntityMenu`). Run with `bun dev` (http://localhost:3300), check with `bun run typecheck`.
@@ -28,7 +28,9 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   limited context. Structure comes from the harness (`src/agent/loop.ts`: JSON tool-call protocol,
   tools, page state). Keep prompts and contexts short; prefer deterministic code to free-form
   generation: the AI fills a structured spec and code writes the result (new visuals:
-  `src/lib/visual-spec.ts`; Power Query steps: `src/lib/tmdl-edit.ts`; pivots: `src/lib/workbook.ts`).
+  `src/lib/visual-spec.ts`, buttons / conditional formats / reference lines: `src/lib/visual-extras.ts`,
+  positions: `src/lib/layout.ts`; DAX queries: `src/lib/query-spec.ts` (`query`, raw DAX stays in
+  `run_dax`); Power Query steps: `src/lib/tmdl-edit.ts`; pivots: `src/lib/workbook.ts`).
 - **No database, no blob storage.** Files live on SharePoint / OneDrive; data lives in Excel tables
   (`.xlsx`) read and written through the Graph workbook API (`src/lib/excel.ts`). Local state only in
   the browser: IndexedDB (`src/lib/store.ts`: the library, researches, conversations — every library
@@ -63,7 +65,11 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   (`list_*`: pages, visuals, tables, rows…) as the page state before every model call, so the AI never
   has to ask for them. Changes go to a draft saved when the answer is done (`finish`), with
   `discard_changes` / `undo_last_save`.
-  `run_dax` is a thinking tool on every screen that has a model.
+  `run_dax` (raw DAX) and `query` (a spec written as DAX by code) are thinking tools on every screen
+  that has a model. The planner and the implementer each have their model (Settings › AI). Failed tool
+  calls are kept in IndexedDB (`src/lib/mistakes.ts`) and the latest ones of a screen shown to the AI as
+  mistakes not to repeat (downloadable from Settings). A big model's context details only the tables the
+  request is about (`relevantTables`).
 - **Schemas**: a schema is an Excel table (required) + an optional form + the definition of its
   columns, with Forms-compatible types (`src/lib/schema.ts`), and the form's sections and branches.
   It generates both: the form (question title = column name, as Forms names the Excel columns;
@@ -78,9 +84,10 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
 - UI: shadcn components (`src/components/ui`, Tailwind v4 tokens in `src/styles.css`, light/dark via
   `src/lib/theme.ts`), `Workspace` / `SubTabs` / `Section` / `Empty`, choices as badges with a dot
   (`Badge` of `field-input.tsx`). Reuse them rather than new styles.
-- **Research** (`src/lib/research.ts`): a canvas (markdown + charts computed by DAX, drawn with
-  recharts) and one Power BI report per model whose pages are each a full-page matrix (PBIR written by
-  code from `{rows, columns, values, filters}`).
+- **Research** (`src/lib/research.ts`): a canvas (markdown + Power BI visuals embedded from the
+  research's reports) and one Power BI report per model whose pages each hold a short text and ONE
+  visual, a matrix by default (PBIR written by code from `{chart, rows, columns, values, filters}`), with
+  the research's own report measures. Not a second Builder: one visual per page, no formatting.
 - **Slides** (`src/slides`): a deck is a short JSON `{title, theme, slides: [{template, ...args}]}`;
   each template (`title.tsx`, `section.tsx`, `table.tsx`…) has a kind (cover, section, subsection,
   summary, content, end: the outline and the content pages' header come from them), zod args, an
@@ -94,6 +101,10 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   encrypted sensitivity label, which Fabric's getDefinition refuses.
 - **Report schemas** (`src/lib/report-schema.ts`): kept with each report (`schema`), from the
   definition or, when it is not readable, through a hidden embed; used by the Reports screen and as
-  the Builder's example reports.
+  the Builder's reference reports (Reports tab: inspiration context; `copy_report_page` rebuilds one
+  of their pages by structure, `src/lib/report-copy.ts`, even when their definition is closed).
+- **Builder layout**: visuals are created without positions and placed by `layout_page` (rows); free
+  positions only when rows cannot say it. The draft is checked by code before it is saved
+  (`draftProblems`: overlaps, out of the page, failing report measures), sent back to the AI once.
 - Write code like the surrounding code: short doc comments saying why, same naming and idioms.
 - Verify UI changes in the browser preview (dev server on port 3300) before saying they work.

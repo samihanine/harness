@@ -1,29 +1,42 @@
 /**
- * A research: the semantic models it reads, a canvas (markdown and charts computed by DAX) and, per
- * model, one Power BI report whose pages are each a full-page matrix (rows, columns, values, filters).
- * The AI fills short specs; this code writes the report definition (PBIR) and creates the report.
+ * A research: the semantic models it reads, a canvas (markdown and Power BI visuals) and, per model,
+ * one Power BI report whose pages each hold a short text and ONE visual (a matrix by default, or a
+ * chart) — the canvas shows these visuals. The AI fills short specs; this code writes the report
+ * definition (PBIR), with the research's own report measures, and creates the report.
  */
 import { all } from "./store";
-import { dax, type Ref, type Rows } from "./pbi";
+import type { Ref, Rows } from "./pbi";
 import { fabric } from "./ms";
 import { resolveField, type ModelInfo } from "./model";
 import { definition, textPayload, writeDefinition, type Part } from "./report-def";
 import { workspaceId } from "./tmdl";
-import { buildPage, buildVisual, newName } from "./visual-spec";
+import { buildPage, buildVisual, newName, type ReportMeasures } from "./visual-spec";
 
-export const CHARTS = ["bar", "column", "line", "area", "pie", "kpi", "table"] as const;
+/** The visual of a research page: a matrix (default) or a chart. */
+export const CHARTS = ["matrix", "table", "bar", "column", "line", "area", "pie", "card"] as const;
 export type ChartKind = (typeof CHARTS)[number];
 
-/** A block of the canvas: text, or a chart of a DAX query's rows (first column = categories). */
+/**
+ * A block of the canvas: text, or the visual of a page of a model's research report (`page`: its
+ * title). "chart" blocks are older researches' DAX charts (shown as such, no longer made).
+ */
 export type Block =
   | { id: string; kind: "markdown"; text: string }
-  | { id: string; kind: "chart"; title: string; chart: ChartKind; datasetId: string; dax: string; rows?: Rows; error?: string; at?: number };
+  | { id: string; kind: "visual"; datasetId: string; page: string }
+  | { id: string; kind: "chart"; title: string; chart: string; datasetId: string; dax: string; rows?: Rows; error?: string; at?: number };
 
-/** A page of a research report: one matrix filling the page. */
-export type MatrixPage = { title: string; rows: string[]; columns: string[]; values: string[]; filters: { field: string; values: (string | number)[] }[] };
+/**
+ * A page of a research report: a short text (optional) above ONE visual — rows (matrix rows / chart
+ * axis), columns (matrix columns / chart series), values — and page filters. `name` / `visualName`:
+ * kept from one save to the next (the canvas embeds that visual).
+ */
+export type MatrixPage = { title: string; text?: string; chart?: ChartKind; rows: string[]; columns: string[]; values: string[]; filters: { field: string; values: (string | number)[] }[]; name?: string; visualName?: string };
+
+/** A measure of the research report (not of the model): ratios, comparisons… usable in its pages and queries. */
+export type ResearchMeasure = { table: string; name: string; expression: string; format?: string };
 
 /** `id`: the report once created; `dirty`: pages changed since it was last written. */
-export type ResearchReport = { id?: string; groupId?: string; pages: MatrixPage[]; dirty?: boolean; saved?: number };
+export type ResearchReport = { id?: string; groupId?: string; pages: MatrixPage[]; measures?: ResearchMeasure[]; dirty?: boolean; saved?: number };
 
 export type ResearchEntry = { id: string; name: string; datasetIds: string[]; blocks: Block[]; reports: Record<string, ResearchReport | undefined>; updatedAt: number };
 
@@ -31,18 +44,6 @@ export const newResearch = (name: string): ResearchEntry => ({ id: crypto.random
 
 /** Older researches (Excel pivots) become empty canvases of the same models. */
 export const readResearch = (r: Partial<ResearchEntry> & { id: string; name: string }): ResearchEntry => ({ datasetIds: [], updatedAt: Date.now(), ...r, blocks: Array.isArray(r.blocks) ? r.blocks : [], reports: r.reports && typeof r.reports === "object" ? r.reports : {} });
-
-/** Runs a chart's query (a chart without rows shows nothing). */
-export async function computeBlock(block: Extract<Block, { kind: "chart" }>, dataset: Ref): Promise<Extract<Block, { kind: "chart" }>> {
-  try {
-    const rows = await dax(dataset, block.dax);
-    // Column names as "Table[Name]" or "[Name]" → "Name".
-    const clean = rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k.replace(/^.*\[(.+)\]$/, "$1"), v])));
-    return { ...block, rows: clean.slice(0, 500), error: undefined, at: Date.now() };
-  } catch (e) {
-    return { ...block, rows: undefined, error: e instanceof Error ? e.message : String(e) };
-  }
-}
 
 /* ----------------------------------- Report ----------------------------------- */
 
@@ -74,23 +75,78 @@ function pageFilter(f: MatrixPage["filters"][number], info: ModelInfo | undefine
   };
 }
 
-/** Checks a page against the model (wrong fields are refused with the closest names). */
-export function checkPage(page: MatrixPage, info: ModelInfo | undefined) {
-  if (!page.values.length && !page.rows.length) throw new Error("A matrix needs rows or values.");
-  buildVisual({ type: "pivotTable", x: 0, y: 0, width: 1280, height: 720, fields: { Rows: page.rows, Columns: page.columns, Values: page.values } }, "check", 0, info, []);
+/** The visual type and roles of a page's visual. */
+function visualFields(p: MatrixPage): { type: string; fields: Record<string, string[]> } {
+  switch (p.chart ?? "matrix") {
+    case "table":
+      return { type: "tableEx", fields: { Values: [...p.rows, ...p.columns, ...p.values] } };
+    case "card":
+      return p.values.length > 1 ? { type: "multiRowCard", fields: { Values: p.values } } : { type: "card", fields: { Values: p.values } };
+    case "pie":
+      return { type: "donutChart", fields: { Category: p.rows, Y: p.values } };
+    case "bar":
+    case "column":
+    case "line":
+    case "area": {
+      const type = ({ bar: "clusteredBarChart", column: "clusteredColumnChart", line: "lineChart", area: "areaChart" } as Record<string, string>)[p.chart!];
+      return { type, fields: { Category: p.rows, Y: p.values, Series: p.columns } };
+    }
+    default:
+      return { type: "pivotTable", fields: { Rows: p.rows, Columns: p.columns, Values: p.values } };
+  }
+}
+
+const own = (measures: ResearchMeasure[] = []): ReportMeasures => measures.map((m) => ({ table: m.table, name: m.name }));
+
+/** Checks a page against the model and the research's measures (wrong fields are refused with the closest names). */
+export function checkPage(page: MatrixPage, info: ModelInfo | undefined, measures?: ResearchMeasure[]) {
+  if (!page.values.length && !page.rows.length) throw new Error("A page's visual needs rows or values.");
+  const { type, fields } = visualFields(page);
+  if (type !== "pivotTable" && type !== "tableEx" && !page.values.length) throw new Error(`A ${page.chart} needs values.`);
+  if (/Chart$/.test(type) && !page.rows.length) throw new Error(`A ${page.chart} chart needs rows (its axis / slices).`);
+  buildVisual({ type, x: 0, y: 0, width: 1280, height: 720, fields: Object.fromEntries(Object.entries(fields).filter(([, l]) => l.length)) }, "check", 0, info, own(measures));
   page.filters.forEach((f) => pageFilter(f, info));
 }
 
-/** The pages and visuals parts of a research report. */
-function pageParts(pages: MatrixPage[], info: ModelInfo | undefined): Part[] {
-  const names = pages.map(() => newName());
+/** A markdown text as a textbox's paragraphs (**bold** kept, the other marks dropped). */
+function paragraphs(text: string) {
+  return text
+    .split("\n")
+    .map((line) => line.replace(/^\s*(#+|[-*])\s+/, (m) => (/[-*]/.test(m) ? "• " : "")).trimEnd())
+    .filter((line, i, all) => line || (i > 0 && all[i - 1]))
+    .map((line) => ({ textRuns: line.split(/(\*\*[^*]+\*\*)/).filter(Boolean).map((part) => (part.startsWith("**") ? { value: part.slice(2, -2), textStyle: { fontWeight: "bold" } } : { value: part.replace(/[*_`]/g, "") })) }));
+}
+
+/** The text height above the visual: a few lines. */
+const textHeight = (text?: string) => (text?.trim() ? Math.min(200, 40 + 22 * text.trim().split("\n").length) : 0);
+
+/** The pages, visuals and report measures parts of a research report (page and visual names kept). */
+export function pageParts(pages: MatrixPage[], info: ModelInfo | undefined, measures: ResearchMeasure[] = []): Part[] {
+  const named = pages.map((p) => ({ ...p, name: p.name ?? newName(), visualName: p.visualName ?? newName() }));
   return [
-    json("definition/pages/pages.json", { $schema: PAGES_SCHEMA, pageOrder: names, activePageName: names[0] }),
-    ...pages.flatMap((p, i) => {
-      const page = { ...buildPage(names[i], p.title), ...(p.filters.length && { filterConfig: { filters: p.filters.map((f) => pageFilter(f, info)) } }) };
-      const visual = buildVisual({ type: "pivotTable", x: 0, y: 0, width: 1280, height: 720, title: p.title, fields: { Rows: p.rows, Columns: p.columns, Values: p.values } }, newName(), 0, info, []);
-      return [json(`definition/pages/${names[i]}/page.json`, page), json(`definition/pages/${names[i]}/visuals/${visual.name}/visual.json`, visual)];
+    json("definition/pages/pages.json", { $schema: PAGES_SCHEMA, pageOrder: named.map((p) => p.name), activePageName: named[0]?.name }),
+    ...named.flatMap((p) => {
+      const page = { ...buildPage(p.name, p.title), ...(p.filters.length && { filterConfig: { filters: p.filters.map((f) => pageFilter(f, info)) } }) };
+      const { type, fields } = visualFields(p);
+      const top = textHeight(p.text);
+      const visual = buildVisual({ type, x: 20, y: top + 20, width: 1240, height: 680 - top, title: p.title, fields: Object.fromEntries(Object.entries(fields).filter(([, l]) => l.length)) }, p.visualName, 1000, info, own(measures));
+      const parts = [json(`definition/pages/${p.name}/page.json`, page), json(`definition/pages/${p.name}/visuals/${visual.name}/visual.json`, visual)];
+      if (top) {
+        const box = buildVisual({ type: "textbox", x: 20, y: 10, width: 1240, height: top }, `${p.visualName.slice(0, 16)}text`, 2000, info, []);
+        (box.visual as any).objects = { general: [{ properties: { paragraphs: paragraphs(p.text!) } }] };
+        parts.push(json(`definition/pages/${p.name}/visuals/${box.name}/visual.json`, box));
+      }
+      return parts;
     }),
+    ...(measures.length
+      ? [
+          json("definition/reportExtensions.json", {
+            $schema: "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/reportExtension/1.0.0/schema.json",
+            name: "extension",
+            entities: [...new Set(measures.map((m) => m.table))].map((table) => ({ name: table, measures: measures.filter((m) => m.table === table).map((m) => ({ name: m.name, dataType: "Double", expression: m.expression, ...(m.format && { formatString: m.format }) })) })),
+          }),
+        ]
+      : []),
   ];
 }
 
@@ -144,15 +200,17 @@ export async function deleteResearchReports(r: ResearchEntry) {
 
 /** Creates the report of a model (in the model's workspace) or rewrites its pages. */
 export async function saveResearchReport(name: string, dataset: Ref & { info?: ModelInfo }, report: ResearchReport | undefined, pages: MatrixPage[]): Promise<ResearchReport> {
-  const pagesParts = pageParts(pages, dataset.info);
+  // Names given once and kept: the canvas embeds each page's visual by them.
+  const named = pages.map((p) => ({ ...p, name: p.name ?? newName(), visualName: p.visualName ?? newName() }));
+  const pagesParts = pageParts(named, dataset.info, report?.measures);
   if (report?.id) {
-    // Kept: the connection, the report settings and the theme; the pages are replaced.
+    // Kept: the connection, the report settings and the theme; the pages and measures are replaced.
     const ref = { id: report.id, groupId: report.groupId };
     const old = await definition(ref);
-    await writeDefinition(ref, [...old.filter((p) => !p.path.startsWith("definition/pages/")), ...pagesParts]);
-    return { ...report, pages, dirty: false, saved: Date.now() };
+    await writeDefinition(ref, [...old.filter((p) => !p.path.startsWith("definition/pages/") && p.path !== "definition/reportExtensions.json"), ...pagesParts]);
+    return { ...report, pages: named, dirty: false, saved: Date.now() };
   }
   const id = await createReport(name, dataset, pagesParts, dataset.groupId);
   // My workspace: no group (the Power BI API refuses its id as a group).
-  return { id, groupId: dataset.groupId, pages, dirty: false, saved: Date.now() };
+  return { ...report, id, groupId: dataset.groupId, pages: named, dirty: false, saved: Date.now() };
 }

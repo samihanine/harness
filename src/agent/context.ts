@@ -18,20 +18,21 @@ export async function withContexts(parts: (string | false | undefined)[], contex
  * A model for the AI: its structure (tables, columns, measures, relationships) and, when the user may
  * query it, examples of its data (values of each column, each measure's total).
  */
-export async function datasetText(dataset: DatasetEntry) {
+/** `focus`: the user's request (a big model then details the tables it is about). */
+export async function datasetText(dataset: DatasetEntry, focus?: string) {
   const head = `Semantic model "${dataset.name}" (id ${dataset.id}; right: ${dataset.access ?? "unknown"}${dataset.error ? `; ${dataset.error}` : ""})`;
   if (!dataset.info) return `${head}\nStructure not read.`;
   // The value profile when the user made it (Datasets › "Value examples"), else a few random rows.
-  const samples = dataset.info.profiledAt ? profileText(dataset.info) : dataset.access === "view" ? "" : await modelSamples({ id: dataset.id, groupId: dataset.groupId }, dataset.info);
-  return [head, modelSummary(dataset.info), samples].filter(Boolean).join("\n");
+  const samples = dataset.info.profiledAt ? profileText(dataset.info, focus) : dataset.access === "view" ? "" : await modelSamples({ id: dataset.id, groupId: dataset.groupId }, dataset.info);
+  return [head, modelSummary(dataset.info, focus), samples].filter(Boolean).join("\n");
 }
 
 /** What the AI knows of a report and its model: their names, the user's rights, the model's structure and data, the linked contexts. */
-export const reportContext = async (report: ReportEntry, dataset?: DatasetEntry) =>
+export const reportContext = async (report: ReportEntry, dataset?: DatasetEntry, focus?: string) =>
   withContexts(
     [
       `Report "${report.name}" (id ${report.id}). The user's right on it: ${report.access ?? "unknown"}${report.accessNote ? ` (${report.accessNote})` : ""}.`,
-      dataset ? await datasetText(dataset) : "The semantic model is not known to the app: DAX and field checks are not available.",
+      dataset ? await datasetText(dataset, focus) : "The semantic model is not known to the app: DAX and field checks are not available.",
     ],
     [report.contextIds, dataset?.contextIds],
   );
