@@ -2,7 +2,7 @@
 
 TanStack Start app for Power BI work. Every screen is a `Workspace` (`src/components/workspace.tsx`):
 the AI assistant on the left (foldable), a header (screen / chosen item, actions) and tabs on the right.
-Screens: Viewer (Report / Guides / Links), Builder (Report / Measures), Research (Canvas / Report /
+Screens: Viewer (Report / Dataset / Context; the guide of the clicked visual is a tab of the AI panel), Builder (Report / Measures / Examples), Research (Canvas / Report /
 Datasets), Reports (Schema / Context), Datasets (Schema / DAX / Context), Excel (Data / Schema /
 Context), Contexts, Slides (Preview / Content), Settings (AI / Power BI / General). There is no
 library screen: each screen adds and manages its own items (`EntityPicker`, `EntityMenu`). Run with `bun dev` (http://localhost:3300), check with `bun run typecheck`.
@@ -54,11 +54,15 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   `src/lib/hub-config.ts`). A new option goes into `HubConfig` and the Settings form too. The Settings
   page itself can never be hidden.
 - **Agents** (`src/agent/loop.ts`): two phases per request. The planner (read tools only) explores,
-  then always asks the user with `ask_user` (choices + a plan, shown as buttons in the chat) and hands
-  the approved plan to the implementer (read + change tools) with `implement`. Each screen's agent gives the AI its context once (with the library's context files
-  linked to the entries, `src/agent/context.ts`) and its lists (`list_*`: pages, visuals, tables,
-  rows…) as the page state before every model call, so the AI never has to ask for them. Changes go
-  to a draft saved when the answer is done (`finish`), with `discard_changes` / `undo_last_save`.
+  answers at once when nothing has to change, or asks the user with `ask_user` (choices + a plan,
+  shown as buttons in the chat) and hands the approved plan to the implementer (read + change tools)
+  with `implement`. Agents whose actions are harmless and undone in a click (`direct: true`, e.g. the
+  Viewer's filters and pages) skip the planner and act at once. Each screen's agent gives the AI its
+  context once (with the library's context files linked to the entries, `src/agent/context.ts`; a
+  model comes with its structure and examples of its data or its value profile) and its lists
+  (`list_*`: pages, visuals, tables, rows…) as the page state before every model call, so the AI never
+  has to ask for them. Changes go to a draft saved when the answer is done (`finish`), with
+  `discard_changes` / `undo_last_save`.
   `run_dax` is a thinking tool on every screen that has a model.
 - **Schemas**: a schema is an Excel table (required) + an optional form + the definition of its
   columns, with Forms-compatible types (`src/lib/schema.ts`), and the form's sections and branches.
@@ -81,5 +85,13 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   each template (`hero.tsx`, `section.tsx`…) has zod args, an animated component (motion, container
   units) and a native PowerPoint version (pptxgenjs). PDF = print of every slide (Power BI views are
   plain `reportEmbed` iframes so they print).
+- **Builder modes**: PBIR (`src/agent/builder.ts`, the definition through Fabric) when the report's
+  definition is readable; otherwise "editor mode" (`src/agent/builder-sdk.ts`): the AI edits the
+  embedded Power BI editor with `powerbi-report-authoring` (pages, visuals, filters, Top N, frame
+  formatting; the inside of visuals through the theme's `visualStyles`), e.g. for reports with an
+  encrypted sensitivity label, which Fabric's getDefinition refuses.
+- **Report schemas** (`src/lib/report-schema.ts`): kept with each report (`schema`), from the
+  definition or, when it is not readable, through a hidden embed; used by the Reports screen and as
+  the Builder's example reports.
 - Write code like the surrounding code: short doc comments saying why, same naming and idioms.
 - Verify UI changes in the browser preview (dev server on port 3300) before saying they work.

@@ -35,6 +35,11 @@ export type Agent = {
   context: () => Promise<string>;
   /** What the user sees now (page, filters, rows…): re-read before each model call, sent when it changed. */
   state?: (progress?: Progress) => Promise<string>;
+  /**
+   * Its actions are harmless and undone in a click (filters, slicers, pages of a viewed report): no
+   * planning, no question — one agent acts at once on the user's message.
+   */
+  direct?: boolean;
   /** Run when the implementer has finished (e.g. saving its draft); its text is added to the answer. */
   finish?: () => Promise<string | undefined>;
 };
@@ -92,6 +97,8 @@ How to work:
    - a free answer that changes the request or leaves something unclear → read what you need, then ask_user again;
    - nothing to change (the user only wanted information) → answer.
 Never call implement before the user has answered your questions. ask_user, implement and answer always come alone in their reply.`;
+
+const DIRECT = `You are the assistant of this screen. Do the user's last message NOW with your tools, in as few steps as possible: no question to the user, no plan. A question only (nothing to do): read what you need, then answer. When done, call answer ALONE with a short summary of what you did.`;
 
 const IMPLEMENTER = `You are the IMPLEMENTER. The user validated the plan below: do it now with your tools, step by step, checking each result. Do not ask the user anything (they already chose); fix what fails (read the error, correct, retry). When everything is done, call answer ALONE with a short summary of what was changed (and what failed, if anything).`;
 
@@ -301,68 +308,71 @@ export async function* runTurn({
   };
 
   /* --------------------------------- Planner -------------------------------- */
-  const readTools = [...agent.tools.filter((t) => t.readOnly), ASK_USER, IMPLEMENT, ANSWER];
-  let conv = live.get(conversationId);
-  if (conv && (conv.model !== model || conv.session.chars > LIMITS.sessionChars)) conv = undefined;
-  const fresh = !conv;
-  if (!conv) live.set(conversationId, (conv = { session: openSession(model, "planner", conversationId), model }));
-  const planner = conv;
-  const now = yield* readShown("Reading what you see");
-  const plannerTail = (stage: "new" | "answers" | "exploring") =>
-    format(
-      readTools,
-      stage === "answers"
-        ? "the user answered your questions. Everything decided → implement (final plan). Something unclear → read, then ask_user again. Nothing to change → answer."
-        : stage === "new"
-          ? "a new request. Nothing to change → answer now (read first only if needed). Changes → read what you need, then call ask_user (message, questions with options, plan)."
-          : "keep reading what you need, then answer (nothing to change) or call ask_user (changes; or implement if the user already answered).",
-      stage === "answers" ? `{"tools": [{"name": "implement", "args": {"plan": "1. … 2. …"}}]}` : `{"tools": [{"name": "ask_user", "args": {"message": "…", "questions": [{"question": "…?", "options": ["Yes, do it", "No"]}], "plan": "1. …"}}]}`,
-    );
-  const first = [
-    ...(fresh ? [tag("protocol", PROTOCOL), tag("role", PLANNER), tag("app_instructions", agent.instructions), tag("tools", readTools.map(signature).join("\n"))] : []),
-    ...changes(planner, now, fresh),
-    fresh && history && tag("conversation_so_far", history.slice(-LIMITS.historyChars)),
-    planner.note && tag("since_your_last_message", planner.note),
-    answering ? tag("user_answers", request) : tag("user_message", request),
-    plannerTail(answering ? "answers" : "new"),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-  planner.note = undefined;
-  let plannerStage: "answers" | "exploring" = answering ? "answers" : "exploring";
-  let ended: Ended;
-  try {
-    ended = yield* drive({
-      role: "planner",
-      session: planner.session,
-      first,
-      tools: readTools,
-      max: LIMITS.plannerSteps,
-      turn,
-      signal,
-      reread: async function* () {
-        return changes(planner, yield* readShown("Reading the page again"));
-      },
-      tail: () => plannerTail(plannerStage),
-      // Changes need the user's agreement; a plain answer does not.
-      refuse: (name) => (name === "implement" && !answering ? "The user has not agreed to a plan yet: first call ask_user (message, questions with options, plan)." : undefined),
-    });
-  } catch (error) {
-    // A failed exchange may have left the conversation incomplete: the next message starts a new one.
-    if (live.get(conversationId) === planner) live.delete(conversationId);
-    throw error;
+  // Direct agents skip it: the implementer acts on the message itself.
+  let ended: Ended = { name: "implement", args: { plan: "Do the user's last message (in <conversation>), directly." } };
+  if (!agent.direct) {
+    const readTools = [...agent.tools.filter((t) => t.readOnly), ASK_USER, IMPLEMENT, ANSWER];
+    let conv = live.get(conversationId);
+    if (conv && (conv.model !== model || conv.session.chars > LIMITS.sessionChars)) conv = undefined;
+    const fresh = !conv;
+    if (!conv) live.set(conversationId, (conv = { session: openSession(model, "planner", conversationId), model }));
+    const planner = conv;
+    const now = yield* readShown("Reading what you see");
+    const plannerTail = (stage: "new" | "answers" | "exploring") =>
+      format(
+        readTools,
+        stage === "answers"
+          ? "the user answered your questions. Everything decided → implement (final plan). Something unclear → read, then ask_user again. Nothing to change → answer."
+          : stage === "new"
+            ? "a new request. Nothing to change → answer now (read first only if needed). Changes → read what you need, then call ask_user (message, questions with options, plan)."
+            : "keep reading what you need, then answer (nothing to change) or call ask_user (changes; or implement if the user already answered).",
+        stage === "answers" ? `{"tools": [{"name": "implement", "args": {"plan": "1. … 2. …"}}]}` : `{"tools": [{"name": "ask_user", "args": {"message": "…", "questions": [{"question": "…?", "options": ["Yes, do it", "No"]}], "plan": "1. …"}}]}`,
+      );
+    const first = [
+      ...(fresh ? [tag("protocol", PROTOCOL), tag("role", PLANNER), tag("app_instructions", agent.instructions), tag("tools", readTools.map(signature).join("\n"))] : []),
+      ...changes(planner, now, fresh),
+      fresh && history && tag("conversation_so_far", history.slice(-LIMITS.historyChars)),
+      planner.note && tag("since_your_last_message", planner.note),
+      answering ? tag("user_answers", request) : tag("user_message", request),
+      plannerTail(answering ? "answers" : "new"),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    planner.note = undefined;
+    let plannerStage: "answers" | "exploring" = answering ? "answers" : "exploring";
+    try {
+      ended = yield* drive({
+        role: "planner",
+        session: planner.session,
+        first,
+        tools: readTools,
+        max: LIMITS.plannerSteps,
+        turn,
+        signal,
+        reread: async function* () {
+          return changes(planner, yield* readShown("Reading the page again"));
+        },
+        tail: () => plannerTail(plannerStage),
+        // Changes need the user's agreement; a plain answer does not.
+        refuse: (name) => (name === "implement" && !answering ? "The user has not agreed to a plan yet: first call ask_user (message, questions with options, plan)." : undefined),
+      });
+    } catch (error) {
+      // A failed exchange may have left the conversation incomplete: the next message starts a new one.
+      if (live.get(conversationId) === planner) live.delete(conversationId);
+      throw error;
+    }
+    plannerStage = "exploring";
+    if ("giveUp" in ended) return yield { ...turn, answer: ended.giveUp };
+    if (ended.name === "ask_user") {
+      turn.steps.push({ id: crypto.randomUUID(), name: "ask_user", args: ended.args, result: "" });
+      return yield { ...turn, answer: "" };
+    }
+    if (ended.name === "answer") return yield { ...turn, answer: String(ended.args.text ?? "") };
   }
-  plannerStage = "exploring";
-  if ("giveUp" in ended) return yield { ...turn, answer: ended.giveUp };
-  if (ended.name === "ask_user") {
-    turn.steps.push({ id: crypto.randomUUID(), name: "ask_user", args: ended.args, result: "" });
-    return yield { ...turn, answer: "" };
-  }
-  if (ended.name === "answer") return yield { ...turn, answer: String(ended.args.text ?? "") };
 
   /* ------------------------------- Implementer ------------------------------ */
   const plan = String(ended.args.plan ?? "");
-  turn.steps.push({ id: crypto.randomUUID(), name: "implement", args: { plan }, result: "" });
+  if (!agent.direct) turn.steps.push({ id: crypto.randomUUID(), name: "implement", args: { plan }, result: "" });
   yield { ...turn };
   const session = openSession(model, "implementer", conversationId);
   const seen: Seen = {};
@@ -370,7 +380,7 @@ export async function* runTurn({
   const implementerTail = () => format(tools, "do the next steps of the plan with your tools; when everything is done, answer.", `{"tools": [{"name": "${agent.tools.find((t) => !t.readOnly)?.name ?? "answer"}", "args": {…}}]}`);
   const start = [
     tag("protocol", PROTOCOL),
-    tag("role", IMPLEMENTER),
+    tag("role", agent.direct ? DIRECT : IMPLEMENTER),
     tag("app_instructions", agent.instructions),
     tag("tools", tools.map(signature).join("\n")),
     ...changes(seen, yield* readShown("Reading what you see")),
@@ -420,6 +430,7 @@ export async function* runTurn({
   const text = "giveUp" in result ? result.giveUp : String(result.args.text ?? "");
   // The planner learns what was done before the user's next message.
   const done = turn.steps.slice(implemented).map((s) => `- ${s.name}${s.error ? " (failed)" : ""}: ${String(s.result ?? "").split("\n")[0].slice(0, 160)}`);
-  planner.note = `The implementer carried out your plan.\nActions:\n${done.join("\n") || "none"}\nIts answer to the user: ${text}${note ? `\n${note}` : ""}`;
+  const conv = live.get(conversationId);
+  if (conv) conv.note = `The implementer carried out your plan.\nActions:\n${done.join("\n") || "none"}\nIts answer to the user: ${text}${note ? `\n${note}` : ""}`;
   yield { ...turn, answer: note ? `${text}\n\n${note}` : text };
 }

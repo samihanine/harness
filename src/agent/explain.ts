@@ -20,12 +20,16 @@ Your job is to make the visual SPEAK: tell the user what they would only see aft
   · a matrix: the cell or row that breaks the pattern;
   · a slicer: what it filters, what is selected now and what that hides, which choice is worth trying;
   · a pie / donut: the dominant part and whether the split is balanced.
-- Say only what this data supports; when the rows are cut or a filter limits the reading, say what is missing or how the filter changes the meaning.
-- Lead with the single most useful insight in one bold sentence. Then 1 to 4 short points, only if they add something. Short: 40 to 120 words depending on how much the data says.
+- Say only what this data supports. Do not restate the filters, the slicer selections or the page: the user sees them; mention a filter only if it changes the meaning.
+- Lead with the single most useful insight in one bold sentence. Then at most 3 short points, only if they add something. Short: 25 to 70 words.
 - Round numbers (661.8M, 12.5K, +8 %, 3×). Never list every value, never restate the title or the axes, no generic advice ("monitor this metric"), no hedging filler.
-- Answer in English, in markdown.
+- Answer in the language of the report's titles (French titles → French), as MARKDOWN inside a \`\`\`markdown fence: the bold sentence on its own line, then one point per line starting with "- ", nothing else (no title, no closing sentence).
 
-Good: "**Two regions make 81 % of the revenue: East (1.1B) leads West by 2×.**"
+Good:
+\`\`\`markdown
+**Two regions make 81 % of the revenue: East (1.1B) leads West by 2×.**
+- North is last (4 %), half of last year.
+\`\`\`
 Bad: "This chart shows revenue by region. East has the highest revenue."`;
 
 export async function explainVisual(report: Report, page: string, visual: string, context: string, dataset?: DatasetEntry) {

@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { CopyIcon, PencilRulerIcon, SigmaIcon } from "lucide-react";
+import { CopyIcon, LibraryIcon, PencilRulerIcon, SigmaIcon } from "lucide-react";
 import { ReportPicker } from "@/components/pickers";
 import { ReportActions } from "@/components/report-actions";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Empty, Workspace } from "@/components/workspace";
+import { Switch } from "@/components/ui/switch";
+import { Empty, Section, Workspace } from "@/components/workspace";
 import { Zoom } from "@/components/zoom";
 import { builderAgent } from "@/agent/builder";
 import { builderSdkAgent } from "@/agent/builder-sdk";
@@ -14,7 +15,7 @@ import { useLast } from "@/lib/last";
 import { notEditable } from "@/lib/library";
 import { errorText } from "@/lib/ms";
 import { definition, partText } from "@/lib/report-def";
-import { useCollection } from "@/lib/store";
+import { patch, useCollection, type ReportEntry } from "@/lib/store";
 import { useEmbed } from "@/lib/use-embed";
 
 export const Route = createFileRoute("/editor")({
@@ -105,6 +106,7 @@ function Editor() {
           ),
         },
         ...(mode === "editor" ? [] : [{ id: "measures", label: "Measures", icon: SigmaIcon, count: measures?.length, content: <MeasuresTab measures={measures} error={measuresError} ready={!!entry} /> }]),
+        ...(entry ? [{ id: "examples", label: "Examples", icon: LibraryIcon, count: entry.exampleIds?.length || undefined, content: <ExamplesTab entry={entry} /> }] : []),
       ]}
     />
   );
@@ -152,6 +154,32 @@ function MeasuresTab({ measures, error, ready }: { measures?: ReportMeasure[]; e
           </TableBody>
         </Table>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Reports given to the AI as examples (their pages, visuals and fields): it follows their layout and
+ * style. Kept with the edited report; schemas are made when missing (Reports screen to regenerate).
+ */
+function ExamplesTab({ entry }: { entry: ReportEntry }) {
+  const reports = useCollection("reports").filter((r) => r.id !== entry.id);
+  const chosen = entry.exampleIds ?? [];
+  const toggle = (id: string, on: boolean) => void patch("reports", entry.id, { exampleIds: on ? [...chosen, id] : chosen.filter((x) => x !== id) });
+  return (
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 overflow-y-auto p-6">
+      <Section title="Example reports" description="The assistant reads their structure (pages, visuals, fields, layout) and builds in the same spirit. None by default.">
+        {!reports.length && <p className="text-[13px] text-muted-foreground">No other report in the app: add some in the Reports screen.</p>}
+        <div className="flex flex-col divide-y">
+          {reports.map((r) => (
+            <label key={r.id} className="flex cursor-pointer items-center gap-3 py-2.5 text-[13.5px]">
+              <Switch checked={chosen.includes(r.id)} onCheckedChange={(on) => toggle(r.id, on)} />
+              <span className="min-w-0 flex-1 truncate font-medium">{r.name}</span>
+              <span className="text-[12px] text-muted-foreground">{r.schema ? `${r.schema.pages.length} pages · ${r.schema.visuals.length} visuals` : "schema read when chosen"}</span>
+            </label>
+          ))}
+        </div>
+      </Section>
     </div>
   );
 }

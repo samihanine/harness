@@ -356,6 +356,26 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
       },
     }),
     tool({
+      name: "set_slicer_type",
+      description: 'Changes how a slicer looks: "dropdown", "list" (vertical list), "tiles" (buttons side by side), "between" (a range, numbers / dates), "relative" (relative dates); single_select: one choice at a time.',
+      args: z.object({ visual: visualArg, page: pageArg, type: z.enum(["dropdown", "list", "tiles", "between", "relative"]), single_select: z.boolean().optional() }),
+      run: async ({ visual, page, type, single_select }) => {
+        const { visual: v } = await visualOf(visual, page);
+        if (v.json.visual?.visualType !== "slicer") throw new Error(`${v.name} is a ${v.json.visual?.visualType}, not a slicer.`);
+        const mode = { dropdown: "Dropdown", list: "Basic", tiles: "Basic", between: "Between", relative: "Relative" }[type];
+        const format: Format = { data: { mode }, ...(single_select !== undefined && { selection: { singleSelect: single_select } }) };
+        const ops: PatchOp[] = formatOps(v.json, format).ops;
+        // Orientation is the slicer's own "general" object (not the frame's), a number: written here.
+        if (type === "list" || type === "tiles") {
+          const general = v.json.visual?.objects?.general ?? [];
+          const at = Math.max(0, general.findIndex((e: any) => !e?.selector));
+          ops.push({ op: "add", path: `/visual/objects/general/${at}/properties/orientation`, value: { expr: { Literal: { Value: type === "tiles" ? "1D" : "0D" } } } });
+        }
+        await patch(v.file, ops);
+        return `Slicer ${v.name}: ${type}${single_select ? ", single choice" : ""}.`;
+      },
+    }),
+    tool({
       name: "update_visual",
       description: "Changes a visual's visual.json with JSON Patch operations (position, sort, filters, isHidden, per-series formatting with a selector). For plain formatting, format_visual is simpler.",
       args: z.object({ visual: visualArg, page: pageArg, operations: ops }),

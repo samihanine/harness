@@ -7,6 +7,7 @@
  */
 import { z } from "zod";
 import { reportContext } from "./context";
+import { examplesText } from "@/lib/report-schema";
 import { tool, type Agent, type Tool } from "./loop";
 import { modelTools } from "./model-tools";
 import { DAX_RULES, daxTool, viewerTools } from "./pbi-tools";
@@ -198,6 +199,23 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
       },
     }),
     tool({
+      name: "set_slicer_type",
+      description:
+        'Changes how a slicer looks: "tiles" (buttons), "list" (list slicer), "text" (search box) or "classic" — for that slicer only; "dropdown": classic slicers become dropdowns through the theme (EVERY classic slicer of the report: say so to the user).',
+      args: z.object({ visual: z.string(), page: z.string().optional(), type: z.enum(["dropdown", "tiles", "list", "text", "classic"]) }),
+      run: async ({ visual, page, type }) => {
+        const v = await visualOf(visual, page);
+        if (!/slicer/i.test(v.type)) throw new Error(`${v.name} is a ${v.type}, not a slicer.`);
+        // The SDK cannot reach a slicer's own settings: its type changes, or the theme gives the dropdown.
+        const kind = { tiles: "advancedSlicerVisual", list: "listSlicer", text: "textSlicer", classic: "slicer", dropdown: "slicer" }[type];
+        if (v.type !== kind) await v.changeType(kind);
+        if (type !== "dropdown") return `Slicer ${v.name}: ${type}.`;
+        const current = ((await r().getTheme().catch(() => undefined)) as { themeJson?: Record<string, unknown> } | undefined)?.themeJson ?? { name: "Hub theme" };
+        await r().applyTheme({ themeJson: merge(current, { visualStyles: { slicer: { "*": { data: [{ mode: "Dropdown" }] } } } }) });
+        return `Slicer ${v.name}: dropdown (through the theme: every classic slicer of the report is now a dropdown).`;
+      },
+    }),
+    tool({
       name: "delete_visual",
       description: "Deletes a visual.",
       args: z.object({ visual: z.string(), page: z.string().optional() }),
@@ -245,7 +263,8 @@ How to work (few, well-filled calls; several independent calls in one reply):
 - Titles and texts in the user's language. Use only fields that exist (model summary).
 ${DAX_RULES}`,
     tools,
-    context: () => reportContext(entry()!, dataset()),
+    // The example reports the user chose (Examples tab) come with the context.
+    context: async () => [await reportContext(entry()!, dataset()), await examplesText(entry()?.exampleIds)].filter(Boolean).join("\n\n"),
     state: async () => (report() ? `Editor mode (definition closed). What the editor shows:\n${await pageText(report()!, false, datasetRef())}` : "The report is loading in the editor."),
     finish: async () => {
       if (!changed) return undefined;

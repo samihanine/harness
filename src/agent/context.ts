@@ -1,7 +1,7 @@
 /** Pieces of the AI context shared by the screens. */
 import { contextsText } from "@/lib/library";
 import { modelSummary } from "@/lib/model";
-import { modelSamples } from "@/lib/model-samples";
+import { modelSamples, profileText } from "@/lib/model-samples";
 import type { DatasetEntry, ReportEntry } from "@/lib/store";
 
 /**
@@ -21,7 +21,8 @@ export async function withContexts(parts: (string | false | undefined)[], contex
 export async function datasetText(dataset: DatasetEntry) {
   const head = `Semantic model "${dataset.name}" (id ${dataset.id}; right: ${dataset.access ?? "unknown"}${dataset.error ? `; ${dataset.error}` : ""})`;
   if (!dataset.info) return `${head}\nStructure not read.`;
-  const samples = dataset.access === "view" ? "" : await modelSamples({ id: dataset.id, groupId: dataset.groupId }, dataset.info);
+  // The value profile when the user made it (Datasets › "Value examples"), else a few random rows.
+  const samples = dataset.info.profiledAt ? profileText(dataset.info) : dataset.access === "view" ? "" : await modelSamples({ id: dataset.id, groupId: dataset.groupId }, dataset.info);
   return [head, modelSummary(dataset.info), samples].filter(Boolean).join("\n");
 }
 

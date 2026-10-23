@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import CodeMirror from "@uiw/react-codemirror";
-import { ArrowRightIcon, BookTextIcon, CalculatorIcon, DatabaseIcon, ExternalLinkIcon, FileSpreadsheetIcon, FileUpIcon, KeyRoundIcon, LayersIcon, PlayIcon, RefreshCwIcon, SigmaIcon, TerminalSquareIcon } from "lucide-react";
+import { ArrowRightIcon, BookTextIcon, CalculatorIcon, DatabaseIcon, ExternalLinkIcon, FileSpreadsheetIcon, FileUpIcon, KeyRoundIcon, LayersIcon, ListIcon, PlayIcon, RefreshCwIcon, SigmaIcon, TerminalSquareIcon } from "lucide-react";
 import { ContextLinks } from "@/components/context-links";
 import { DataTable } from "@/components/data-table";
 import { CsvDialog } from "@/components/csv-dialog";
@@ -16,6 +16,7 @@ import { datasetText, withContexts } from "@/agent/context";
 import { tool, type Agent } from "@/agent/loop";
 import { STEPS_TEXT, modelEditorTools, modelState, saveModelDraft } from "@/agent/model-editor-tools";
 import { modelTools } from "@/agent/model-tools";
+import { profileModel } from "@/lib/model-samples";
 import { DAX_RULES, daxTool } from "@/agent/pbi-tools";
 import { last, useLast } from "@/lib/last";
 import { createDatasetFromExcel, refreshDataset } from "@/lib/library";
@@ -205,7 +206,7 @@ ${DAX_RULES}`,
             id: "schema",
             label: "Schema",
             icon: LayersIcon,
-            content: !dataset ? <Empty icon={DatabaseIcon}>Choose a dataset, add one from its Power BI link, or create one from Excel or CSV files (menu at the top).</Empty> : error ? <p className="p-6 text-[13px] text-destructive">{error}</p> : !model ? <Empty>Reading the model…</Empty> : <SchemaTab model={model} />,
+            content: !dataset ? <Empty icon={DatabaseIcon}>Choose a dataset, add one from its Power BI link, or create one from Excel or CSV files (menu at the top).</Empty> : error ? <p className="p-6 text-[13px] text-destructive">{error}</p> : !model ? <Empty>Reading the model…</Empty> : <SchemaTab model={model} dataset={dataset} onRegenerate={() => withToast("Reading the model…", refreshDataset(dataset).then(() => setVersion((v) => v + 1)), "Schema read again.")} />,
           },
           { id: "dax", label: "DAX", icon: TerminalSquareIcon, content: dataset ? <DaxConsole dataset={dataset} /> : <Empty>Choose a dataset.</Empty> },
           { id: "context", label: "Context", icon: BookTextIcon, count: dataset?.contextIds.length, content: dataset ? <ContextLinks what="dataset" ids={dataset.contextIds} onChange={(contextIds) => void patch("datasets", dataset.id, { contextIds })} /> : <Empty>Choose a dataset.</Empty> },
@@ -231,13 +232,44 @@ ${DAX_RULES}`,
 const TYPE: Record<string, string> = { string: "Text", int64: "Whole number", double: "Decimal", decimal: "Fixed decimal", dateTime: "Date / time", boolean: "True / false" };
 
 /** The model, read only: tables, columns, measures, relationships, parameters. */
-function SchemaTab({ model }: { model: Model }) {
+function SchemaTab({ model, dataset, onRegenerate }: { model: Model; dataset: DatasetEntry; onRegenerate: () => Promise<unknown> }) {
   const { info, steps, parameters } = model;
+  const [profiling, setProfiling] = useState<{ label: string; done: number; total: number }>();
+  /** The value profile (on demand): examples of every column and measure, kept with the dataset for the AI. */
+  const profile = () => {
+    if (!dataset.info) return;
+    setProfiling({ label: "Starting", done: 0, total: 1 });
+    void withToast(
+      "Reading value examples…",
+      profileModel({ id: dataset.id, groupId: dataset.groupId }, dataset.info, (label, done, total) => setProfiling({ label, done, total })).then((next) => patch("datasets", dataset.id, { info: next })),
+      "Value examples added: the AI now knows the values of each field.",
+    ).finally(() => setProfiling(undefined));
+  };
+  const profiled = new Map((dataset.info?.tables ?? []).flatMap((t) => [...t.columns.map((c) => [`${t.name}|${c.name}`, c.values] as const), ...t.measures.map((m) => [`${t.name}|[${m.name}]`, m.total] as const)]));
   const columns = info.tables.flatMap((t) => t.columns.map((c) => ({ ...c, table: t.name })));
   const measures = info.tables.flatMap((t) => t.measures.map((m) => ({ ...m, table: t.name })));
   const fieldParameters = info.tables.filter((t) => t.kind === "parameter");
   return (
     <SubTabs
+      toolbar={
+        <>
+          {profiling && (
+            <span className="flex items-center gap-2 text-[12px] text-muted-foreground" title={profiling.label}>
+              <span className="h-1.5 w-32 overflow-hidden rounded-full bg-muted">
+                <span className="block h-full rounded-full bg-primary transition-[width]" style={{ width: `${Math.round((profiling.done / Math.max(1, profiling.total)) * 100)}%` }} />
+              </span>
+              <span className="tabular-nums">{profiling.done}/{profiling.total}</span>
+            </span>
+          )}
+          {dataset.info?.profiledAt && !profiling && <span className="text-[12px] text-muted-foreground">Values read {new Date(dataset.info.profiledAt).toLocaleDateString()}</span>}
+          <Button size="sm" variant="outline" disabled={!!profiling || !dataset.info || dataset.access === "view"} title="Up to 100 random values and the number of distinct values of each column, each measure's total: given to the AI" onClick={profile}>
+            <ListIcon /> {dataset.info?.profiledAt ? "Read the value examples again" : "Value examples"}
+          </Button>
+          <Button size="sm" variant="outline" disabled={!!profiling} onClick={() => void onRegenerate()}>
+            <RefreshCwIcon /> Regenerate the schema
+          </Button>
+        </>
+      }
       tabs={[
         {
           id: "tables",
@@ -273,7 +305,7 @@ function SchemaTab({ model }: { model: Model }) {
           count: columns.length,
           content: (
             <DataTable
-              head={["Column", "Table", "Type", "Format / category", "Description"]}
+              head={["Column", "Table", "Type", "Format / category", "Values", "Description"]}
               rows={columns.map((c) => [
                 <span key="n" className={`flex items-center gap-2 font-medium ${c.hidden ? "opacity-60" : ""}`}>
                   {c.expression ? <CalculatorIcon className="size-4 text-violet-600" aria-label="Calculated" /> : /^id$/i.test(c.name) ? <KeyRoundIcon className="size-4 text-muted-foreground" /> : <DatabaseIcon className="size-4 text-muted-foreground" />}
@@ -282,6 +314,7 @@ function SchemaTab({ model }: { model: Model }) {
                 c.table,
                 <Badge key="t" variant="secondary">{TYPE[c.type ?? ""] ?? c.type ?? "?"}</Badge>,
                 <span key="f" className="text-[12px] text-muted-foreground">{[c.format, c.category].filter(Boolean).join(" · ") || "—"}</span>,
+                <span key="v" className="block max-w-80 truncate text-[12px] text-muted-foreground" title={profiled.get(`${c.table}|${c.name}`) ?? ""}>{profiled.get(`${c.table}|${c.name}`) ?? "—"}</span>,
                 <span key="d" className="text-[12.5px] text-muted-foreground">{c.expression ? <code className="font-mono">{c.expression}</code> : (c.description ?? "")}</span>,
               ])}
               empty="No column."

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, createFileRoute, useNavigate } from "@tanstack/react-router";
 import { z } from "zod";
-import { BookTextIcon, ChartPieIcon, ExternalLinkIcon, EyeOffIcon, FileChartColumnIcon, LayersIcon, PencilRulerIcon } from "lucide-react";
+import { BookTextIcon, RefreshCwIcon, ChartPieIcon, ExternalLinkIcon, EyeOffIcon, FileChartColumnIcon, LayersIcon, PencilRulerIcon } from "lucide-react";
 import { ContextLinks } from "@/components/context-links";
 import { EntityMenu, withToast } from "@/components/entity";
 import { ReportPicker } from "@/components/pickers";
@@ -16,7 +16,7 @@ import { DAX_RULES, daxTool } from "@/agent/pbi-tools";
 import { useLast } from "@/lib/last";
 import { refreshReport } from "@/lib/library";
 import { errorText } from "@/lib/ms";
-import { readReportSchema, type ReportSchema } from "@/lib/report-schema";
+import { describeReport, schemaText, type ReportSchema } from "@/lib/report-schema";
 import { all, patch, remove, useCollection, type ReportEntry } from "@/lib/store";
 
 export const Route = createFileRoute("/reports")({
@@ -26,31 +26,25 @@ export const Route = createFileRoute("/reports")({
 
 const ACCESS: Record<string, { label: string; variant: "default" | "secondary" | "outline" }> = { edit: { label: "Edit", variant: "default" }, build: { label: "Build", variant: "secondary" }, view: { label: "View only", variant: "outline" } };
 
-/** The structure of a report, read again on demand (`version`). */
-function useSchema(entry: ReportEntry | undefined, version: number) {
-  const [schema, setSchema] = useState<ReportSchema>();
-  const [error, setError] = useState<string>();
-  useEffect(() => {
+/**
+ * The report's descriptive schema: the one kept with it, made once when missing (from the definition,
+ * else through an embed for read-only reports); `regenerate` makes it again.
+ */
+function useSchema(entry: ReportEntry | undefined) {
+  const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
+  const regenerate = async () => {
     if (!entry) return;
-    let live = true;
-    setSchema(undefined);
-    setError(undefined);
-    readReportSchema(entry).then((s) => live && setSchema(s), (e) => live && setError(errorText(e)));
-    return () => void (live = false);
-  }, [entry?.id, version]); // eslint-disable-line react-hooks/exhaustive-deps
-  return { schema, error };
+    setState({ busy: true });
+    await describeReport(entry).then(
+      () => setState({}),
+      (e) => setState({ error: errorText(e) }),
+    );
+  };
+  useEffect(() => {
+    if (entry && !entry.schema && !state.busy) void regenerate();
+  }, [entry?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  return { schema: entry?.schema, error: state.error, busy: !!state.busy, regenerate };
 }
-
-/** The structure as text for the AI. */
-const schemaText = (s: ReportSchema) =>
-  [
-    `Theme: ${s.theme ?? s.baseTheme ?? "default"}. Report filters: ${s.filters.join(", ") || "none"}.`,
-    `Pages (${s.pages.length}):\n${s.pages.map((p) => `- "${p.displayName}" (${p.name}) ${p.width}×${p.height}${p.hidden ? " hidden" : ""}, ${p.visuals} visuals, ${p.filters} filters`).join("\n")}`,
-    `Visuals:\n${s.visuals.map((v) => `- [${s.pages.find((p) => p.name === v.page)?.displayName ?? v.page}] ${v.type}${v.title ? ` "${v.title}"` : ""} (${v.name}) ${Object.entries(v.fields).map(([r, f]) => `${r}: ${f.join(", ")}`).join("; ")}`).join("\n")}`,
-    s.measures.length ? `Report measures:\n${s.measures.map((m) => `- '${m.table}'[${m.name}] = ${m.expression.replace(/\s+/g, " ").slice(0, 160)}`).join("\n")}` : "",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
 
 /**
  * Reports: the Power BI reports the app knows (added here by link): their structure read from the
@@ -63,8 +57,7 @@ function Reports() {
   useLast("reports:report", reportId, (report) => navigate({ search: { report }, replace: true }));
   const entry = useCollection("reports").find((r) => r.id === reportId);
   const dataset = useCollection("datasets").find((d) => d.id === entry?.datasetId);
-  const [version, setVersion] = useState(0);
-  const { schema, error } = useSchema(entry, version);
+  const { schema, error, busy, regenerate } = useSchema(entry);
   const live = useRef({ schema, entry });
   live.current = { schema, entry };
   const datasetRef = entry && { id: entry.datasetId, groupId: dataset?.groupId ?? entry.datasetGroupId };
@@ -112,6 +105,9 @@ ${DAX_RULES}`,
       actions={
         entry && (
           <>
+            <Button variant="outline" size="sm" disabled={busy} title={schema?.readAt ? `Read ${new Date(schema.readAt).toLocaleString()} (${schema.source === "embed" ? "through an embed" : "from the definition"})` : undefined} onClick={() => void regenerate()}>
+              <RefreshCwIcon className={busy ? "animate-spin" : ""} /> {busy ? "Reading…" : "Regenerate the schema"}
+            </Button>
             <Button variant="outline" size="sm" asChild>
               <Link to="/viewer" search={{ report: entry.id }}>
                 <ChartPieIcon /> View
@@ -128,7 +124,7 @@ ${DAX_RULES}`,
               kind="reports"
               entry={entry}
               onRename={rename}
-              onRefresh={() => void withToast("Reading the report…", refreshReport(entry).then(() => setVersion((v) => v + 1)), "Read again.")}
+              onRefresh={() => void withToast("Reading the report…", refreshReport(entry).then(regenerate), "Read again.")}
               onRemove={() => confirm(`Remove "${entry.name}" from the app? (the report stays in Power BI)`) && void remove("reports", entry.id).then(() => navigate({ search: {} }))}
             />
           </>

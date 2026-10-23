@@ -10,7 +10,7 @@ import { dax, type Ref, type Rows } from "./pbi";
 import { readModelFiles } from "./tmdl";
 
 export type Column = { name: string; type?: string; description?: string; hidden?: boolean; format?: string; expression?: string; category?: string; sortBy?: string; values?: string };
-export type Measure = { name: string; expression?: string; format?: string; description?: string; folder?: string; hidden?: boolean };
+export type Measure = { name: string; expression?: string; format?: string; description?: string; folder?: string; hidden?: boolean; /** Its value over all the data (value profile). */ total?: string };
 export type TableInfo = {
   name: string;
   description?: string;
@@ -24,7 +24,7 @@ export type TableInfo = {
   extra?: string;
 };
 export type Relationship = { from: string; to: string; cardinality: string; both: boolean; active: boolean };
-export type ModelInfo = { source: "tmdl" | "info"; tables: TableInfo[]; relationships: Relationship[]; roles: string[]; warnings: string[]; readAt: string };
+export type ModelInfo = { source: "tmdl" | "info"; tables: TableInfo[]; relationships: Relationship[]; roles: string[]; warnings: string[]; readAt: string; /** When the value profile (Datasets › "Value examples") was made. */ profiledAt?: string };
 
 const AUTO_DATE = /^(LocalDateTable|DateTableTemplate)_/;
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 160);
@@ -290,7 +290,7 @@ export function modelSummary(info: ModelInfo) {
 }
 
 const measureLine = (m: Measure, table: string) =>
-  [`[${m.name}] (in '${table}')${m.format ? ` format ${m.format}` : ""}${m.folder ? ` folder ${m.folder}` : ""}${m.hidden ? " hidden" : ""}`, m.description && `  description: ${m.description}`, `  = ${m.expression ?? "(formula not readable)"}`]
+  [`[${m.name}] (in '${table}')${m.format ? ` format ${m.format}` : ""}${m.folder ? ` folder ${m.folder}` : ""}${m.hidden ? " hidden" : ""}`, m.description && `  description: ${m.description}`, `  = ${m.expression ?? "(formula not readable)"}`, m.total && `  total over all the data: ${m.total}`]
     .filter(Boolean)
     .join("\n");
 

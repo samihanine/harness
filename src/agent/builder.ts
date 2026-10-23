@@ -3,6 +3,7 @@
  * formatting, theme, report measures — in a draft saved when its answer is done.
  */
 import { reportContext } from "./context";
+import { examplesText } from "@/lib/report-schema";
 import { PBIR_GUIDE, editorState, editorTools } from "./editor-tools";
 import type { Agent } from "./loop";
 import { modelTools } from "./model-tools";
@@ -43,7 +44,8 @@ How to work (few, well-filled calls; several independent calls in one reply):
 ${PBIR_GUIDE}
 ${DAX_RULES}`,
     tools: [...editorTools(ctx, save), ...modelTools(dataset)],
-    context: () => reportContext(entry()!, dataset()),
+    // The example reports the user chose (Examples tab) come with the context.
+    context: async () => [await reportContext(entry()!, dataset()), await examplesText(entry()?.exampleIds)].filter(Boolean).join("\n\n"),
     state: () => editorState(ctx, save),
     finish: async () => {
       const r = ref();

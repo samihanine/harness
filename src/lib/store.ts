@@ -28,6 +28,10 @@ export type ReportEntry = {
   contextIds: string[];
   /** The name was changed in the app: reading the report again keeps it. */
   renamed?: boolean;
+  /** Its descriptive schema (pages, visuals, fields), kept: made again with "Regenerate the schema". */
+  schema?: import("./report-schema").ReportSchema;
+  /** Builder: reports given to the AI as examples (their schemas). */
+  exampleIds?: string[];
 };
 
 export type DatasetEntry = {

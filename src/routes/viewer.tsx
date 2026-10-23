@@ -85,9 +85,11 @@ function Viewer() {
 Page state: the pages, the visuals of the CURRENT page (read a visual's data with get_visual_data) and the active filters, slicers and bookmarks. Other pages: list_pages (every page with its visuals) and read_page (a page in detail, without moving); go there with change_current_page, then act — the page state is read again after each change.
 - Values: filter only on values that exist. A slicer lists its options in the page state; for any other column read the real values with run_dax. Translations and synonyms are fine (e.g. "automne" → the value "Fall").
 - To filter, use the FIRST that fits: 1. a slicer of the current page on that field (update_slicer_value); 2. a page filter (update_page_filter); 3. a report filter (update_report_filter), when it must apply to every page; 4. a visual filter (update_visual_filter), only for one visual.
-- After a change, give what changed and the key figures (read with get_visual_data).
+- Be fast. To change a filter, a slicer or the page: just do it (one call when possible) and say in one line what changed. Do NOT read the visuals' data (get_visual_data, read_page with data) unless the user asks about values or figures.
 ${DAX_RULES}`,
     tools: [...viewerTools(() => report, () => datasetRef, () => dataset?.info), daxTool(() => datasetRef), ...modelTools(() => dataset)],
+    // Filters, slicers and pages are harmless and undone in a click: the agent acts at once (no plan, no question).
+    direct: true,
     context: () => reportContext(entry, dataset),
     state: async () => (report ? `What the user sees now:\n${await pageText(report, false, datasetRef)}\n${await bookmarksText(report)}` : "The report is not loaded yet."),
   };
@@ -245,7 +247,10 @@ function GuidePanel({ report, reportRef, entry, dataset, pages, open, onOpen, gu
   const page = open && pages.find((p) => p.name === open.page);
   const visual = open && page?.visuals.find((v) => v.name === open.visual);
   const guide = open && guides.rows.find((r) => String(r.page ?? "") === open.page && String(r.visual ?? "") === open.visual);
-  const title = visual?.title ?? open?.visual ?? "";
+  /** A visual's name for the user: its guide's title when it has one, else the visual's own title. */
+  const guideOf = (p: string, v: string) => guides.rows.find((r) => String(r.page ?? "") === p && String(r.visual ?? "") === v);
+  const nameOf = (p: string, v: string, fallback: string) => String(guideOf(p, v)?.title ?? "").trim() || fallback;
+  const title = open ? nameOf(open.page, open.visual, visual?.title ?? open.visual) : "";
   return (
     <div className="flex flex-col gap-3 p-4">
       <select
@@ -262,8 +267,8 @@ function GuidePanel({ report, reportRef, entry, dataset, pages, open, onOpen, gu
           <optgroup key={p.name} label={p.displayName}>
             {p.visuals.map((v) => (
               <option key={v.name} value={`${p.name}/${v.name}`}>
-                {v.title}
-                {guides.rows.some((r) => String(r.page ?? "") === p.name && String(r.visual ?? "") === v.name) ? " 📖" : ""}
+                {nameOf(p.name, v.name, v.title)}
+                {guideOf(p.name, v.name) ? " 📖" : ""}
               </option>
             ))}
           </optgroup>
@@ -359,7 +364,6 @@ function GuideCard({ guide, ids, title, onAdd, onUpdate }: { guide?: Row; ids: {
           <GuideForm key={String(guide.id ?? `${ids.page}/${ids.visual}`)} guide={guide} onSave={(values) => onUpdate(guide, values)} />
         ) : guide ? (
           <div className="flex flex-col gap-2">
-            {guide.title ? <h3 className="text-[15px] font-semibold">{String(guide.title)}</h3> : null}
             {guide.content ? <Markdown>{String(guide.content)}</Markdown> : <p className="text-muted-foreground">This guide has no content yet.</p>}
           </div>
         ) : (
@@ -383,7 +387,7 @@ function GuideForm({ guide, onSave }: { guide: Row; onSave: (values: Row) => Pro
   };
   return (
     <div className="flex flex-col gap-3">
-      <Input className="text-[15px] font-semibold" placeholder="Title" aria-label="Title of the guide" value={draft.title} onChange={(e) => (setDraft({ ...draft, title: e.target.value }), setState({}))} />
+      <Input className="text-[15px] font-semibold" placeholder="Name shown for this visual" aria-label="Name shown for this visual (its guide's title)" value={draft.title} onChange={(e) => (setDraft({ ...draft, title: e.target.value }), setState({}))} />
       <RichText value={draft.content} onChange={(content) => (setDraft((d) => ({ ...d, content })), setState({}))} />
       <div className="flex items-center gap-2">
         <Button size="sm" disabled={!changed || state.busy || !draft.title.trim()} onClick={save}>

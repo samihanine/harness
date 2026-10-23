@@ -28,6 +28,7 @@ import { AI_MODELS, addFileToConversation, deleteRemoteConversation, uploadAiFil
 import { PROMPTS, withPrompts, type PromptScreen } from "@/config";
 import { find, put, remove, settings, useCollection, type Conversation } from "@/lib/store";
 import { last } from "@/lib/last";
+import { cleanMarkdown } from "./markdown";
 import { cn } from "@/lib/utils";
 
 /** Screen of a chat scope ("viewer:<id>", "excel:<id>"…), for the admin's additional instructions. */
@@ -79,7 +80,8 @@ function adapter(agent: { current: Agent }, conversationId: string, scope: strin
       const parts = (u: Update, text?: string) => ({
         content: [
           ...u.steps.map((s) => ({ type: "tool-call" as const, toolCallId: s.id, toolName: s.name, args: s.args as never, argsText: JSON.stringify(s.args), result: s.result, isError: s.error })),
-          ...(text ? [{ type: "text" as const, text }] : []),
+          // The private LLM's markdown is not always well formed (one-line lists, fences): fixed here.
+          ...(text ? [{ type: "text" as const, text: cleanMarkdown(text) }] : []),
         ],
         metadata: { custom: { status: u.status, trace: { model: model ?? AI_MODELS[0], startedAt, ms: Math.round(performance.now() - t0), remote: u.remote, steps: u.steps, llm: u.llm } } },
       });

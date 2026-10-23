@@ -114,7 +114,7 @@ function Settings() {
           content: (
             <Page>
               <Section title="Look">
-                <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
+                <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="app-title">App name</Label>
                     <Input id="app-title" value={draft.appTitle} onChange={(e) => set("appTitle", e.target.value)} />
@@ -244,7 +244,7 @@ function AiKey() {
         </>
       }
     >
-      <div className="grid gap-4 sm:grid-cols-[1fr_200px]">
+      <div className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_200px]">
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="ai-key">AI key (token, or NAME=value lines)</Label>
           <Textarea id="ai-key" rows={3} className="font-mono text-[13px]" value={values.aiKey} onChange={(e) => set({ aiKey: e.target.value })} />
