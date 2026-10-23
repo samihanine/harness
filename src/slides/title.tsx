@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { H, M, Rich, W, defineTemplate, ease, hex, plain, rise, stagger } from "./kit";
+import { H, M, Rich, W, brandOf, defineTemplate, ease, hex, plain, rise, stagger } from "./kit";
 import { Monogram } from "./monogram";
 import { ToileFlowers } from "./toile";
 
@@ -34,7 +34,7 @@ export const title = defineTemplate({
         </M.div>
       ))}
       <M.div variants={rise} className="absolute top-[4.4cqw] left-[5.4cqw]">
-        <Monogram letter={theme.brand || deck.title.charAt(0)} className="h-[3.4cqw] w-auto" />
+        <Monogram letter={brandOf(theme).charAt(0)} className="h-[3.4cqw] w-auto" />
       </M.div>
       {args.context && (
         <M.p variants={rise} className="absolute top-[5cqw] right-[5.4cqw] text-[0.8cqw] tracking-[0.34em] uppercase opacity-60">
@@ -68,7 +68,7 @@ export const title = defineTemplate({
   pptx: (slide, args, { theme, deck }) => {
     for (const [inset, transparency] of [[0.3, 45], [0.36, 75]] as const)
       slide.addShape("rect", { x: inset, y: inset, w: W - 2 * inset, h: H - 2 * inset, fill: { type: "none" } as never, line: { color: hex(theme.primary), width: 0.75, transparency } });
-    slide.addText(theme.brand || deck.title.charAt(0), { x: 0.7, y: 0.55, w: 0.8, h: 0.6, fontSize: 30, fontFace: "Bodoni MT", color: hex(theme.primary) });
+    slide.addText(brandOf(theme).charAt(0), { x: 0.7, y: 0.55, w: 0.8, h: 0.6, fontSize: 30, fontFace: "Bodoni MT", color: hex(theme.primary) });
     if (args.context) slide.addText(args.context.toUpperCase(), { x: W - 4.7, y: 0.6, w: 4, h: 0.3, fontSize: 9, align: "right", charSpacing: 4, color: hex(theme.text), transparency: 40, fontFace: theme.fontText });
     if (args.eyebrow) slide.addText(args.eyebrow.toUpperCase(), { x: 2, y: 2.3, w: W - 4, h: 0.4, fontSize: 12, bold: true, align: "center", charSpacing: 4, color: hex(theme.primary), fontFace: theme.fontText });
     slide.addText(plain(args.title), { x: 1.5, y: 2.8, w: W - 3, h: 1.6, fontSize: 48, align: "center", fontFace: theme.fontTitle, color: hex(theme.text) });

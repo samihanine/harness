@@ -120,6 +120,11 @@ function Settings() {
                     <Input id="app-title" value={draft.appTitle} onChange={(e) => set("appTitle", e.target.value)} />
                   </div>
                   <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="brand-name">Brand of the slide decks</Label>
+                    <Input id="brand-name" value={draft.brandName} onChange={(e) => set("brandName", e.target.value)} />
+                    <p className="text-[12px] text-muted-foreground">Default brand name in slide headers and covers (a deck can set its own).</p>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
                     <Label htmlFor="app-color">Primary color</Label>
                     <span className="flex items-center gap-2">
                       <input id="app-color" type="color" className="h-9 w-11 cursor-pointer rounded-md border" value={/^#[0-9a-f]{6}$/i.test(draft.primaryColor) ? draft.primaryColor : "#2563eb"} onChange={(e) => set("primaryColor", e.target.value)} />

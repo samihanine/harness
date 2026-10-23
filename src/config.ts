@@ -6,6 +6,8 @@
 
 /** Name shown in the sidebar and the browser tab. */
 export let APP_TITLE = "Hub";
+/** Default brand name of the slide decks (a deck's theme.brand replaces it): headers, covers, monogram. */
+export let BRAND_NAME = "Hub";
 /** Primary color (buttons, active states), any CSS color. */
 export let PRIMARY_COLOR = "#2563eb";
 
@@ -72,6 +74,7 @@ export const firstScreen = () => SCREEN_PATHS[(Object.keys(SCREENS) as Screen[])
 /** Every option, as saved in the JSON file. */
 export type HubConfig = {
   appTitle: string;
+  brandName: string;
   primaryColor: string;
   aiPanel: boolean;
   visualPreview: boolean;
@@ -87,6 +90,7 @@ export type HubConfig = {
 export const currentConfig = (): HubConfig =>
   structuredClone({
     appTitle: APP_TITLE,
+    brandName: BRAND_NAME,
     primaryColor: PRIMARY_COLOR,
     aiPanel: AI_PANEL,
     visualPreview: VISUAL_PREVIEW,
@@ -115,6 +119,7 @@ const take = <T extends Record<string, unknown>>(target: T, given: unknown) => {
 export function applyConfig(given: Partial<HubConfig>, { cache = true } = {}) {
   const pick = <T,>(v: unknown, current: T): T => (typeof v === typeof current ? (v as T) : current);
   APP_TITLE = pick(given.appTitle, APP_TITLE);
+  BRAND_NAME = pick(given.brandName, BRAND_NAME);
   PRIMARY_COLOR = pick(given.primaryColor, PRIMARY_COLOR);
   AI_PANEL = pick(given.aiPanel, AI_PANEL);
   VISUAL_PREVIEW = pick(given.visualPreview, VISUAL_PREVIEW);

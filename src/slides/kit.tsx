@@ -3,13 +3,15 @@
  * animated component, a native PowerPoint version) and small shared pieces (rich text, eyebrow, rule).
  * Slides are laid out in container units (cqw: % of the slide width), so they scale to any size.
  */
-import type { ReactNode } from "react";
+import { createContext, useContext, type ReactNode } from "react";
+import { Markdown } from "@/components/markdown";
+import { BRAND_NAME } from "@/config";
 import { motion, type Variants } from "motion/react";
 import type PptxGenJS from "pptxgenjs";
 import { z } from "zod";
 
 /** Header variants of the content pages (deck's general config). */
-export const HEADERS = ["none", "breadcrumb", "rule", "progress", "monogram"] as const;
+export const HEADERS = ["none", "breadcrumb", "rule", "progress", "monogram", "brand"] as const;
 
 export const themeSchema = z.object({
   primary: z.string().default("#2563eb").describe("Accent color (hex)"),
@@ -17,8 +19,10 @@ export const themeSchema = z.object({
   text: z.string().default("#0f172a").describe("Text color (hex)"),
   fontTitle: z.string().default("Plus Jakarta Sans").describe("Font of the titles (a Google font)"),
   fontText: z.string().default("Plus Jakarta Sans").describe("Font of the text (a Google font)"),
-  header: z.enum(HEADERS).default("breadcrumb").describe("Header on top of every content page: none, breadcrumb (deck › part › subpart), rule (breadcrumb over a fine line), progress (breadcrumb and a progress bar), monogram (the brand letter drawn, then the breadcrumb)"),
-  brand: z.string().optional().describe("Brand letter or word of the monogram (default: the deck title's first letter)"),
+  secondary: z.string().default("#8b5a2b").describe("Second accent (numbered badges, cards, bands), hex"),
+  success: z.string().default("#15803d").describe("Color of tips / info items, hex"),
+  header: z.enum(HEADERS).default("breadcrumb").describe("Header on top of every content page: none, breadcrumb (deck › part › subpart), rule (breadcrumb over a fine line), progress (breadcrumb and a progress bar), monogram (the brand letter drawn, then the breadcrumb), brand (the brand name, a fine rule, the page title and its number in the subpart, e.g. \"Sales page (2/6)\": the page title then lives in the header)"),
+  brand: z.string().optional().describe("Brand name of the deck (headers, covers, monogram letter); default: the app's brand (Settings)"),
 });
 export type Theme = z.infer<typeof themeSchema>;
 
@@ -40,7 +44,33 @@ export type DeckInfo = {
   subsections: string[];
   /** The whole outline: each part with its subparts (summary pages). */
   outline: { title: string; subsections: string[] }[];
+  /** The part a summary placed here leads to (0 before the first part). */
+  next: number;
+  /** This content page's place among the content pages of its subpart (or part): "(2/6)" of the brand header. */
+  group: { index: number; count: number };
 };
+
+/** The deck's brand: its theme's, else the app's default (config.ts, Settings › General). */
+export const brandOf = (theme: { brand?: string }) => theme.brand?.trim() || BRAND_NAME;
+
+/** Set by the stage: the "brand" header shows the page title, so content pages leave it out. */
+export const SlideContext = createContext({ titleInHeader: false });
+
+/**
+ * A text size (cqw) that keeps texts inside their box: from the box's area (cqw²) and the amount of
+ * text, between `min` and `max` (a long list gets smaller text instead of overflowing).
+ */
+export function fitText(texts: string[], area: number, { min = 0.9, max = 1.6, lineGap = 1.6 } = {}) {
+  const chars = texts.reduce((n, t) => n + plain(t).length, 0) + texts.length * 18;
+  return Math.max(min, Math.min(max, Math.sqrt(area / (chars * 0.55 * lineGap))));
+}
+
+/** Markdown inside a slide (paragraphs, lists, **bold**), sized by its parent. */
+export const SlideMarkdown = ({ text }: { text: string }) => (
+  <div className="slide-markdown [&_.markdown]:text-[1em] [&_li]:mt-[0.2em] [&_p]:my-0 [&_strong]:font-semibold">
+    <Markdown>{text}</Markdown>
+  </div>
+);
 
 export type PptxContext = { theme: Theme; deck: DeckInfo; pptx: PptxGenJS };
 
@@ -125,8 +155,15 @@ export function Title({ children, size = 3.6 }: { children: ReactNode; size?: nu
   );
 }
 
-/** The usual slide: eyebrow + title + rule on top, content under it. */
+/** The usual slide: eyebrow + title + rule on top, content under it (the "brand" header shows the title itself). */
 export function Frame({ eyebrow, title, children }: { eyebrow?: string; title: string; children: ReactNode }) {
+  const { titleInHeader } = useContext(SlideContext);
+  if (titleInHeader)
+    return (
+      <M.div variants={stagger()} className="flex size-full flex-col px-[6cqw] pt-[8.5cqw] pb-[4.5cqw]">
+        <div className="min-h-0 flex-1">{children}</div>
+      </M.div>
+    );
   return (
     <M.div variants={stagger()} className="flex size-full flex-col gap-[2.2cqw] px-[6cqw] pt-[5.8cqw] pb-[5cqw]">
       <div className="flex flex-col gap-[1cqw]">

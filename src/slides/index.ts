@@ -5,7 +5,12 @@
  */
 import { z } from "zod";
 import { themeSchema, type DeckInfo, type Template } from "./kit";
+import { agenda } from "./agenda";
+import { beware } from "./beware";
 import { cards } from "./cards";
+import { cover } from "./cover";
+import { features } from "./features";
+import { tutorial } from "./tutorial";
 import { compare } from "./compare";
 import { end } from "./end";
 import { hero } from "./hero";
@@ -21,7 +26,7 @@ import { table } from "./table";
 import { title } from "./title";
 import { visual } from "./visual";
 
-export const TEMPLATES = [title, hero, summary, section, subtitle, list, cards, kpis, table, quote, markdown, report, visual, compare, end] as unknown as Template<z.ZodObject>[];
+export const TEMPLATES = [title, cover, hero, summary, agenda, section, subtitle, list, cards, features, kpis, table, beware, quote, markdown, report, visual, tutorial, compare, end] as unknown as Template<z.ZodObject>[];
 export const templateOf = (id: string) => TEMPLATES.find((t) => t.id === id);
 
 export type SlideJson = { template: string } & Record<string, unknown>;
@@ -71,13 +76,33 @@ export function deckInfo(deck: Deck): DeckInfo[] {
     if (!outline.length) outline.push({ title: "", subsections: [] });
     outline.at(-1)!.subsections.push(String(s.title ?? ""));
   }
+  // Content pages grouped by the title page above them (a subpart, else a part): "(2/6)".
+  const groups: number[] = [];
+  let group = 0;
+  for (const s of deck.slides) {
+    if (["cover", "section", "subsection", "summary", "end"].includes(kindOf(s))) group++;
+    groups.push(group);
+  }
+  const contentOf = (g: number) => deck.slides.map((s, i) => ({ s, i })).filter(({ s, i }) => groups[i] === g && kindOf(s) === "content").map(({ i }) => i);
   let section = -1;
   let subsection = -1;
   return deck.slides.map((s, index) => {
     if (kindOf(s) === "section") (section++, (subsection = -1));
     if (kindOf(s) === "subsection") subsection++;
     const part = Math.max(section, 0);
-    return { title: deck.title, index, count: deck.slides.length, section: part, sections: outline.map((o) => o.title), subsection, subsections: outline[part]?.subsections ?? [], outline };
+    const mates = contentOf(groups[index]);
+    return {
+      title: deck.title,
+      index,
+      count: deck.slides.length,
+      section: part,
+      sections: outline.map((o) => o.title),
+      subsection,
+      subsections: outline[part]?.subsections ?? [],
+      outline,
+      next: section + 1,
+      group: { index: Math.max(0, mates.indexOf(index)), count: mates.length },
+    };
   });
 }
 
