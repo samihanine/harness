@@ -14,9 +14,14 @@ import { list } from "./list";
 import { markdown } from "./markdown";
 import { quote } from "./quote";
 import { section } from "./section";
+import { report } from "./report";
+import { subtitle } from "./subtitle";
+import { summary } from "./summary";
+import { table } from "./table";
+import { title } from "./title";
 import { visual } from "./visual";
 
-export const TEMPLATES = [hero, section, list, cards, kpis, quote, markdown, visual, compare, end] as unknown as Template<z.ZodObject>[];
+export const TEMPLATES = [title, hero, summary, section, subtitle, list, cards, kpis, table, quote, markdown, report, visual, compare, end] as unknown as Template<z.ZodObject>[];
 export const templateOf = (id: string) => TEMPLATES.find((t) => t.id === id);
 
 export type SlideJson = { template: string } & Record<string, unknown>;
@@ -51,34 +56,55 @@ export function parseDeck(value: unknown): { deck?: Deck; errors: string[] } {
   return { deck: shape.data as Deck, errors };
 }
 
-/** Where each slide is: its part (the last "section" slide before it) and the deck's outline. */
+/** A slide's kind (content when its template says nothing). */
+export const kindOf = (s: SlideJson) => templateOf(s.template)?.kind ?? "content";
+
+/**
+ * Where each slide is: its part (the last section page before it), its subpart (the last subsection
+ * page since), and the deck's outline (summary pages, headers).
+ */
 export function deckInfo(deck: Deck): DeckInfo[] {
-  const sections = deck.slides.filter((s) => templateOf(s.template)?.section).map((s) => String(s.title ?? ""));
-  let current = -1;
+  const outline: DeckInfo["outline"] = [];
+  for (const s of deck.slides) {
+    if (kindOf(s) === "section") outline.push({ title: String(s.title ?? ""), subsections: [] });
+    if (kindOf(s) !== "subsection") continue;
+    if (!outline.length) outline.push({ title: "", subsections: [] });
+    outline.at(-1)!.subsections.push(String(s.title ?? ""));
+  }
+  let section = -1;
+  let subsection = -1;
   return deck.slides.map((s, index) => {
-    if (templateOf(s.template)?.section) current++;
-    return { title: deck.title, index, count: deck.slides.length, section: Math.max(current, 0), sections };
+    if (kindOf(s) === "section") (section++, (subsection = -1));
+    if (kindOf(s) === "subsection") subsection++;
+    const part = Math.max(section, 0);
+    return { title: deck.title, index, count: deck.slides.length, section: part, sections: outline.map((o) => o.title), subsection, subsections: outline[part]?.subsections ?? [], outline };
   });
 }
 
-/** For the AI: each template with its args (from the zod schemas). */
+const KIND_LABELS: Record<NonNullable<Template<z.ZodObject>["kind"]>, string> = { cover: "cover page", section: "part title page", subsection: "subpart title page", summary: "summary page", content: "content page", end: "closing page" };
+
+/** For the AI: each template with its kind and args (from the zod schemas). */
 export const templatesText = () =>
   TEMPLATES.map((t) => {
     const shape = z.toJSONSchema(t.args) as { properties?: Record<string, { type?: string; description?: string }>; required?: string[] };
     const args = Object.entries(shape.properties ?? {}).map(([k, v]) => `${k}${shape.required?.includes(k) ? "" : "?"}: ${v.type ?? "object"}${v.description ? ` (${v.description})` : ""}`);
-    return `- ${t.id}: ${t.description} Args: ${args.join(", ")}`;
+    return `- ${t.id} [${KIND_LABELS[t.kind ?? "content"]}]: ${t.description} Args: ${args.join(", ")}`;
   }).join("\n");
 
 export const EXAMPLE_DECK: Deck = {
   title: "Quarterly review",
-  theme: themeSchema.parse({}),
+  theme: themeSchema.parse({ header: "monogram" }),
   slides: [
-    { template: "hero", eyebrow: "Sales · Q3", title: "Quarterly **review**", subtitle: "Results, trends and ==next steps==", footer: "Team · October" },
+    { template: "title", eyebrow: "Sales · Q3", title: "Quarterly review", subtitle: "Results, trends and next steps", context: "Reporting · October", footer: "Sales team — October" },
+    { template: "summary", title: "Summary" },
     { template: "section", title: "Results" },
+    { template: "subtitle", title: "Key figures", description: "What the quarter **delivered**." },
     { template: "kpis", title: "Key figures", items: [{ value: "12.4 M€", label: "Revenue", note: "+8 % vs Q2" }, { value: "38 %", label: "Margin", note: "+2 pts" }, { value: "1 240", label: "Orders" }] },
-    { template: "list", title: "What changed", lead: "Growth came from **two regions**.", items: [{ title: "North", text: "New distributor since July." }, { title: "West", text: "Price update accepted." }] },
+    { template: "subtitle", title: "By region", description: "Where the growth came from." },
+    { template: "table", title: "Revenue by region", columns: ["Region", "Q2", "Q3", "Change"], rows: [["North", "3.1 M€", "3.6 M€", "+16 %"], ["West", "2.8 M€", "3.0 M€", "+7 %"], ["South", "2.6 M€", "2.5 M€", "−4 %"], ["East", "1.9 M€", "2.0 M€", "+5 %"]], cellColors: [{ row: 3, column: 4, color: "#FEE2E2" }], rowColors: [{ row: 1, color: "#ECFDF5" }] },
     { template: "section", title: "Next steps" },
     { template: "cards", title: "Priorities", items: [{ title: "Stock", text: "Reduce lead times." }, { title: "Pricing", text: "Review the discount grid." }, { title: "Data", text: "One dashboard for all." }] },
-    { template: "end", title: "Questions?", text: "sales@company.com" },
+    { template: "title", eyebrow: "Thank you", title: "Questions?", footer: "sales@company.com" },
   ],
 };
+

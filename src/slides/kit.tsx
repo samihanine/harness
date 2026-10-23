@@ -8,17 +8,39 @@ import { motion, type Variants } from "motion/react";
 import type PptxGenJS from "pptxgenjs";
 import { z } from "zod";
 
+/** Header variants of the content pages (deck's general config). */
+export const HEADERS = ["none", "breadcrumb", "rule", "progress", "monogram"] as const;
+
 export const themeSchema = z.object({
   primary: z.string().default("#2563eb").describe("Accent color (hex)"),
   background: z.string().default("#ffffff").describe("Slide background (hex)"),
   text: z.string().default("#0f172a").describe("Text color (hex)"),
   fontTitle: z.string().default("Plus Jakarta Sans").describe("Font of the titles (a Google font)"),
   fontText: z.string().default("Plus Jakarta Sans").describe("Font of the text (a Google font)"),
+  header: z.enum(HEADERS).default("breadcrumb").describe("Header on top of every content page: none, breadcrumb (deck › part › subpart), rule (breadcrumb over a fine line), progress (breadcrumb and a progress bar), monogram (the brand letter drawn, then the breadcrumb)"),
+  brand: z.string().optional().describe("Brand letter or word of the monogram (default: the deck title's first letter)"),
 });
 export type Theme = z.infer<typeof themeSchema>;
 
-/** What a template knows of the deck: its title, the slide's place, the section it is in. */
-export type DeckInfo = { title: string; index: number; count: number; section: number; sections: string[] };
+/**
+ * The kind of a page: title pages (cover, section, subsection, end), the summary, or a content page.
+ * The outline comes from the section and subsection pages; content pages get the header.
+ */
+export type Kind = "cover" | "section" | "subsection" | "summary" | "content" | "end";
+
+/** What a template knows of the deck: its title, the slide's place, the part and subpart it is in, the outline. */
+export type DeckInfo = {
+  title: string;
+  index: number;
+  count: number;
+  section: number;
+  sections: string[];
+  /** Subpart in the current part (-1: none yet) and the subparts of that part. */
+  subsection: number;
+  subsections: string[];
+  /** The whole outline: each part with its subparts (summary pages). */
+  outline: { title: string; subsections: string[] }[];
+};
 
 export type PptxContext = { theme: Theme; deck: DeckInfo; pptx: PptxGenJS };
 
@@ -28,7 +50,8 @@ export type Template<S extends z.ZodObject> = {
   description: string;
   args: S;
   /** Starts a part of the deck (numbered, listed in the outline). */
-  section?: boolean;
+  /** Default: a content page. */
+  kind?: Kind;
   /** Full bleed: no header nor page number. */
   bare?: boolean;
   Component: (p: { args: z.infer<S>; theme: Theme; deck: DeckInfo }) => ReactNode;
@@ -105,7 +128,7 @@ export function Title({ children, size = 3.6 }: { children: ReactNode; size?: nu
 /** The usual slide: eyebrow + title + rule on top, content under it. */
 export function Frame({ eyebrow, title, children }: { eyebrow?: string; title: string; children: ReactNode }) {
   return (
-    <M.div variants={stagger()} className="flex size-full flex-col gap-[2.2cqw] px-[6cqw] pt-[5cqw] pb-[5.5cqw]">
+    <M.div variants={stagger()} className="flex size-full flex-col gap-[2.2cqw] px-[6cqw] pt-[5.8cqw] pb-[5cqw]">
       <div className="flex flex-col gap-[1cqw]">
         {eyebrow && <Eyebrow>{eyebrow}</Eyebrow>}
         <Title>{title}</Title>

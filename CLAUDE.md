@@ -82,8 +82,10 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   recharts) and one Power BI report per model whose pages are each a full-page matrix (PBIR written by
   code from `{rows, columns, values, filters}`).
 - **Slides** (`src/slides`): a deck is a short JSON `{title, theme, slides: [{template, ...args}]}`;
-  each template (`hero.tsx`, `section.tsx`…) has zod args, an animated component (motion, container
-  units) and a native PowerPoint version (pptxgenjs). PDF = print of every slide (Power BI views are
+  each template (`title.tsx`, `section.tsx`, `table.tsx`…) has a kind (cover, section, subsection,
+  summary, content, end: the outline and the content pages' header come from them), zod args, an
+  animated component (motion, container units) and a native PowerPoint version (pptxgenjs); the
+  header variant and brand letter are in the deck's theme. PDF = print of every slide (Power BI views are
   plain `reportEmbed` iframes so they print).
 - **Builder modes**: PBIR (`src/agent/builder.ts`, the definition through Fabric) when the report's
   definition is readable; otherwise "editor mode" (`src/agent/builder-sdk.ts`): the AI edits the

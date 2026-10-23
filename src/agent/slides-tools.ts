@@ -8,7 +8,7 @@ import { tool, type Agent, type Tool } from "./loop";
 import { DAX_RULES, daxTool } from "./pbi-tools";
 import { readRows } from "@/lib/excel";
 import { rowsText } from "@/lib/pbi";
-import { readReportSchema } from "@/lib/report-schema";
+import { describeReport } from "@/lib/report-schema";
 import { patch, type DatasetEntry, type DeckEntry, type ReportEntry, type SchemaEntry } from "@/lib/store";
 import { checkSlide, templatesText, type Deck, type SlideJson } from "@/slides";
 import { themeSchema } from "@/slides/kit";
@@ -45,18 +45,27 @@ function sourceTools(sources: () => DeckSources): Tool[] {
   ];
 }
 
-/** The sources for the AI: models (structure and examples), reports (pages and visuals with their zones), Excel tables. */
+/**
+ * The sources for the AI: models (structure and examples), reports (their kept schema: page ids,
+ * visual ids, titles, fields and zones, for the report / visual / compare templates), Excel tables.
+ */
 async function sourcesText(s: DeckSources) {
   const reports = await Promise.all(
     s.reports.map(async (r) => {
-      const schema = await readReportSchema(r).catch(() => undefined);
-      const pages = schema?.pages.map((p) => `  - page "${p.displayName}" (page: "${p.name}", ${p.width}×${p.height}): ${schema.visuals.filter((v) => v.page === p.name && !v.hidden).map((v) => `${v.title ?? v.type} [crop x ${v.x}, y ${v.y}, w ${v.width}, h ${v.height}]`).join("; ")}`);
-      return `Report "${r.name}" (report: "${r.id}")${pages?.length ? `\n${pages.join("\n")}` : ""}`;
+      // The schema kept with the report (Reports screen), made now when missing (embed if needed).
+      const schema = r.schema ?? (await describeReport(r).catch(() => undefined));
+      if (!schema) return `Report "${r.name}" (report: "${r.id}"): its pages could not be read.`;
+      const pages = schema.pages.map((p) => {
+        const visuals = schema.visuals.filter((v) => v.page === p.name && !v.hidden && !["shape", "basicShape", "image", "textbox", "actionButton"].includes(v.type));
+        const scale = 1280 / (p.width || 1280);
+        return `  - page "${p.displayName}" — page: "${p.name}" (${p.width}×${p.height})\n${visuals.map((v) => `      · ${v.type} "${v.title ?? ""}" visual "${v.name}" — crop {"x": ${Math.round(v.x * scale)}, "y": ${Math.round(v.y * scale)}, "w": ${Math.round(v.width * scale)}, "h": ${Math.round(v.height * scale)}}${Object.keys(v.fields).length ? ` — ${Object.entries(v.fields).map(([role, f]) => `${role}: ${f.join(", ")}`).join("; ")}` : ""}`).join("\n")}`;
+      });
+      return `Report "${r.name}" — report: "${r.id}"\n${pages.join("\n")}`;
     }),
   );
   return [
     ...(await Promise.all(s.datasets.map(datasetText))),
-    reports.length ? `Reports for visual / compare slides (crop: a visual's zone; scale it to a 1280×720 page when the page is another size):\n${reports.join("\n")}` : "",
+    reports.length ? `Reports for the report / visual / compare templates. Give "report" (its id), "page" (a page's name) and, for one visual, its "crop" (already on a 1280×720 page):\n${reports.join("\n")}` : "",
     s.schemas.length ? `Excel tables (read_excel_rows): ${s.schemas.map((x) => `"${x.title}" (columns: ${x.fields.map((f) => f.name).join(", ")})`).join("; ")}` : "",
   ].filter(Boolean);
 }
@@ -77,8 +86,9 @@ export function slidesAgent(get: () => DeckEntry, show: (index: number) => void,
     instructions: `Screen: SLIDES. You write a presentation as a short JSON: a theme and slides, each slide = a template id and its args (the templates draw it; you only give the content). Slides are numbered from 1.
 Templates:
 ${templatesText()}
-Rules: one idea per slide, short texts (a title of ≤ 8 words, items of ≤ 15 words); **bold** and ==highlight== (accent color) in texts; a "section" slide starts each part (the outline comes from them); start with "hero", end with "end".${
-      chosen.reports.length ? " Power BI slides (visual, compare): a chosen report (its id), a page name and the visual's crop from the context." : " No report is chosen: no visual / compare slide (the user can choose reports in the Reports tab)."
+Structure: a cover page (title — with engraved flowers — or hero), a summary page (filled automatically from the parts), then each part: a section page, optional subtitle pages for its subparts (each shows the trail of the part), and its content pages; a closing page (end, or title for "Questions?"). The outline and the header of content pages come from these title pages: never write the breadcrumb yourself. Header style, accent color, fonts, brand letter: set_deck (theme.header: none | breadcrumb | rule | progress | monogram).
+Rules: one idea per slide, short texts (a title of ≤ 8 words, items of ≤ 15 words); **bold** and ==highlight== (accent color) in texts; numbers in a grid → the table template.${
+      chosen.reports.length ? " Power BI slides (report: a whole page; visual: one visual by its crop; compare: two): the report id, the page name and the crop come from the context, exactly." : " No report is chosen: no report / visual / compare slide (the user can choose reports in the Reports tab)."
     }${chosen.datasets.length ? ` Figures: compute them with run_dax on the chosen models (exact values), never invent them.\n${DAX_RULES}` : ""}${chosen.schemas.length ? " Excel tables: read their rows with read_excel_rows." : ""}`,
     context: async () => {
       const s = sources();

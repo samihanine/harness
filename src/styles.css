@@ -184,3 +184,195 @@
     print-color-adjust: exact;
   }
 }
+
+/*
+ * Slides: toile de Jouy flowers of the title pages (src/slides/toile.tsx), drawn in the deck's accent
+ * color; --d is the entrance delay, --dur the duration of the idle motion. transform-box: view-box +
+ * origin 0 0 = transforms around the local origin of each motif.
+ */
+.toile-paper {
+  fill: var(--s-bg);
+}
+.toile-ink {
+  fill: var(--s-primary);
+  stroke: none;
+}
+.toile {
+  fill: none;
+  stroke: var(--s-primary);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.toile .toile-hatch {
+  stroke-width: 0.85;
+  stroke-opacity: 0.8;
+}
+/* Large single motifs: same on-screen line weight as the cover, whatever their scale. */
+.toile-fine path:not(.toile-draw) {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1.3;
+}
+/* Main stem of the spray: as thick as the ink line of the trail it grows from. */
+.toile-fine .toile-stem {
+  stroke-width: 2.9;
+}
+.toile-fine .toile-hatch {
+  stroke-width: 0.75;
+}
+.toile-draw,
+.toile-grow,
+.toile-bloom,
+.toile-breathe,
+.toile-flutter,
+.toile-twirl,
+.toile-sway,
+.toile-swing,
+.toile-drift {
+  transform-box: view-box;
+  transform-origin: 0 0;
+}
+.toile-draw {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: toile-draw var(--dur, 2s) cubic-bezier(0.45, 0, 0.2, 1)
+    var(--d, 0s) forwards;
+}
+.toile-grow {
+  animation: toile-grow 1.4s cubic-bezier(0.22, 1, 0.36, 1) var(--d, 0s) both;
+}
+.toile-bloom {
+  animation: toile-bloom 2.2s cubic-bezier(0.22, 1, 0.36, 1) var(--d, 0s) both;
+}
+.toile-breathe {
+  animation: toile-breathe var(--dur, 6s) ease-in-out var(--d, 0s) infinite;
+}
+.toile-flutter {
+  animation: toile-flutter var(--dur, 5s) ease-in-out var(--d, 0s) infinite;
+}
+.toile-twirl {
+  animation: toile-twirl var(--dur, 5s) ease-in-out var(--d, 0s) infinite;
+}
+.toile-sway {
+  animation: toile-sway 8s ease-in-out infinite;
+}
+.toile-mirror .toile-sway {
+  animation-delay: -3s;
+}
+.toile-swing {
+  animation: toile-sway 9s ease-in-out -2s infinite;
+}
+.toile-drift {
+  opacity: 0;
+  animation: toile-drift var(--dur, 20s) linear var(--d, 0s) infinite;
+}
+@keyframes toile-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes toile-grow {
+  from {
+    opacity: 0;
+    transform: scale(0.2) rotate(-28deg);
+  }
+}
+@keyframes toile-bloom {
+  from {
+    opacity: 0;
+    transform: scale(0.15) rotate(-40deg);
+  }
+}
+/* Idle loops: uneven steps, like a breeze that rises, falls back and comes again. */
+@keyframes toile-breathe {
+  0%,
+  100% {
+    transform: rotate(0deg) scale(1);
+  }
+  30% {
+    transform: rotate(5deg) scale(1.045);
+  }
+  55% {
+    transform: rotate(-2deg) scale(0.985);
+  }
+  78% {
+    transform: rotate(3deg) scale(1.02);
+  }
+}
+@keyframes toile-flutter {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  25% {
+    transform: rotate(8deg);
+  }
+  45% {
+    transform: rotate(-3deg);
+  }
+  70% {
+    transform: rotate(5deg);
+  }
+}
+@keyframes toile-twirl {
+  0%,
+  100% {
+    transform: rotate(0deg) scale(1);
+  }
+  35% {
+    transform: rotate(16deg) scale(1.08);
+  }
+  70% {
+    transform: rotate(-6deg) scale(0.96);
+  }
+}
+@keyframes toile-sway {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  30% {
+    transform: rotate(1.6deg);
+  }
+  60% {
+    transform: rotate(-0.8deg);
+  }
+  80% {
+    transform: rotate(0.9deg);
+  }
+}
+@keyframes toile-drift {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) rotate(0deg);
+  }
+  12% {
+    opacity: 0.55;
+  }
+  80% {
+    opacity: 0.4;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(420px, 1500px) rotate(320deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toile-breathe,
+  .toile-flutter,
+  .toile-twirl,
+  .toile-sway,
+  .toile-swing,
+  .toile-drift {
+    animation: none;
+  }
+}
+
+/* Still slides (thumbnails, PDF): the final drawing, no motion. */
+.slide-still .toile * {
+  animation: none !important;
+  stroke-dashoffset: 0 !important;
+}
+.slide-still .toile-drift {
+  display: none;
+}

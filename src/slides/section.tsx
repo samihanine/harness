@@ -8,7 +8,7 @@ import { H, M, W, defineTemplate, ease, hex, pad, plain, reveal, rise, stagger }
 export const section = defineTemplate({
   id: "section",
   description: "Transition slide starting a new part of the deck (shows the outline, current part highlighted). Optional picture URL.",
-  section: true,
+  kind: "section",
   bare: true,
   args: z.object({ title: z.string(), subtitle: z.string().optional(), image: z.string().optional() }),
   Component: ({ args, deck }) => (

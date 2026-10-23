@@ -5,6 +5,7 @@ import { Eyebrow, H, M, Rich, Rule, W, defineTemplate, ease, hex, plain, reveal,
 export const hero = defineTemplate({
   id: "hero",
   description: "Cover of the deck: title, subtitle, author/date line, optional picture (URL).",
+  kind: "cover",
   bare: true,
   args: z.object({ title: z.string(), subtitle: z.string().optional(), eyebrow: z.string().optional(), footer: z.string().optional().describe("e.g. author · date"), image: z.string().optional() }),
   Component: ({ args }) => (

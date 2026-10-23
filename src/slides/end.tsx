@@ -5,6 +5,7 @@ import { M, Rich, Rule, W, defineTemplate, hex, plain, rise, stagger } from "./k
 export const end = defineTemplate({
   id: "end",
   description: "Closing slide on the accent color: a title (e.g. \"Thank you\" / \"Questions?\") and an optional line (contact, next step).",
+  kind: "end",
   bare: true,
   args: z.object({ title: z.string(), text: z.string().optional() }),
   Component: ({ args }) => (
