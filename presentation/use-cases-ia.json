@@ -1,0 +1,431 @@
+{
+  "title": "Use cases IA",
+  "theme": {
+    "primary": "#1497a0",
+    "background": "#ffffff",
+    "text": "#0f172a",
+    "fontTitle": "Plus Jakarta Sans",
+    "fontText": "Plus Jakarta Sans",
+    "secondary": "#334155",
+    "success": "#15803d",
+    "header": "breadcrumb"
+  },
+  "slides": [
+    {
+      "template": "title",
+      "eyebrow": "Hub · Assistants IA pour Power BI",
+      "title": "Présentation des use cases IA",
+      "subtitle": "Comprendre, construire, analyser et présenter nos données avec des assistants IA",
+      "context": "Data & BI · 2026",
+      "footer": "Sami Hanine — octobre 2026"
+    },
+    {
+      "template": "summary",
+      "title": "Sommaire"
+    },
+    {
+      "template": "agenda",
+      "part": "Use cases",
+      "image": "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=1600&q=80"
+    },
+    {
+      "template": "cards",
+      "title": "Quatre assistants, une même app",
+      "lead": "Chaque assistant a son écran, ses outils et sa tenue — et demande toujours ==confirmation== avant de modifier quoi que ce soit.",
+      "items": [
+        {
+          "mascot": "trainer",
+          "title": "Trainer",
+          "text": "Poser des questions sur un **rapport Power BI** : comprendre un indicateur, un écart, filtrer la page."
+        },
+        {
+          "mascot": "builder",
+          "title": "Builder",
+          "text": "Créer et modifier des **rapports Power BI** : pages, visuels, mesures, mise en page."
+        },
+        {
+          "mascot": "datascientist",
+          "title": "Data Scientist",
+          "text": "Mener des **analyses complexes** sur les modèles sémantiques, avec des chiffres traçables."
+        },
+        {
+          "mascot": "presenter",
+          "title": "Presenter",
+          "text": "Générer des **présentations** qui intègrent des rapports Power BI en direct."
+        }
+      ]
+    },
+    {
+      "template": "usecase",
+      "title": "Trainer — questionner un rapport",
+      "mascot": "trainer",
+      "personas": [
+        {
+          "role": "Novice",
+          "quote": "Quelle est la différence entre Product Category Group et OTB Level ?"
+        },
+        {
+          "role": "Expert",
+          "quote": "Pourquoi les sales MTD de novembre sont différentes entre le tableau et la courbe ?"
+        },
+        {
+          "role": "PM",
+          "quote": "Reproduis les filtres de l'incident suivant sur la page Client Profile."
+        }
+      ],
+      "features": [
+        "Répondre aux questions grâce à la **documentation** (guides et contextes du rapport)",
+        "Voir les **données de la page** Power BI que l'utilisateur a sous les yeux",
+        "Changer de page, modifier les **slicers et filtres** du rapport",
+        "Expliquer un visuel et **pourquoi il a changé** d'une période à l'autre"
+      ],
+      "image": "https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=1600&q=80",
+      "caption": "Le rapport Power BI et l'assistant côte à côte"
+    },
+    {
+      "template": "usecase",
+      "title": "Builder — créer des rapports",
+      "mascot": "builder",
+      "personas": [
+        {
+          "role": "Novice",
+          "quote": "Je veux les stocks totaux par jour pour la Chine en novembre 2026."
+        },
+        {
+          "role": "Key user",
+          "quote": "Fais-moi un cumulated bar chart : en x les lead times jusqu'à 6 jours, en y la répartition des zones fois leur CA."
+        },
+        {
+          "role": "Migration",
+          "quote": "Inspire-toi du rapport AVR vs Perf de PSA pour le recréer avec le modèle sémantique SCUBA."
+        }
+      ],
+      "features": [
+        "Créer ou modifier un rapport : **pages, visuels, mesures de rapport**, thème",
+        "Mise en page **automatique** et vérification du rapport avant sauvegarde",
+        "Exécuter des **requêtes DAX** pour vérifier les chiffres",
+        "S'inspirer de **rapports existants**, même quand leur définition est fermée"
+      ],
+      "image": "https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=1600&q=80",
+      "caption": "Le rapport se construit dans l'éditeur Power BI intégré"
+    },
+    {
+      "template": "usecase",
+      "title": "Data Scientist — analyser en profondeur",
+      "mascot": "datascientist",
+      "personas": [
+        {
+          "role": "Manager",
+          "quote": "Explique la baisse des ventes en Chine en novembre par région et par catégorie."
+        },
+        {
+          "role": "Analyste",
+          "quote": "Compare la marge par canal entre 2025 et 2026 en excluant les retours."
+        },
+        {
+          "role": "Novice",
+          "quote": "Quels sont les 10 produits qui ont le plus baissé ce trimestre ?"
+        }
+      ],
+      "features": [
+        "Explorer les **modèles sémantiques** et calculer en DAX (requêtes guidées ou DAX brut)",
+        "Créer des **mesures d'analyse** : ratios, parts, croissance vs N-1",
+        "Présenter les résultats sur un **canevas** : texte et visuels Power BI",
+        "Des chiffres **traçables** : chaque visuel est une page de rapport vérifiable"
+      ],
+      "image": "https://images.unsplash.com/photo-1526628953301-3e589a6a8b74?w=1600&q=80",
+      "caption": "Un canevas de recherche : synthèse et matrices Power BI"
+    },
+    {
+      "template": "usecase",
+      "title": "Presenter — des slides vivantes",
+      "mascot": "presenter",
+      "personas": [
+        {
+          "role": "Manager",
+          "quote": "Fais 5 slides sur les ventes de novembre pour le comité de direction."
+        },
+        {
+          "role": "PM",
+          "quote": "Explique la page Client Profile étape par étape pour former les nouveaux arrivants."
+        },
+        {
+          "role": "Key user",
+          "quote": "Ajoute la courbe des stocks Chine et un tableau des 10 premiers articles."
+        }
+      ],
+      "features": [
+        "Générer un **deck complet** (sommaire, sections, thème) depuis une demande",
+        "Intégrer des **pages et visuels Power BI en direct** et des tutoriels de page",
+        "Chiffres calculés sur les modèles, lignes **Excel**, images de la **bibliothèque**",
+        "Exporter en **PDF** ou en **PowerPoint** modifiable"
+      ],
+      "image": "https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?w=1600&q=80",
+      "caption": "Cette présentation a été générée avec Presenter"
+    },
+    {
+      "template": "agenda",
+      "part": "Code et sécurité",
+      "image": "https://images.unsplash.com/photo-1555949963-ff9fe0c870eb?w=1600&q=80"
+    },
+    {
+      "template": "cards",
+      "title": "Environnement de code",
+      "lead": "Tout tourne **dans le navigateur** : le serveur ne fait que relayer les appels Microsoft.",
+      "items": [
+        {
+          "image": "https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/react/react-original.svg",
+          "title": "React",
+          "text": "Interface de l'app, composants et animations."
+        },
+        {
+          "image": "https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/typescript/typescript-original.svg",
+          "title": "TypeScript",
+          "text": "Code typé, des outils de l'IA aux templates de slides."
+        },
+        {
+          "image": "https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/bun/bun-original.svg",
+          "title": "Bun",
+          "text": "Installation, lancement et build en une commande."
+        },
+        {
+          "image": "https://upload.wikimedia.org/wikipedia/commons/c/cf/New_Power_BI_Logo.svg",
+          "title": "Power BI Embedded",
+          "text": "Afficher, piloter et éditer les rapports dans l'app."
+        },
+        {
+          "image": "https://upload.wikimedia.org/wikipedia/commons/8/8c/Microsoft_Entra_ID_color_icon.svg",
+          "title": "Microsoft Entra ID",
+          "text": "Une connexion Microsoft pour Power BI, Fabric et Graph."
+        },
+        {
+          "icon": "brain-circuit",
+          "title": "API MAIA",
+          "text": "Le modèle de langage privé de l'entreprise, appelé depuis le navigateur."
+        }
+      ]
+    },
+    {
+      "template": "table",
+      "title": "Outils et accès",
+      "columns": [
+        "Outil",
+        "Utilité",
+        "Type d'accès",
+        "Onglets"
+      ],
+      "rows": [
+        [
+          "**Microsoft Entra ID**",
+          "Connexion unique, jetons des services",
+          "Connexion Microsoft (code d'appareil)",
+          "Tous"
+        ],
+        [
+          "**API MAIA**",
+          "Assistant IA de chaque écran",
+          "Clé d'API",
+          "Tous"
+        ],
+        [
+          "**Power BI Embedded**",
+          "Afficher et piloter les rapports",
+          "Jeton Microsoft · Power BI",
+          "Trainer, Builder, Data Scientist, Reports"
+        ],
+        [
+          "**API REST Power BI**",
+          "Requêtes DAX, refresh, export .pbix",
+          "Jeton Power BI · droit Build",
+          "Trainer, Builder, Data Scientist, Presenter, Datasets"
+        ],
+        [
+          "**API Fabric**",
+          "Lire / écrire rapports et modèles",
+          "Jeton Fabric · droit d'édition",
+          "Builder, Data Scientist, Reports, Datasets"
+        ],
+        [
+          "**Microsoft Graph**",
+          "Tables Excel, fichiers OneDrive / SharePoint",
+          "Jeton Microsoft · Graph",
+          "Trainer, Presenter, Excels"
+        ],
+        [
+          "**Microsoft Forms**",
+          "Créer et mettre à jour les formulaires",
+          "Jeton Microsoft · Forms",
+          "Excels"
+        ],
+        [
+          "**Iframes Power BI**",
+          "Rapports en direct dans les slides",
+          "Session Power BI du navigateur",
+          "Presenter"
+        ]
+      ],
+      "columnColors": [
+        {
+          "column": 1,
+          "color": "#e6f6f7"
+        }
+      ]
+    },
+    {
+      "template": "lists",
+      "title": "Besoins d'accès",
+      "left": {
+        "title": "Prioritaire",
+        "tone": "primary",
+        "items": [
+          {
+            "image": "https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/github/github-original.svg",
+            "name": "Git + GitHub",
+            "text": "Versionner le code, revues et historique des changements"
+          },
+          {
+            "icon": "key-round",
+            "name": "Accès API MAIA",
+            "text": "Une clé d'API pour le modèle de langage privé"
+          },
+          {
+            "image": "https://upload.wikimedia.org/wikipedia/commons/8/8c/Microsoft_Entra_ID_color_icon.svg",
+            "name": "Microsoft Entra ID",
+            "text": "Connexion des utilisateurs à Power BI, Fabric et Graph"
+          },
+          {
+            "image": "https://upload.wikimedia.org/wikipedia/commons/1/1a/Microsoft_Power_Platform_logo.svg",
+            "name": "Publication Power Apps (code)",
+            "text": "Héberger l'app dans l'environnement Power Platform"
+          }
+        ]
+      },
+      "right": {
+        "title": "Secondaire",
+        "tone": "muted",
+        "items": [
+          {
+            "image": "https://cdn.simpleicons.org/githubcopilot",
+            "name": "GitHub Copilot",
+            "text": "Assistant de code pour accélérer le développement"
+          },
+          {
+            "image": "https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/docker/docker-original.svg",
+            "name": "CI / CD",
+            "text": "Images Docker, environnements dev, staging et prod"
+          },
+          {
+            "image": "https://cdn.simpleicons.org/databricks",
+            "name": "Databricks",
+            "text": "Gérer et préparer les données à grande échelle"
+          },
+          {
+            "image": "https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/googlecloud/googlecloud-original.svg",
+            "name": "Entraînement de modèles",
+            "text": "Cloud (Google Vertex AI) ou local sur carte graphique"
+          }
+        ]
+      }
+    },
+    {
+      "template": "issues",
+      "title": "Sécurité",
+      "headings": {
+        "left": "Enjeu",
+        "right": "Solution"
+      },
+      "items": [
+        {
+          "issue": "Données envoyées au **modèle d'IA**",
+          "solution": "API **MAIA privée** ; seul le contexte utile à la question est envoyé"
+        },
+        {
+          "issue": "Accès aux **données Power BI**",
+          "solution": "Jeton délégué : l'utilisateur ne voit **que ses droits** Power BI (RLS respectée)"
+        },
+        {
+          "issue": "**Secrets** et jetons",
+          "solution": "Aucun enregistrement d'app ni secret ; le refresh token reste **sur le poste**"
+        },
+        {
+          "issue": "Actions **non voulues** de l'IA",
+          "solution": "Plan **validé par l'utilisateur**, brouillon et annulation ; jamais de refresh par l'IA"
+        },
+        {
+          "issue": "**Stockage** des données",
+          "solution": "Pas de base ni de cloud tiers : fichiers **SharePoint / OneDrive**, état local"
+        },
+        {
+          "issue": "**Traçabilité** des réponses",
+          "solution": "Chaque échange et appel d'outil est conservé, **téléchargeable** et notable"
+        }
+      ]
+    },
+    {
+      "template": "agenda",
+      "part": "Prochaines étapes",
+      "image": "https://images.unsplash.com/photo-1504384308090-c894fdcc538d?w=1600&q=80"
+    },
+    {
+      "template": "roadmap",
+      "title": "Roadmap",
+      "current": 1,
+      "steps": [
+        {
+          "title": "Validation de sécurité",
+          "text": "Revue avec l'équipe sécurité"
+        },
+        {
+          "title": "Tests internes",
+          "text": "Les 4 use cases testés par l'équipe"
+        },
+        {
+          "title": "Choix des use cases",
+          "text": "Les plus utiles à déployer en premier"
+        },
+        {
+          "title": "Validation de déploiement",
+          "text": "Environnement, accès, support"
+        },
+        {
+          "title": "Tests UAT",
+          "text": "Avec quelques utilisateurs clés"
+        },
+        {
+          "title": "Déploiement officiel",
+          "text": "Ouverture aux équipes"
+        }
+      ]
+    },
+    {
+      "template": "cards",
+      "title": "Possibilités futures",
+      "items": [
+        {
+          "image": "https://images.unsplash.com/photo-1495020689067-958852a7765e?w=1600&q=80",
+          "title": "Analyse augmentée",
+          "text": "Croiser les chiffres avec une **recherche d'actualités en temps réel** pour expliquer les écarts."
+        },
+        {
+          "image": "https://images.unsplash.com/photo-1518186285589-2f7649de83e0?w=1600&q=80",
+          "title": "Génération de dashboards",
+          "text": "Créer des dashboards Power BI et des **modèles sémantiques complexes** depuis une demande."
+        },
+        {
+          "image": "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?w=1600&q=80",
+          "title": "Forecast",
+          "text": "Prévoir ventes et stocks par **machine learning**, entraîné sur nos données."
+        }
+      ],
+      "pictures": "photo"
+    },
+    {
+      "template": "title",
+      "eyebrow": "Use cases IA",
+      "title": "Questions ?",
+      "subtitle": "Merci pour votre attention",
+      "context": "Data & BI · 2026",
+      "footer": "Sami Hanine — octobre 2026"
+    }
+  ]
+}
