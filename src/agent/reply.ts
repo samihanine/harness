@@ -9,7 +9,9 @@ export type Call = { name: string; args: Record<string, unknown> };
 export class ReplyError extends Error {}
 
 /** Extracts the tool calls of a reply: `{"tools":[{"name","args"}]}` (and a few close variants). */
-export function parseReply(text: string): Call[] {
+export function parseReply(given: string): Call[] {
+  // {"name": "add_pivot", …, "name": "Sales"}: the first "name" is the tool, the next one an argument.
+  const text = argNames(given);
   const value = parseJson(text);
   // {"tools": [a], "tools": [b]}: JSON keeps only the last key, every call is taken.
   const merged = duplicateTools(text);
@@ -29,11 +31,44 @@ export function parseReply(text: string): Call[] {
     const name = call.name ?? call.tool;
     if (typeof name !== "string" || !name) throw new ReplyError(`tools[${index}] has no "name".`);
     // Some models write the arguments next to the name ({"name": "implement", "plan": "…"}): taken as the args.
-    const { name: _n, tool: _t, ...rest } = call;
-    const args = call.args ?? call.arguments ?? call.input ?? call.parameters ?? rest;
+    const { name: _n, tool: _t, [ARG_NAME]: argName, ...rest } = call;
+    const args = call.args ?? call.arguments ?? call.input ?? call.parameters ?? (argName === undefined ? rest : { ...rest, name: argName });
     if (!isObject(args)) throw new ReplyError(`tools[${index}].args must be an object.`);
     return { name, args };
   });
+}
+
+/** The key a repeated "name" of one object is renamed to (an argument written next to the tool's name). */
+const ARG_NAME = "__arg_name";
+
+/** Renames every "name" key after the first one of the same object (JSON would keep only the last). */
+function argNames(text: string) {
+  const seen: boolean[] = []; // per open object: has it a "name" key already
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (inString) {
+      out += char;
+      if (char === "\\") out += text[++i] ?? "";
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === "{") seen.push(false);
+    else if (char === "}") seen.pop();
+    else if (char === '"' && seen.length) {
+      const key = text.slice(i).match(/^"name"\s*:/);
+      if (key) {
+        out += seen[seen.length - 1] ? `"${ARG_NAME}"` : '"name"';
+        seen[seen.length - 1] = true;
+        i += 5;
+        continue;
+      }
+      inString = true;
+    }
+    out += char;
+  }
+  return out;
 }
 
 /** The calls of every "tools" array when a reply repeats the key (undefined when it does not). */

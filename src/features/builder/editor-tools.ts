@@ -531,10 +531,18 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
     }),
     tool({
       name: "set_visual_fields",
-      description: "Replaces the fields of roles of a visual (other roles kept; an empty list removes a role), checked against the model.",
-      args: z.object({ visual: visualArg, page: pageArg, fields: z.record(z.string(), z.array(z.string())) }),
-      run: async ({ visual, page, fields }) => {
+      description: 'Changes a visual in place: "type" turns it into another type, its fields kept (e.g. hundredPercentStackedColumnChart → columnChart, a 100 % chart into a stacked one); "fields" replaces the fields of roles (other roles kept; an empty list removes a role), checked against the model.',
+      args: z.object({ visual: visualArg, page: pageArg, type: z.string().optional().describe("New visual type (types of create_visual)"), fields: z.record(z.string(), z.array(z.string())).optional() }),
+      run: async ({ visual, page, type: next, fields }) => {
+        if (!next && !fields) throw new Error('Give "type" (to change the visual\'s type) and/or "fields".');
+        if (next && !ROLES[next]) throw new Error(`Unknown type "${next}". Types: ${Object.keys(ROLES).join(", ")}.`);
         const { visual: v } = await visualOf(visual, page);
+        if (next && next !== v.json.visual?.visualType) {
+          await patch(v.file, [{ op: "add", path: "/visual/visualType", value: next }]);
+          if (!fields) return `Type: ${v.json.visual?.visualType} → ${next}.`;
+          v.json.visual.visualType = next;
+        }
+        if (!fields) return "Nothing to change.";
         const type = v.json.visual?.visualType;
         const state = { ...(v.json.visual?.query?.queryState ?? {}) };
         const built = buildVisual({ type, x: 0, y: 0, width: 1, height: 1, fields: Object.fromEntries(Object.entries(fields).filter(([, l]) => l.length)) }, v.name, 0, ctx.info(), measuresOf(await files()));

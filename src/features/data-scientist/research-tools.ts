@@ -8,6 +8,7 @@ import { z } from "zod";
 import { datasetText, withContexts } from "@/agent/context";
 import { tool, type Agent } from "@/agent/loop";
 import { daxTool, filterOp, missingValues, queryTool } from "@/agent/pbi-tools";
+import { modelTools } from "@/agent/model-tools";
 import { rowsText } from "@/services/pbi";
 import { CHARTS, pivot, readResearch, resultName, runSheet, sheetDax, sheetName, type CalcSheet, type ChartSheet, type PivotSheet, type ResearchEntry, type Sheet } from "@/features/data-scientist/research";
 import { columnName, computeWorkbook } from "@/features/data-scientist/formulas";
@@ -54,6 +55,17 @@ function calcText(sheet: CalcSheet, sheets: Sheet[]) {
   return { text: lines.slice(0, 30).join("\n"), errors };
 }
 
+/** The pivots a calc sheet reads only partly: "Sales by zone" has 11 rows, the sheet reads 1. */
+function coverage(calc: CalcSheet, sheets: Sheet[]) {
+  return sheets.flatMap((p) => {
+    if (p.kind === "calc" || !p.spec || !p.rows?.length) return [];
+    const quoted = `"${p.name.toLowerCase()}"`;
+    const read = calc.cells.filter((line) => line.some((c) => /GETPIVOTDATA/i.test(c) && c.toLowerCase().includes(quoted))).length;
+    const items = pivot(p.spec, p.rows).lines.length;
+    return read && read < items ? [`"${p.name}" has ${items} rows, this sheet reads ${read}`] : [];
+  });
+}
+
 export function researchAgent(entry: () => ResearchEntry, datasets: () => DatasetEntry[]): Agent {
   // The research as last written here: the screen's copy only catches up after a render, so tools run
   // in one reply (several sheets) read this one and never write over each other.
@@ -73,6 +85,8 @@ export function researchAgent(entry: () => ResearchEntry, datasets: () => Datase
     if (!d) throw new Error(list.length ? `Give dataset_id: one of ${list.map((x) => `${x.id} (${x.name})`).join(", ")}.` : "No model in this research: ask the user to choose one in the Datasets tab.");
     return d;
   };
+  /** The model the model tools read (their dataset_id, or the only model). */
+  let described: string | undefined;
   /** Puts a sheet in the workbook (replacing the one of the same name, in its place; else after `after`, else at the end). */
   const place = async (s: Sheet, after?: string) => {
     const sheets = get().sheets.filter((x) => x.name.toLowerCase() !== s.name.toLowerCase());
@@ -114,6 +128,12 @@ export function researchAgent(entry: () => ResearchEntry, datasets: () => Datase
     tools: [
       daxTool(() => undefined, () => models()),
       queryTool(() => undefined, () => models()),
+      // The model's tables, columns and measures in detail (its hidden tables too: what can rebuild a figure).
+      ...modelTools(() => model(described)).map((t) => ({
+        ...t,
+        args: t.args.extend({ dataset_id: z.string().optional().describe("Model id (when there are several)") }),
+        run: (args: Record<string, unknown>) => ((described = args.dataset_id as string | undefined), t.run(args)),
+      })),
       tool({
         name: "write_text",
         description: "Writes the analysis text shown above the workbook (markdown, the whole text: it replaces the current one).",
@@ -154,7 +174,8 @@ export function researchAgent(entry: () => ResearchEntry, datasets: () => Datase
           const s: CalcSheet = { id: sheetId(), kind: "calc", name: sheetName(name), cells, note };
           await place(s, after);
           const { text, errors } = calcText(s, get().sheets);
-          return `Sheet "${s.name}" (calc) computed:\n${text}${errors.length ? `\nErrors to fix (add_calc again with the same name): ${errors.slice(0, 6).join("; ")}` : ""}`;
+          const partial = coverage(s, get().sheets);
+          return `Sheet "${s.name}" (calc) computed:\n${text}${errors.length ? `\nErrors to fix (add_calc again with the same name): ${errors.slice(0, 6).join("; ")}` : ""}${partial.length ? `\nOnly part of the pivots is read: ${partial.join("; ")}. Add a row per item (add_calc again with the same name) unless the user asked for these only.` : ""}`;
         },
       }),
       tool({

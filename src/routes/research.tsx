@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Legend, Line, LineChart, Pie, PieChart, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from "recharts";
-import { BarChart3Icon, CalculatorIcon, CodeIcon, DatabaseIcon, FileSpreadsheetIcon, FlaskConicalIcon, LayoutDashboardIcon, PencilIcon, PlusIcon, RefreshCwIcon, SlidersHorizontalIcon, TableIcon, Trash2Icon } from "lucide-react";
+import { BarChart3Icon, CalculatorIcon, CodeIcon, DatabaseIcon, DownloadIcon, FileSpreadsheetIcon, FlaskConicalIcon, LayoutDashboardIcon, PencilIcon, PlusIcon, RefreshCwIcon, TableIcon, Trash2Icon, XIcon } from "lucide-react";
 import { EXPORT, SCREEN_LABELS } from "@/config";
 import { withToast } from "@/components/entity";
 import { powerBiToken } from "@/services/ms";
@@ -11,9 +11,10 @@ import { DatasetList } from "@/components/dataset-list";
 import { EntityMenu } from "@/components/entity";
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import type { FilterSpec } from "@/lib/query-spec";
 import { EntityPicker, Empty, Workspace } from "@/components/workspace";
 import { researchAgent } from "@/features/data-scientist/research-tools";
 import { useLast } from "@/lib/last";
@@ -138,7 +139,7 @@ async function downloadWorkbook(research: ResearchEntry, datasets: DatasetEntry[
     if (s.kind === "calc") return [{ kind: "calc", sheet: s }];
     const d = datasets.find((x) => x.id === s.datasetId);
     if (!d || !s.rows) return [];
-    const part: PivotPart = { name: s.name, spec: specOf(s), rows: s.rows, dax: sheetDax(s, d.info), connection: powerBiConnection(d.id, tenant), model: d.name, note: s.kind === "chart" ? `${s.chart} chart in the app` : s.note };
+    const part: PivotPart = { name: s.name, spec: specOf(s), rows: s.rows, dax: sheetDax(s, d.info), connection: powerBiConnection(d.id, tenant), model: d.name, info: d.info, note: s.kind === "chart" ? `${s.chart} chart in the app` : s.note };
     return [{ kind: "pivot", part }];
   });
   const blob = await researchWorkbook(sheets, results);
@@ -158,7 +159,7 @@ function Workbook({ research, datasets, onSheets }: { research: ResearchEntry; d
   const setSheet = (next: Sheet) => onSheets(research.sheets.map((s) => (s.id === next.id ? next : s)));
   const refresh = async (s: PivotSheet | ChartSheet = sheet as PivotSheet | ChartSheet) => {
     const d = datasets.find((x) => x.id === s.datasetId);
-    if (!d) return;
+    if (!d) return setSheet(s); // the change kept, run once the model is back
     setBusy(true);
     setSheet(await runSheet(s, { id: d.id, groupId: d.groupId, info: d.info }));
     setBusy(false);
@@ -185,8 +186,8 @@ function Workbook({ research, datasets, onSheets }: { research: ResearchEntry; d
         </span>
         <span className="flex-1" />
         {sheet.kind !== "calc" && (
-          <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label={sheet.spec ? "Edit the parameters" : "View the DAX"} title={sheet.spec ? "Edit the parameters" : "View the DAX"} onClick={() => setDialog(true)}>
-            {sheet.spec ? <SlidersHorizontalIcon /> : <CodeIcon />}
+          <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label="View the DAX" title="View the DAX" onClick={() => setDialog(true)}>
+            <CodeIcon />
           </Button>
         )}
         <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label="Refresh every sheet" title="Run every sheet's query again" disabled={busy} onClick={() => void refreshAll()}>
@@ -194,14 +195,15 @@ function Workbook({ research, datasets, onSheets }: { research: ResearchEntry; d
         </Button>
         {EXPORT.pivotExcel && (
           <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label="Download as Excel" title="Excel: every sheet, each pivot connected to its model (Data › Refresh All)" onClick={() => void withToast("Writing the Excel file…", downloadWorkbook(research, datasets), "Downloaded.")}>
-            <FileSpreadsheetIcon />
+            <DownloadIcon />
           </Button>
         )}
         <Button variant="ghost" size="icon" className="size-7 text-muted-foreground" aria-label="Delete the sheet" onClick={() => confirm(`Delete the sheet "${sheet.name}"?`) && onSheets(research.sheets.filter((s) => s.id !== sheet.id))}>
           <Trash2Icon />
         </Button>
       </div>
-      <div className="min-h-64">
+      <div className="flex min-h-64">
+        <div className="min-w-0 flex-1">
         {sheet.kind === "calc" ? (
           <CalcView sheet={sheet} results={results.get(sheet.name) ?? []} />
         ) : sheet.error ? (
@@ -213,13 +215,10 @@ function Workbook({ research, datasets, onSheets }: { research: ResearchEntry; d
         ) : (
           <PivotView sheet={sheet} />
         )}
-      </div>
-      {sheet.kind !== "calc" && (
-        <div className="border-t px-3 py-2">
-          {sheet.truncated && <p className="mb-1 text-[11.5px] text-muted-foreground">Cut at the app's row limit ({sheet.rows?.length} rows).</p>}
-          <SpecLine spec={specOf(sheet)} />
+        {sheet.kind !== "calc" && sheet.truncated && <p className="border-t px-3 py-1.5 text-[11.5px] text-muted-foreground">Cut at the app's row limit ({sheet.rows?.length} rows).</p>}
         </div>
-      )}
+        {sheet.kind !== "calc" && sheet.spec && <FieldsPanel spec={sheet.spec} info={dataset?.info} busy={busy} onChange={(spec) => void refresh({ ...sheet, spec })} />}
+      </div>
       {sheet.note && <p className="border-t px-3 py-2 text-[12px] text-muted-foreground">{sheet.note}</p>}
       {/* The sheets as Excel's tabs, at the bottom. */}
       <div className="flex items-stretch gap-0.5 overflow-x-auto border-t bg-muted/60 px-2" role="tablist" aria-label="Sheets">
@@ -234,8 +233,7 @@ function Workbook({ research, datasets, onSheets }: { research: ResearchEntry; d
           );
         })}
       </div>
-      {dialog && sheet.kind !== "calc" && !sheet.spec && <DaxDialog sheet={sheet} info={dataset?.info} onClose={() => setDialog(false)} />}
-      {dialog && sheet.kind !== "calc" && sheet.spec && <SpecDialog title={sheet.name} spec={sheet.spec} onClose={() => setDialog(false)} onSave={(spec) => (setDialog(false), void refresh({ ...sheet, spec }))} />}
+      {dialog && sheet.kind !== "calc" && <DaxDialog sheet={sheet} info={dataset?.info} onClose={() => setDialog(false)} />}
     </section>
   );
 }
@@ -389,25 +387,96 @@ function ChartView({ sheet }: { sheet: ChartSheet }) {
   );
 }
 
-const filterText = (f: PivotSpec["filters"][number]) => `${f.field} ${f.op ?? "in"} ${f.values ? f.values.join(", ") : `${f.value ?? ""}${f.to !== undefined ? ` – ${f.to}` : ""}`}`;
+const filterText = (f: FilterSpec) => (f.values ? f.values.join(", ") : `${f.value ?? ""}${f.to !== undefined ? ` – ${f.to}` : ""}`);
+/** Values typed in a filter: numbers kept as numbers. */
+const filterValues = (text: string) => text.split(",").map((x) => x.trim()).filter(Boolean).map((x) => (/^-?\d+(\.\d+)?$/.test(x) ? Number(x) : x));
 
-/** A pivot's parameters, under it. */
-function SpecLine({ spec }: { spec: PivotSpec }) {
-  const parts: [string, string][] = [
-    ["Rows", spec.rows.join(", ")],
-    ["Columns", spec.columns.join(", ")],
-    ["Values", spec.values.join(", ")],
-    ["Filters", spec.filters.map(filterText).join("; ")],
-  ];
-  return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 border-t pt-2 font-mono text-[11px] text-muted-foreground">
-      {parts.filter(([, v]) => v).map(([k, v]) => (
-        <div key={k} className="contents">
-          <dt className="font-sans font-medium">{k}</dt>
-          <dd className="truncate" title={v}>{v}</dd>
-        </div>
+/**
+ * A pivot's fields on the right of the sheet, as Excel's PivotTable Fields pane: filters, columns, rows
+ * and values, each removed with its cross or added from the model's fields; filter values edited in
+ * place. Every change runs the sheet again.
+ */
+function FieldsPanel({ spec, info, busy, onChange }: { spec: PivotSpec; info?: DatasetEntry["info"]; busy: boolean; onChange: (spec: PivotSpec) => void }) {
+  const tables = (info?.tables ?? []).filter((t) => !t.hidden);
+  const columns = tables.flatMap((t) => t.columns.filter((c) => !c.hidden).map((c) => `'${t.name}'[${c.name}]`));
+  const measures = (info?.tables ?? []).flatMap((t) => t.measures.filter((m) => !m.hidden).map((m) => `[${m.name}]`));
+  const set = (change: Partial<PivotSpec>) => onChange({ ...spec, ...change });
+  const list = (key: "rows" | "columns" | "values", label: string) => (
+    <FieldBox label={label} options={key === "values" ? measures : columns} busy={busy} onAdd={(f) => !spec[key].includes(f) && set({ [key]: [...spec[key], f] })}>
+      {spec[key].map((f) => (
+        <FieldChip key={f} field={f} onRemove={key === "values" && spec.values.length === 1 ? undefined : () => set({ [key]: spec[key].filter((x) => x !== f) })} />
       ))}
-    </dl>
+    </FieldBox>
+  );
+  return (
+    <aside className={`flex w-64 shrink-0 flex-col gap-3 border-l bg-muted/20 p-3 text-[12px] ${busy ? "pointer-events-none opacity-60" : ""}`} aria-label="Pivot fields">
+      <p className="text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">Fields</p>
+      <FieldBox label="Filters" options={columns} busy={busy} onAdd={(field) => set({ filters: [...spec.filters, { field, op: "in", values: [] }] })}>
+        {spec.filters.map((f, i) => (
+          <div key={`${f.field}-${i}`} className="flex flex-col gap-1 rounded-md border bg-card px-2 py-1.5">
+            <FieldChip field={f.field} plain onRemove={() => set({ filters: spec.filters.filter((_, j) => j !== i) })} />
+            {(f.op ?? "in") === "in" || f.op === "not_in" ? (
+              <FilterInput key={filterText(f)} f={f} onSave={(values) => set({ filters: spec.filters.map((x, j) => (j === i ? { ...x, values } : x)) })} />
+            ) : (
+              <span className="font-mono text-[11px] text-muted-foreground">{f.op} {filterText(f)}</span>
+            )}
+          </div>
+        ))}
+      </FieldBox>
+      {list("columns", "Columns")}
+      {list("rows", "Rows")}
+      {list("values", "Values")}
+    </aside>
+  );
+}
+
+/** A filter's values, edited in place (separated by commas; Enter or leaving the field applies them). */
+function FilterInput({ f, onSave }: { f: FilterSpec; onSave: (values: FilterSpec["values"]) => void }) {
+  const [draft, setDraft] = useState(filterText(f));
+  const save = () => draft !== filterText(f) && onSave(filterValues(draft));
+  return (
+    <label className="flex items-center gap-1">
+      <span className="shrink-0 text-[10.5px] text-muted-foreground">{f.op === "not_in" ? "not" : "is"}</span>
+      <Input className="h-6 px-1.5 font-mono text-[11px]" value={draft} placeholder="value, value…" aria-label={`Values of ${f.field}`} onChange={(e) => setDraft(e.target.value)} onBlur={save} onKeyDown={(e) => e.key === "Enter" && save()} />
+    </label>
+  );
+}
+
+/** A box of the fields pane: its fields, and a field to add (typed or picked among the model's). */
+function FieldBox({ label, options, busy, onAdd, children }: { label: string; options: string[]; busy: boolean; onAdd: (field: string) => void; children: React.ReactNode }) {
+  const id = useId();
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const field = options.find((o) => o.toLowerCase() === draft.trim().toLowerCase()) ?? draft.trim();
+    if (!field) return;
+    onAdd(field);
+    setDraft("");
+  };
+  return (
+    <section className="flex flex-col gap-1">
+      <span className="font-medium">{label}</span>
+      <div className="flex flex-col gap-1">{children}</div>
+      <Input className="h-6 px-1.5 text-[11px]" list={id} value={draft} disabled={busy} placeholder="+ Add a field" aria-label={`Add to ${label}`} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} onBlur={() => options.includes(draft) && add()} />
+      <datalist id={id}>{options.map((o) => <option key={o} value={o} />)}</datalist>
+    </section>
+  );
+}
+
+/** A field in the pane: its column or measure name, its table in grey; a cross removes it. */
+function FieldChip({ field, plain, onRemove }: { field: string; plain?: boolean; onRemove?: () => void }) {
+  const table = field.match(/^'?(.+?)'?\[/)?.[1];
+  return (
+    <div className={`flex min-w-0 items-center gap-1 ${plain ? "" : "rounded-md border bg-card px-2 py-1"}`} title={field}>
+      <span className="min-w-0 flex-1 truncate">
+        <span className="font-medium">{resultName(field)}</span>
+        {table && <span className="ml-1 text-muted-foreground">{table}</span>}
+      </span>
+      {onRemove && (
+        <button type="button" className="shrink-0 cursor-pointer rounded text-muted-foreground hover:text-foreground" aria-label={`Remove ${field}`} onClick={onRemove}>
+          <XIcon className="size-3.5" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -419,49 +488,6 @@ function DaxDialog({ sheet, info, onClose }: { sheet: PivotSheet | ChartSheet; i
           <DialogTitle>{sheet.name} — DAX</DialogTitle>
         </DialogHeader>
         <pre className="max-h-96 overflow-auto rounded-lg bg-muted p-3 font-mono text-[12px] whitespace-pre-wrap">{sheetDax(sheet, info)}</pre>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/** Edits a pivot's parameters (fields separated by commas; filters as JSON). */
-function SpecDialog({ title, spec, onClose, onSave }: { title: string; spec: PivotSpec; onClose: () => void; onSave: (spec: PivotSpec) => void }) {
-  const [draft, setDraft] = useState({ rows: spec.rows.join(", "), columns: spec.columns.join(", "), values: spec.values.join(", "), filters: JSON.stringify(spec.filters, null, 1) });
-  const [error, setError] = useState<string>();
-  const list = (s: string) => s.split(/,(?![^[]*\])/).map((x) => x.trim()).filter(Boolean);
-  const save = () => {
-    try {
-      const filters = draft.filters.trim() ? JSON.parse(draft.filters) : [];
-      if (!Array.isArray(filters)) throw new Error("Filters: a JSON list.");
-      if (!list(draft.values).length) throw new Error("Give at least one value.");
-      onSave({ rows: list(draft.rows), columns: list(draft.columns), values: list(draft.values), filters });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-  return (
-    <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{title} — parameters</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-3 text-[13px]">
-          {(["rows", "columns", "values"] as const).map((k) => (
-            <label key={k} className="flex flex-col gap-1">
-              <span className="font-medium capitalize">{k}</span>
-              <Input className="font-mono text-[12.5px]" value={draft[k]} placeholder={k === "values" ? "[Total Sales], Sum('Sales'[Qty])" : "'Date'[Year]"} onChange={(e) => setDraft({ ...draft, [k]: e.target.value })} />
-            </label>
-          ))}
-          <label className="flex flex-col gap-1">
-            <span className="font-medium">Filters</span>
-            <Textarea className="min-h-24 font-mono text-[12px]" value={draft.filters} placeholder={'[{"field": "\'Date\'[Year]", "values": [2024]}]'} onChange={(e) => setDraft({ ...draft, filters: e.target.value })} />
-          </label>
-          {error && <p className="text-[12.5px] text-destructive">{error}</p>}
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button onClick={save}>Apply and refresh</Button>
-        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

@@ -261,6 +261,13 @@ async function* drive(opts: {
     const results: string[] = [];
     const run = async (c: { name: string; args: Record<string, unknown> }, step: Step) => {
       const t = byName.get(c.name)!;
+      // The same read again (weak models loop on one query): sent back to the result it already has.
+      const key = JSON.stringify(c.args);
+      if (t.readOnly && turn.steps.some((s) => s !== step && !s.error && s.result !== NOTES.sameCall && s.name === c.name && JSON.stringify(s.args) === key)) {
+        step.result = NOTES.sameCall;
+        step.ms = 0;
+        return tag("result", step.result, `tool="${c.name}" status="ok"`);
+      }
       const t0 = performance.now();
       try {
         const text = await t.run(t.args.parse(c.args));

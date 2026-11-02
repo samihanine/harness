@@ -98,8 +98,10 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   in the app by `formulas.ts`; pivots read with GETPIVOTDATA, so a figure the models lack is rebuilt in the open).
   Every request: explored with DAX, confirmed by the user, then at least one pivot answering it (never one for
   show). Older canvases (cards) become sheets. The workbook downloads as Excel (`pivot-excel.ts`, written by hand):
-  per pivot a "… data" table connected to its model (OLE DB, as "Analyze in Excel", running the sheet's DAX) and a
-  real PivotTable on it; calc sheets keep their formulas (GETPIVOTDATA pointed at the PivotTables, recomputed on open).
+  a pivot of model measures filtered on lists of values is a PivotTable ON the model (OLAP, as "Analyze in Excel");
+  any other, a "… data" table connected to its model (OLE DB, running the sheet's DAX) and a PivotTable on it; calc
+  sheets keep their formulas (GETPIVOTDATA rewritten for the PivotTables — model names on OLAP ones —, recomputed on
+  open). A pivot's fields are edited on the right of its sheet (Filters / Columns / Rows / Values).
 - **Slides** (`src/features/presenter/slides`): a deck is a short JSON `{title, theme, slides: [{template, ...args}]}`;
   each template (`title.tsx`, `agenda.tsx`, `table.tsx`…) has a kind (cover, section — an agenda naming its part —, subsection,
   summary, content, end: the outline and the content pages' header come from them), zod args, an
@@ -129,6 +131,7 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   definition or, when it is not readable, through a hidden embed; used by the Reports screen and as
   the Builder's reference reports (Reports tab: inspiration context; `copy_report_page` rebuilds one
   of their pages by structure, `src/features/builder/report-copy.ts`, even when their definition is closed).
+- **Builder edits**: `set_visual_fields` also changes a visual's type in place (`type`), read back from the editor.
 - **Builder formatting**: `style_visual` (`src/features/builder/visual-style.ts`): title, field display names,
   series colors, text size and color, labels, legend, header colors, frame — a plain spec written by code (its
   keys also accepted next to "visuals"); `format_visual` for any other property, `set_conditional_format` for

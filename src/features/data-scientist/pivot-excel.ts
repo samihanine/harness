@@ -1,15 +1,17 @@
 /**
- * A research's workbook as an Excel file, each pivot connected to its semantic model. Per pivot (or
- * chart) sheet: a "… data" sheet holding its query as a table linked to the model (an OLE DB connection
- * to Power BI, as "Analyze in Excel" makes, running the sheet's DAX: Data › Refresh All reads the model
- * again) and the sheet itself with a real PivotTable on that table. Calculation sheets keep their
+ * A research's workbook as an Excel file, each pivot connected to its semantic model. A pivot of model
+ * measures by columns, filtered on values, is a PivotTable ON the model (an OLAP PivotTable, as "Analyze
+ * in Excel" makes: the model's field list, refreshed from Power BI). Any other (aggregated columns,
+ * ranges, exclusions): a "… data" sheet holding its query as a table linked to the model (an OLE DB
+ * connection running the sheet's DAX) and the sheet itself with a PivotTable on that table. Calculation sheets keep their
  * formulas (GETPIVOTDATA pointed at the pivots). Written by hand (the libraries in reach do not write
  * pivot tables); the rows already read and the computed values fill the file, so it opens with the figures.
  */
 import JSZip from "jszip";
 import type { Rows } from "@/services/pbi";
+import type { ModelInfo } from "@/services/model";
 import type { Result } from "./formulas";
-import { pivot, resultName, type CalcSheet, type PivotSpec } from "./research";
+import { activeFilters, pivot, resultName, type CalcSheet, type PivotSpec } from "./research";
 
 const NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
 const REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -47,7 +49,136 @@ export function tenantOf(token: string) {
 const cell = (v: unknown, ref: string) => (isNumber(v) ? `<c r="${ref}"><v>${v}</v></c>` : v === null || v === undefined || v === "" ? "" : `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${esc(v)}</t></is></c>`);
 
 /** A pivot of the workbook: its sheet name, parameters, rows, DAX and model connection. */
-export type PivotPart = { name: string; spec: PivotSpec; rows: Rows; dax: string; connection: string; model: string; note?: string };
+export type PivotPart = { name: string; spec: PivotSpec; rows: Rows; dax: string; connection: string; model: string; info?: ModelInfo; note?: string };
+
+/* ------------------------------- On the model (OLAP) ------------------------------- */
+
+const bracket = (s: string) => `[${s.replace(/\]/g, "]]")}]`;
+/** 'T'[col] (or T[col]) → its table and column. */
+const columnOf = (field: string) => field.trim().match(/^'?(.+?)'?\[([^\]]+)\]$/)?.slice(1, 3) as [string, string] | undefined;
+/** [Measure] → its name. */
+const measureOf = (value: string) => value.trim().match(/^\[([^\]]+)\]$/)?.[1];
+
+/** A pivot as the model names it: hierarchies of its fields, measures of its values (undefined: not reachable as OLAP). */
+export type Olap = {
+  /** By the field's name in the rows (resultName): the hierarchy, e.g. [Zone].[ZoneCode]. */
+  hierarchies: Map<string, string>;
+  /** By the value's name: the measure's unique name, e.g. [Measures].[Sales]. */
+  measures: Map<string, string>;
+};
+
+/**
+ * The model's names of a pivot when Excel can build it on the model: its values are measures of the model,
+ * its rows and columns columns of the model, its filters lists of values (in).
+ */
+export function olapOf(given: PivotSpec, info: ModelInfo | undefined): (Olap & { groups: Map<string, string> }) | undefined {
+  if (!info) return undefined;
+  const spec = { ...given, filters: activeFilters(given.filters) };
+  const hierarchies = new Map<string, string>();
+  for (const f of [...spec.rows, ...spec.columns, ...spec.filters.map((x) => x.field)]) {
+    const c = columnOf(f);
+    const table = c && info.tables.find((t) => t.name.toLowerCase() === c[0].toLowerCase());
+    const column = table?.columns.find((x) => x.name.toLowerCase() === c![1].toLowerCase());
+    if (!table || !column) return undefined;
+    hierarchies.set(column.name, `${bracket(table.name)}.${bracket(column.name)}`);
+  }
+  if (spec.filters.some((f) => (f.op ?? "in") !== "in" || !f.values?.length)) return undefined;
+  const measures = new Map<string, string>();
+  const groups = new Map<string, string>();
+  for (const v of spec.values) {
+    const name = measureOf(v);
+    const table = name && info.tables.find((t) => t.measures.some((m) => m.name.toLowerCase() === name.toLowerCase()));
+    if (!name || !table) return undefined;
+    const real = table.measures.find((m) => m.name.toLowerCase() === name.toLowerCase())!.name;
+    measures.set(real, `[Measures].${bracket(real)}`);
+    groups.set(real, table.name);
+  }
+  return measures.size ? { hierarchies, measures, groups } : undefined;
+}
+
+/** A member of a hierarchy by its value, e.g. [Zone].[ZoneCode].&[CHI]. */
+const member = (hierarchy: string, v: unknown) => `${hierarchy}.&${bracket(String(v))}`;
+
+/**
+ * The parts of a pivot on the model (n from 1): its connection to the model (the cube "Model"), its cache
+ * (the hierarchies and measures it uses, the members already read) and the PivotTable, refreshed when the
+ * file opens. The figures already read fill its cells, so the sheet shows them before the refresh.
+ */
+function olapParts(n: number, { name, spec: given, rows, connection, model, note }: PivotPart, olap: NonNullable<ReturnType<typeof olapOf>>) {
+  const spec = { ...given, filters: activeFilters(given.filters) };
+  const rowKeys = spec.rows.map(resultName);
+  const colKeys = spec.columns.map(resultName);
+  const pageKeys = spec.filters.map((f) => resultName(f.field)).filter((k) => !rowKeys.includes(k) && !colKeys.includes(k));
+  const fieldKeys = [...new Set([...rowKeys, ...colKeys, ...pageKeys])];
+  const measureKeys = [...olap.measures.keys()];
+  // Cache fields: one per field (its level) then one per measure; cache hierarchies in the same order.
+  const fieldNo = (k: string) => fieldKeys.indexOf(k);
+  const measureNo = (m: string) => fieldKeys.length + measureKeys.indexOf(m);
+  const membersOf = (k: string) => {
+    const filter = spec.filters.find((f) => resultName(f.field) === k);
+    const values = rowKeys.includes(k) || colKeys.includes(k) ? rows.map((r) => r[k]) : (filter?.values ?? []);
+    return [...new Set(values.filter((v) => v !== null && v !== undefined && v !== "").map(String))];
+  };
+  const level = (k: string) => `${olap.hierarchies.get(k)}.${bracket(k)}`;
+  const cacheFields = [
+    ...fieldKeys.map((k) => {
+      const list = membersOf(k);
+      return `<cacheField name="${esc(level(k))}" caption="${esc(k)}" numFmtId="0" hierarchy="${fieldNo(k)}" level="1"><sharedItems count="${list.length}">${list.map((v) => `<s v="${esc(member(olap.hierarchies.get(k)!, v))}" c="${esc(v)}"/>`).join("")}</sharedItems></cacheField>`;
+    }),
+    ...measureKeys.map((m) => `<cacheField name="${esc(olap.measures.get(m))}" caption="${esc(m)}" numFmtId="0" hierarchy="${measureNo(m)}" level="32767"/>`),
+  ];
+  const cacheHierarchies = [
+    ...fieldKeys.map((k) => {
+      const h = olap.hierarchies.get(k)!;
+      const dimension = h.slice(0, h.indexOf("].[") + 1);
+      return `<cacheHierarchy uniqueName="${esc(h)}" caption="${esc(k)}" attribute="1" defaultMemberUniqueName="${esc(`${h}.[All]`)}" allUniqueName="${esc(`${h}.[All]`)}" dimensionUniqueName="${esc(dimension)}" displayFolder="" count="2" unbalanced="0"><fieldsUsage count="2"><fieldUsage x="-1"/><fieldUsage x="${fieldNo(k)}"/></fieldsUsage></cacheHierarchy>`;
+    }),
+    ...measureKeys.map((m) => `<cacheHierarchy uniqueName="${esc(olap.measures.get(m))}" caption="${esc(m)}" measure="1" displayFolder="" measureGroup="${esc(olap.groups.get(m))}" count="0" oneField="1"><fieldsUsage count="1"><fieldUsage x="${measureNo(m)}"/></fieldsUsage></cacheHierarchy>`),
+  ];
+  const cache = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<pivotCacheDefinition ${NS} saveData="0" refreshOnLoad="1" refreshedBy="Hub" refreshedDate="${(Date.now() / 86_400_000 + 25_569).toFixed(5)}" createdVersion="8" refreshedVersion="8" minRefreshableVersion="3" recordCount="0" supportSubquery="1" supportAdvancedDrill="1"><cacheSource type="external" connectionId="${n}"/><cacheFields count="${cacheFields.length}">${cacheFields.join("")}</cacheFields><cacheHierarchies count="${cacheHierarchies.length}">${cacheHierarchies.join("")}</cacheHierarchies><kpis count="0"/></pivotCacheDefinition>`;
+
+  const pivotFields = [
+    ...fieldKeys.map((k) => {
+      const axis = rowKeys.includes(k) ? "axisRow" : colKeys.includes(k) ? "axisCol" : "axisPage";
+      const list = membersOf(k);
+      return `<pivotField axis="${axis}" allDrilled="1" showAll="0" dataSourceSort="1" defaultAttributeDrillState="1"${axis === "axisPage" && list.length > 1 ? ' multipleItemSelectionAllowed="1"' : ""}><items count="${list.length + 1}">${list.map((_, i) => `<item s="1" x="${i}"/>`).join("")}<item t="default"/></items></pivotField>`;
+    }),
+    ...measureKeys.map(() => '<pivotField dataField="1" showAll="0"/>'),
+  ];
+  // Several measures: their names make a column field ("Values", index -2).
+  const cols = [...colKeys.map(fieldNo), ...(measureKeys.length > 1 ? [-2] : [])];
+  const pages = pageKeys.map((k) => {
+    const h = olap.hierarchies.get(k)!;
+    const list = membersOf(k);
+    return list.length === 1 ? `<pageField fld="${fieldNo(k)}" hier="${fieldNo(k)}" name="${esc(member(h, list[0]))}" cap="${esc(list[0])}"/>` : `<pageField fld="${fieldNo(k)}" hier="${fieldNo(k)}" name="${esc(`${h}.[All]`)}" cap="All"/>`;
+  });
+  // A filter on several values: its members selected on the hierarchy.
+  const pivotHierarchies = [
+    ...fieldKeys.map((k) => {
+      const list = membersOf(k);
+      return pageKeys.includes(k) && list.length > 1 ? `<pivotHierarchy multipleItemSelectionAllowed="1"><members count="${list.length}" level="1">${list.map((v) => `<member name="${esc(member(olap.hierarchies.get(k)!, v))}"/>`).join("")}</members></pivotHierarchy>` : "<pivotHierarchy/>";
+    }),
+    ...measureKeys.map(() => '<pivotHierarchy dragToRow="0" dragToCol="0" dragToPage="0" dragToData="1"/>'),
+  ];
+  const top = pages.length ? pages.length + 4 : 3; // page fields above the table, a blank row between
+  const lines = rowKeys.length ? new Set(rows.map((r) => rowKeys.map((k) => r[k]).join("|"))).size : 1;
+  const width = Math.max(1, rowKeys.length ? 1 : 0) + Math.max(1, measureKeys.length) * Math.max(1, colKeys.length ? new Set(rows.map((r) => colKeys.map((k) => r[k]).join("|"))).size : 1);
+  const pivotTable = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<pivotTableDefinition ${NS} name="${esc(`Pivot${n}`)}" cacheId="${n}" applyNumberFormats="0" applyBorderFormats="0" applyFontFormats="0" applyPatternFormats="0" applyAlignmentFormats="0" applyWidthHeightFormats="1" dataCaption="Values" updatedVersion="8" minRefreshableVersion="3" useAutoFormatting="1" itemPrintTitles="1" createdVersion="8" indent="0" outline="1" outlineData="1" multipleFieldFilters="0" fieldListSortAscending="1"><location ref="A${top}:${col(width - 1)}${top + lines + (cols.length ? 2 : 1)}" firstHeaderRow="1" firstDataRow="${cols.length ? 2 : 1}" firstDataCol="1"${pages.length ? ` rowPageCount="${pages.length}" colPageCount="1"` : ""}/><pivotFields count="${pivotFields.length}">${pivotFields.join("")}</pivotFields>${
+    rowKeys.length ? `<rowFields count="${rowKeys.length}">${rowKeys.map((k) => `<field x="${fieldNo(k)}"/>`).join("")}</rowFields><rowItems count="1"><i t="grand"><x/></i></rowItems>` : ""
+  }${cols.length ? `<colFields count="${cols.length}">${cols.map((x) => `<field x="${x}"/>`).join("")}</colFields>` : ""}<colItems count="1"><i/></colItems>${pages.length ? `<pageFields count="${pages.length}">${pages.join("")}</pageFields>` : ""}<dataFields count="${measureKeys.length}">${measureKeys.map((m) => `<dataField fld="${measureNo(m)}" baseField="0" baseItem="0"/>`).join("")}</dataFields><pivotTableStyleInfo name="PivotStyleMedium2" showRowHeaders="1" showColHeaders="1" showRowStripes="0" showColStripes="0" showLastColumn="1"/><pivotHierarchies count="${pivotHierarchies.length}">${pivotHierarchies.join("")}</pivotHierarchies>${
+    rowKeys.length ? `<rowHierarchiesUsage count="${rowKeys.length}">${rowKeys.map((k) => `<rowHierarchyUsage hierarchyUsage="${fieldNo(k)}"/>`).join("")}</rowHierarchiesUsage>` : ""
+  }${cols.length ? `<colHierarchiesUsage count="${cols.length}">${cols.map((x) => `<colHierarchyUsage hierarchyUsage="${x}"/>`).join("")}</colHierarchiesUsage>` : ""}</pivotTableDefinition>`;
+  const connectionXml = `<connection id="${n}" keepAlive="1" name="${esc(`Power BI — ${model} — ${name}`)}" description="${esc(`${name} (Hub)`)}" type="5" refreshedVersion="8" background="1"><dbPr connection="${esc(connection)}" command="Model" commandType="1"/><olapPr sendLocale="1" rowDrillCount="1000"/></connection>`;
+  // The figures already read, in the PivotTable's cells (and its filters above it).
+  const laid = pivot(spec, rows);
+  const grid = [[laid.rowLabels.join(" / ") || "", ...laid.head.map((h) => h.label)], ...laid.lines.map((l) => [l.labels.join(" / "), ...laid.head.map((h) => l.cells.get(h.id))])];
+  const filterRows = pageKeys.map((k, i) => `<row r="${i + 3}">${cell(k, `A${i + 3}`)}${cell(membersOf(k).length === 1 ? membersOf(k)[0] : "(Multiple Items)", `B${i + 3}`)}</row>`);
+  const sheet = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet ${NS}><sheetData><row r="1">${cell(note ? `${name} — ${note}` : name, "A1")}</row>${filterRows.join("")}${grid.map((line, i) => `<row r="${i + top}">${line.map((v, j) => cell(v, `${col(j)}${i + top}`)).join("")}</row>`).join("")}</sheetData></worksheet>`;
+  return { cache, pivotTable, connectionXml, sheet, anchor: `$A$${top}` };
+}
 
 /** The parts of one pivot (n from 1): its data sheet, table, query table, connection, cache, records, PivotTable and sheet. */
 function pivotParts(n: number, { name, spec, rows, dax, connection, model, note }: PivotPart) {
@@ -119,21 +250,91 @@ function pivotParts(n: number, { name, spec, rows, dax, connection, model, note 
   return { dataSheet, tableXml, queryTable, connectionXml, cache, records, pivotTable, sheet, table, last: `$${col(keys.length - 1)}$${rows.length + 1}` };
 }
 
-/** A calc sheet's formula for Excel: GETPIVOTDATA's sheet name becomes a cell of that sheet's PivotTable; ";" separators become ",". */
-const excelFormula = (formula: string) =>
-  formula
-    .replace(/GETPIVOTDATA\(\s*("(?:[^"]|"")*")\s*[,;]\s*"((?:[^"]|"")*)"/gi, (_, value: string, sheet: string) => `GETPIVOTDATA(${value},'${sheet.replace(/""/g, '"').replace(/'/g, "''")}'!$A$3`)
-    .replace(/;(?=(?:[^"]*"[^"]*")*[^"]*$)/g, ",");
+/** Where a pivot's PivotTable starts, and its model names when it is on the model (GETPIVOTDATA's arguments). */
+type Anchor = { anchor: string; olap?: Olap };
+
+/** The arguments of a call, split at the top-level separators (strings and parentheses kept whole). */
+function splitArgs(text: string) {
+  const args: string[] = [];
+  let depth = 0;
+  let inString = false;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') inString = !inString;
+    else if (inString) continue;
+    else if (c === "(") depth++;
+    else if (c === ")") depth--;
+    else if ((c === "," || c === ";") && depth === 0) {
+      args.push(text.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  return [...args, text.slice(start).trim()];
+}
+
+/** The end of the call starting at `open` (its "("): the index of its ")". */
+function closing(text: string, open: number) {
+  let depth = 0;
+  let inString = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') inString = !inString;
+    else if (inString) continue;
+    else if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+const literal = (arg: string) => arg.match(/^"((?:[^"]|"")*)"$/)?.[1].replace(/""/g, '"');
+const quote = (s: string) => `"${s.replace(/"/g, '""')}"`;
+
+/**
+ * A calc sheet's formula for Excel: GETPIVOTDATA's sheet name becomes the first cell of that sheet's
+ * PivotTable; on a pivot on the model, the value and fields become the model's names and each item its
+ * member ("[Zone].[ZoneCode].&[" & A2 & "]"), as Excel writes it for an OLAP PivotTable. ";" become ",".
+ */
+export function excelFormula(formula: string, pivots: Map<string, Anchor> = new Map()) {
+  let out = "";
+  let rest = formula;
+  for (let m = rest.match(/GETPIVOTDATA\s*\(/i); m; m = rest.match(/GETPIVOTDATA\s*\(/i)) {
+    const open = m.index! + m[0].length - 1;
+    const end = closing(rest, open);
+    if (end < 0) break;
+    const args = splitArgs(rest.slice(open + 1, end)).map((a) => excelFormula(a, pivots));
+    const sheet = literal(args[1] ?? "");
+    const target = sheet !== undefined ? pivots.get(sheet) : undefined;
+    if (target && sheet !== undefined) {
+      const value = literal(args[0]) ?? "";
+      const measure = target.olap && [...target.olap.measures].find(([k]) => k.toLowerCase() === value.toLowerCase())?.[1];
+      const pairs: string[] = [];
+      for (let i = 2; i + 1 < args.length; i += 2) {
+        const field = literal(args[i]) ?? "";
+        const hierarchy = target.olap && [...target.olap.hierarchies].find(([k]) => k.toLowerCase() === resultName(field).toLowerCase())?.[1];
+        if (!hierarchy) pairs.push(args[i], args[i + 1]);
+        else {
+          const item = literal(args[i + 1]);
+          pairs.push(quote(hierarchy), item !== undefined ? quote(`${hierarchy}.&[${item.replace(/\]/g, "]]")}]`) : `${quote(`${hierarchy}.&[`)}&${args[i + 1]}&"]"`);
+        }
+      }
+      args.splice(0, args.length, measure ? quote(measure) : args[0], `'${sheet.replace(/'/g, "''")}'!${target.anchor}`, ...pairs);
+    }
+    out += `${rest.slice(0, m.index)}GETPIVOTDATA(${args.join(",")})`;
+    rest = rest.slice(end + 1);
+  }
+  return (out + rest).replace(/;(?=(?:[^"]*"[^"]*")*[^"]*$)/g, ",");
+}
 
 /** A calculation sheet: its cells, formulas with their computed value (shown before Excel recalculates). */
-function calcSheetXml(sheet: CalcSheet, results: Result[][] | undefined) {
+function calcSheetXml(sheet: CalcSheet, results: Result[][] | undefined, pivots: Map<string, Anchor>) {
   const rows = sheet.cells.map((line, r) =>
     `<row r="${r + 1}">${line
       .map((raw, c) => {
         const ref = `${col(c)}${r + 1}`;
         if (!raw.trim().startsWith("=")) return cell(/^-?\d+(\.\d+)?$/.test(raw.trim()) ? Number(raw) : raw, ref);
         const v = results?.[r]?.[c]?.value;
-        const f = `<f>${esc(excelFormula(raw.trim().slice(1)))}</f>`;
+        const f = `<f>${esc(excelFormula(raw.trim().slice(1), pivots))}</f>`;
         return isNumber(v) ? `<c r="${ref}">${f}<v>${v}</v></c>` : typeof v === "boolean" ? `<c r="${ref}" t="b">${f}<v>${v ? 1 : 0}</v></c>` : `<c r="${ref}" t="str">${f}<v>${esc(v ?? "")}</v></c>`;
       })
       .join("")}</row>`,
@@ -169,32 +370,38 @@ export async function researchWorkbook(sheets: ({ kind: "pivot"; part: PivotPart
     return sheetNo;
   };
   const pivots = sheets.flatMap((s, i) => (s.kind === "pivot" ? [{ n: sheets.slice(0, i + 1).filter((x) => x.kind === "pivot").length, part: s.part }] : []));
-  const parts = new Map(pivots.map(({ n, part }) => [n, pivotParts(n, part)]));
+  // On the model when Excel can build it there; otherwise on a table of its query.
+  const olaps = new Map(pivots.map(({ n, part }) => [n, olapOf(part.spec, part.info)]));
+  const onModel = new Map(pivots.flatMap(({ n, part }) => (olaps.get(n) ? [[n, olapParts(n, part, olaps.get(n)!)]] : [])));
+  const onTable = new Map(pivots.flatMap(({ n, part }) => (olaps.get(n) ? [] : [[n, pivotParts(n, part)]])));
+  const anchors = new Map<string, Anchor>(pivots.map(({ n, part }) => [part.name, { anchor: onModel.get(n)?.anchor ?? "$A$3", olap: olaps.get(n) }]));
   // The visible sheets first, in order.
   for (const s of sheets) {
     if (s.kind === "calc") {
-      addSheet(s.sheet.name, calcSheetXml(s.sheet, results.get(s.sheet.name)));
+      addSheet(s.sheet.name, calcSheetXml(s.sheet, results.get(s.sheet.name), anchors));
       continue;
     }
     const n = pivots.find((p) => p.part === s.part)!.n;
-    const p = parts.get(n)!;
+    const p = onModel.get(n) ?? onTable.get(n)!;
     addSheet(s.part.name, p.sheet, [["rId1", "pivotTable", `../pivotTables/pivotTable${n}.xml`]]);
     zip.file(`xl/pivotTables/pivotTable${n}.xml`, p.pivotTable);
     zip.file(`xl/pivotTables/_rels/pivotTable${n}.xml.rels`, rel([["rId1", "pivotCacheDefinition", `../pivotCache/pivotCacheDefinition${n}.xml`]]));
     zip.file(`xl/pivotCache/pivotCacheDefinition${n}.xml`, p.cache);
-    zip.file(`xl/pivotCache/_rels/pivotCacheDefinition${n}.xml.rels`, rel([["rId1", "pivotCacheRecords", `pivotCacheRecords${n}.xml`]]));
-    zip.file(`xl/pivotCache/pivotCacheRecords${n}.xml`, p.records);
     workbookRels.push([`rIdC${n}`, "pivotCacheDefinition", `pivotCache/pivotCacheDefinition${n}.xml`]);
     caches.push(`<pivotCache cacheId="${n}" r:id="rIdC${n}"/>`);
-    overrides.push(
-      `<Override PartName="/xl/pivotTables/pivotTable${n}.xml" ContentType="${ct}.pivotTable+xml"/>`,
-      `<Override PartName="/xl/pivotCache/pivotCacheDefinition${n}.xml" ContentType="${ct}.pivotCacheDefinition+xml"/>`,
-      `<Override PartName="/xl/pivotCache/pivotCacheRecords${n}.xml" ContentType="${ct}.pivotCacheRecords+xml"/>`,
-    );
+    overrides.push(`<Override PartName="/xl/pivotTables/pivotTable${n}.xml" ContentType="${ct}.pivotTable+xml"/>`, `<Override PartName="/xl/pivotCache/pivotCacheDefinition${n}.xml" ContentType="${ct}.pivotCacheDefinition+xml"/>`);
+    if (onModel.has(n)) {
+      connections.push(onModel.get(n)!.connectionXml);
+      continue;
+    }
+    zip.file(`xl/pivotCache/_rels/pivotCacheDefinition${n}.xml.rels`, rel([["rId1", "pivotCacheRecords", `pivotCacheRecords${n}.xml`]]));
+    zip.file(`xl/pivotCache/pivotCacheRecords${n}.xml`, onTable.get(n)!.records);
+    overrides.push(`<Override PartName="/xl/pivotCache/pivotCacheRecords${n}.xml" ContentType="${ct}.pivotCacheRecords+xml"/>`);
   }
-  // Then each pivot's connected data.
+  // Then the connected data of each pivot on a table.
   for (const { n, part } of pivots) {
-    const p = parts.get(n)!;
+    const p = onTable.get(n);
+    if (!p) continue;
     const index = addSheet(`${part.name.slice(0, 25)} data`, p.dataSheet, [["rId1", "table", `../tables/table${n}.xml`]]);
     zip.file(`xl/tables/table${n}.xml`, p.tableXml);
     zip.file(`xl/tables/_rels/table${n}.xml.rels`, rel([["rId1", "queryTable", `../queryTables/queryTable${n}.xml`]]));
@@ -205,7 +412,7 @@ export async function researchWorkbook(sheets: ({ kind: "pivot"; part: PivotPart
   }
   if (connections.length) {
     zip.file("xl/connections.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<connections ${NS}>${connections.join("")}</connections>`);
+<connections ${NS}>${connections.sort((a, b) => Number(a.match(/id="(\d+)"/)![1]) - Number(b.match(/id="(\d+)"/)![1])).join("")}</connections>`);
     overrides.push(`<Override PartName="/xl/connections.xml" ContentType="${ct}.connections+xml"/>`);
     workbookRels.push(["rIdX", "connections", "connections.xml"]);
   }

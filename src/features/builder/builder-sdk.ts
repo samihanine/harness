@@ -219,12 +219,19 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
     }),
     tool({
       name: "set_visual_fields",
-      description: "Replaces the fields of roles of a visual (others kept; an empty list empties the role).",
-      args: z.object({ visual: z.string(), page: z.string().optional(), fields: fieldsArg }),
-      run: async ({ visual, page, fields }) => {
+      description: 'Changes a visual in place: "type" turns it into another type, its fields kept (e.g. hundredPercentStackedColumnChart → columnChart, a 100 % chart into a stacked one); "fields" replaces the fields of roles (others kept; an empty list empties the role).',
+      args: z.object({ visual: z.string(), page: z.string().optional(), type: z.string().optional().describe("New visual type (types of create_visual)"), fields: fieldsArg.optional() }),
+      run: async ({ visual, page, type, fields }) => {
+        if (!type && !fields) throw new Error('Give "type" (to change the visual\'s type) and/or "fields".');
+        if (type && !ROLES[type]) throw new Error(`Unknown type "${type}". Types: ${Object.keys(ROLES).join(", ")}.`);
         const v = await visualOf(visual, page);
-        await setFields(v, fitRoles(v.type, fields)!);
-        return "Fields set.";
+        const before = v.type;
+        if (type && type !== v.type) await v.changeType(type);
+        if (fields) await setFields(v, fitRoles(type ?? v.type, fields)!);
+        // Read back: the editor says what the visual is now.
+        const now = (await visualOf(v.name, page)).type;
+        if (type && now !== type) throw new Error(`The editor kept the visual a ${now} (asked: ${type}). Create a ${type} with the same fields and delete this one.`);
+        return [type && `Type: ${before} → ${now}.`, fields && "Fields set."].filter(Boolean).join(" ");
       },
     }),
     tool({

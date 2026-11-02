@@ -48,8 +48,11 @@ export function readResearch(r: Partial<ResearchEntry> & { id: string; name: str
 /** A field's name in a query result ('T'[col] → col). */
 export const resultName = (field: string) => field.match(/\[([^\]]+)\]\s*$/)?.[1] ?? field;
 
+/** The filters that filter: a list of values with none yet (just added in the fields pane) is left out. */
+export const activeFilters = (filters: FilterSpec[]) => filters.filter((f) => !["in", "not_in"].includes(f.op ?? "in") || f.values?.length);
+
 /** The DAX of a pivot: its rows and columns grouped, its values computed, its filters applied. */
-export const pivotDax = (spec: PivotSpec, info: ModelInfo | undefined) => queryDax({ values: spec.values, group_by: [...spec.rows, ...spec.columns], filters: spec.filters }, info);
+export const pivotDax = (spec: PivotSpec, info: ModelInfo | undefined) => queryDax({ values: spec.values, group_by: [...spec.rows, ...spec.columns], filters: activeFilters(spec.filters) }, info);
 
 /** The DAX a data sheet runs (a chart of an older canvas: its own query). */
 export const sheetDax = (sheet: PivotSheet | ChartSheet, info: ModelInfo | undefined) => (sheet.kind === "chart" && !sheet.spec ? sheet.dax ?? "" : pivotDax(sheet.spec!, info));
