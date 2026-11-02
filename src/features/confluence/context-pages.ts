@@ -50,7 +50,8 @@ export async function refreshPages(ids: string[], force = false) {
     todo.map(async (id): Promise<ContextPage> => {
       fresh.add(id); // tried once per conversation, even when Confluence fails
       try {
-        const p = await readPage(id);
+        // A slow Confluence does not hold the conversation: the copy kept is used.
+        const p = await Promise.race([readPage(id), new Promise<never>((_, j) => setTimeout(() => j(new Error("Confluence did not answer in 3 s")), 3_000))]);
         return { id, title: p.title, text: toMarkdown(p.html).slice(0, MAX_PAGE), at: Date.now() };
       } catch (e) {
         const old = kept()[id];
@@ -64,18 +65,15 @@ export async function refreshPages(ids: string[], force = false) {
 /** A page's title for the lists (the copy kept; its id when never read). */
 export const pageTitle = (id: string) => kept()[id]?.title ?? `Page ${id}`;
 
-/** The linked pages, as one text for the AI (each with its title). Long pages are cut. */
+/** The linked pages, as one text for the AI (each with its title). Each page gets its share of `max`: a long first page does not crowd the others out. */
 export async function contextPagesText(ids: string[], max = 24_000) {
   if (!ids.length) return "";
   await refreshPages(ids);
-  let left = max;
-  return ids
-    .map((id) => kept()[id])
-    .filter((p): p is ContextPage => !!p?.text)
-    .map((p) => {
-      const text = p.text.length > left ? `${p.text.slice(0, Math.max(0, left))}\n…[cut: the contexts are too long]` : p.text;
-      left -= text.length;
-      return `### Context "${p.title}"\n${text}`;
-    })
+  const pages = ids.map((id) => kept()[id]).filter((p): p is ContextPage => !!p?.text);
+  const short = pages.filter((p) => p.text.length <= max / pages.length);
+  // What the short pages leave is shared by the long ones.
+  const share = Math.floor((max - short.reduce((n, p) => n + p.text.length, 0)) / Math.max(1, pages.length - short.length));
+  return pages
+    .map((p) => `### Context "${p.title}"\n${p.text.length > share ? `${p.text.slice(0, share)}\n…[cut: read the page in Confluence for the rest]` : p.text}`)
     .join("\n\n");
 }

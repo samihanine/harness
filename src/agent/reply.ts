@@ -11,7 +11,9 @@ export class ReplyError extends Error {}
 /** Extracts the tool calls of a reply: `{"tools":[{"name","args"}]}` (and a few close variants). */
 export function parseReply(text: string): Call[] {
   const value = parseJson(text);
-  const list = Array.isArray(value)
+  // {"tools": [a], "tools": [b]}: JSON keeps only the last key, every call is taken.
+  const merged = duplicateTools(text);
+  const list = merged ? merged : Array.isArray(value)
     ? value
     : isObject(value) && Array.isArray(value.tools)
       ? value.tools
@@ -32,6 +34,23 @@ export function parseReply(text: string): Call[] {
     if (!isObject(args)) throw new ReplyError(`tools[${index}].args must be an object.`);
     return { name, args };
   });
+}
+
+/** The calls of every "tools" array when a reply repeats the key (undefined when it does not). */
+function duplicateTools(text: string): unknown[] | undefined {
+  const starts = [...text.matchAll(/"tools"\s*:\s*\[/g)].map((m) => m.index! + m[0].length - 1);
+  if (starts.length < 2) return undefined;
+  const lists = starts.map((at) => {
+    const block = outermost(text.slice(at));
+    for (const attempt of [block, repair(block)]) {
+      try {
+        const list = JSON.parse(attempt);
+        if (Array.isArray(list)) return list;
+      } catch {}
+    }
+    return [];
+  });
+  return lists.flat().length ? lists.flat() : undefined;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>

@@ -28,7 +28,7 @@ async function read(ref: Ref, info: ModelInfo) {
       if (!cols.length) return "";
       // Random rows: TOPN ordered by RAND() picks different rows at each read.
       const query = `EVALUATE TOPN(5, SELECTCOLUMNS(${q(t.name)}, ${cols.map((c, i) => `"c${i}", ${q(t.name)}${b(c.name)}`).join(", ")}), RAND())`;
-      const rows = await timeout(dax(ref, query), 10_000).catch(() => undefined);
+      const rows = await timeout(dax(ref, query), 4_000).catch(() => undefined);
       if (!rows?.length) return "";
       const values = cols.map((c, i) => {
         const distinct = [...new Set(rows.map((r) => show(r[`[c${i}]`] ?? r[`c${i}`])).filter(Boolean))].slice(0, 3);
@@ -37,10 +37,11 @@ async function read(ref: Ref, info: ModelInfo) {
       return `- '${t.name}': ${values.filter(Boolean).join("; ")}`;
     }),
   );
-  const measures = info.tables.flatMap((t) => t.measures.filter((m) => !m.hidden)).slice(0, 40);
+  // Totals over all the data are the slow part of the samples: the first measures only.
+  const measures = info.tables.flatMap((t) => t.measures.filter((m) => !m.hidden)).slice(0, 20);
   let totals = "";
   if (measures.length) {
-    const row = await timeout(dax(ref, `EVALUATE ROW(${measures.map((m, i) => `"m${i}", ${b(m.name)}`).join(", ")})`), 10_000).catch(() => undefined);
+    const row = await timeout(dax(ref, `EVALUATE ROW(${measures.map((m, i) => `"m${i}", ${b(m.name)}`).join(", ")})`), 4_000).catch(() => undefined);
     if (row?.[0]) totals = `Measures over all the data: ${measures.map((m, i) => `[${m.name}] = ${show(row[0][`[m${i}]`] ?? row[0][`m${i}`]) || "blank"}`).join("; ")}`;
   }
   const text = ["Examples of the data (random rows; exact values as stored):", ...lines.filter(Boolean), totals].filter(Boolean).join("\n");

@@ -2,7 +2,7 @@
 
 Front-end-only TanStack Router app (Vite SPA) for Power BI work. Every screen is a `Workspace` (`src/components/workspace.tsx`):
 the AI assistant on the left (foldable), a header (screen / chosen item, actions) and tabs on the right.
-Screens: Viewer "Trainer" (Report / Dataset / Context; the guide of the clicked visual is a tab of the AI panel), Builder (Report / Dataset / Measures / Reports), Research "Data Scientist" (Canvas /
+Screens: Viewer "Trainer" (Report / Dataset / Context; the guide of the clicked visual is a tab of the AI panel), Builder (Report / Dataset / Measures / Reports), Research "Data Scientist" (Canvas: the analysis and a workbook /
 Datasets), Reports (Schema / Context), Datasets (Schema / DAX / Context), Excel (Data / Schema /
 Context; hidden by default), Confluence (Edit / Preview / Linked to), Slides "Presenter" (Preview / Edit — slide by slide or the whole deck — / Datasets / Reports), Settings (AI / Power BI / Guides / Slides — the templates — / Performance / Confluence / Mascot / General). Code layout: `docs/structure.md` (features in `src/features/`, backend calls in `src/services/`, every prompt in `src/prompts/`). The home page (`/`, flag `HOME`) shows a card per screen. There is no
 library screen: each screen adds and manages its own items (`EntityPicker`, `EntityMenu`). Run with `bun dev` (app on http://localhost:3300 + the token server on :3301), check with `bun run typecheck`. `bun run export:html` (one HTML file), `bun run export:server` (the token server as one executable).
@@ -56,9 +56,11 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   `src/services/hub-config.ts`). A new option goes into `HubConfig` and the Settings form too. The Settings
   page itself can never be hidden.
 - **Agents** (`src/agent/loop.ts`): one model conversation per chat, with every tool of the screen (the
-  context is sent once, then only what changed). Nothing to change: it reads and answers. Changes: it
-  shows what it will do and asks the user to confirm (`ask_user`: questions with options, shown as
-  buttons in the chat), then acts on the answer; tools that change things are refused until then,
+  context is sent once, then only what changed; it is read ahead when the chat opens, so the first
+  message does not wait for model samples or Confluence). Always EXPLORE (read tools, DAX: names, values,
+  figures), then CLARIFY or CONFIRM (`ask_user`: what was found, questions with the real options, shown
+  as buttons) — never "not possible" on the screen —, then ACT on the answer. On a screen with a model an
+  `ask_user` before any DAX is sent back once; tools that change things are refused until confirmed,
   unless the request is obvious (the model says so with `proceed` in the same reply). Agents whose
   actions are harmless and undone in a click (`direct: true`, e.g. the Viewer's filters and pages) or
   expected without asking (`autoImplement`, the Data Scientist's canvas) act at once. Each screen's
@@ -72,7 +74,11 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   that has a model. One model and a maximum of steps per message (Settings › AI); a long conversation
   is restarted (with the chat as text) so calls stay fast. Model calls failing for a moment (network, invalid completion, 5xx) are sent again; tool arguments written next to the name are accepted; a refused final tool shows in the trace. Failed tool
   calls are kept in IndexedDB (`src/lib/mistakes.ts`) and the latest ones of a screen shown to the AI as
-  mistakes not to repeat (downloadable from Settings). A big model's context details only the tables the
+  mistakes not to repeat (downloadable from Settings): those naming data only in the same scope (another
+  model's names would mislead), a "worked instead" only when the fix is a call about the same thing. A
+  reply repeating its "tools" key keeps every call (`reply.ts`). DAX tools: `op` aliases ("=", "!="),
+  `dataset_id` of the only model accepted, and a query returning no rows says when a filter value does
+  not exist, with the close values that do (`missingValues`). A big model's context details only the tables the
   request is about (`relevantTables`).
 - **Excel tables**: the columns are the table's own, read from its header at each read (`readRows`): the
   app never types, adds or moves columns, so the app and the file never differ. The Schema tab only lists
@@ -86,12 +92,14 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
 - UI: shadcn components (`src/components/ui`, Tailwind v4 tokens in `src/styles.css`, light/dark via
   `src/lib/theme.ts`), `Workspace` / `SubTabs` / `Section` / `Empty`, choices as badges with a dot
   (`Badge` of `field-input.tsx`). Reuse them rather than new styles.
-- **Data Scientist** (`src/features/data-scientist/research.ts`): a canvas — a markdown text (the answer, written there by
-  default) and cards below it, one per row, ONE table or chart each on one model: a pivot (rows, columns, values,
-  filters; DAX written by code) or a chart (recharts, from free DAX); at least one pivot per answer, a full
-  analysis (sub-questions, one card each, Summary / Analysis / Conclusion) for complex questions. No Power BI
-  report. A pivot downloads as Excel (`pivot-excel.ts`, written by hand): a table connected to the model
-  (OLE DB, as "Analyze in Excel", running the card's DAX) and a real PivotTable on it.
+- **Data Scientist** (`src/features/data-scientist/research.ts`): the analysis (markdown) on top and a workbook below,
+  shown as a simplified Excel window with its sheets as tabs at the bottom: pivot (rows, columns, values, filters;
+  DAX written by code), chart (a pivot's parameters drawn, recharts) and calc (cells with Excel formulas, computed
+  in the app by `formulas.ts`; pivots read with GETPIVOTDATA, so a figure the models lack is rebuilt in the open).
+  Every request: explored with DAX, confirmed by the user, then at least one pivot answering it (never one for
+  show). Older canvases (cards) become sheets. The workbook downloads as Excel (`pivot-excel.ts`, written by hand):
+  per pivot a "… data" table connected to its model (OLE DB, as "Analyze in Excel", running the sheet's DAX) and a
+  real PivotTable on it; calc sheets keep their formulas (GETPIVOTDATA pointed at the PivotTables, recomputed on open).
 - **Slides** (`src/features/presenter/slides`): a deck is a short JSON `{title, theme, slides: [{template, ...args}]}`;
   each template (`title.tsx`, `agenda.tsx`, `table.tsx`…) has a kind (cover, section — an agenda naming its part —, subsection,
   summary, content, end: the outline and the content pages' header come from them), zod args, an
@@ -122,8 +130,10 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   the Builder's reference reports (Reports tab: inspiration context; `copy_report_page` rebuilds one
   of their pages by structure, `src/features/builder/report-copy.ts`, even when their definition is closed).
 - **Builder formatting**: `style_visual` (`src/features/builder/visual-style.ts`): title, field display names,
-  series colors, text size and color, labels, legend, header colors, frame — a plain spec written by code;
-  `format_visual` for any other property, `set_conditional_format` for colors by value.
+  series colors, text size and color, labels, legend, header colors, frame — a plain spec written by code (its
+  keys also accepted next to "visuals"); `format_visual` for any other property, `set_conditional_format` for
+  colors by value. A role named as another type's ("Values" on a cardVisual) is mapped (`fitRoles`); a visual
+  whose fields are refused is removed, never left half made.
 - **Builder layout**: visuals are created without positions and placed by `layout_page` (rows); free
   positions only when rows cannot say it. The draft is checked by code before it is saved
   (`draftProblems`: overlaps, out of the page, failing report measures), sent back to the AI once.

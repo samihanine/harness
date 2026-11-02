@@ -561,8 +561,10 @@ export function editorTools(ctx: Ctx, save: () => Promise<unknown>): Tool[] {
     tool({
       name: "style_visual",
       description: "The look of one or several visuals in one call, plain values: title (text, size, color, bold, align), field display names (rename), series colors, content text size and color, data labels, legend, table header colors, frame (background, border, radius). Only what is given changes. Conditional colors (by value, rules): set_conditional_format.",
-      args: z.object({ visuals: z.array(z.string()).describe("Visual names (ids) or titles"), page: pageArg, style: styleSpec }),
-      run: async ({ visuals, page, style }) => {
+      // The style's keys written next to "visuals" (weak models do) are taken as the style.
+      args: z.object({ visuals: z.array(z.string()).describe("Visual names (ids) or titles"), page: pageArg, style: styleSpec.optional() }).loose(),
+      run: async ({ visuals, page, style: given, ...rest }) => {
+        const style = given ?? styleSpec.parse(rest);
         const targets = await Promise.all(visuals.map((v) => visualOf(v, page)));
         // Every visual checked before any is changed.
         const planned = targets.map(({ visual: v }) => ({ v, ...styleOps(v.json, style) }));

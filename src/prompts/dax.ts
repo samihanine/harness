@@ -6,7 +6,10 @@ export const DAX_RULES = `DAX rules (follow them, queries fail otherwise):
 - Use ONLY tables, columns and measures that exist, with their exact names copied from the model (context, describe_table). Never guess, shorten or translate a name. Not sure a column exists or in which table it is? search_model first.
 - Syntax: 'Table'[Column], [Measure], text in "double quotes". Count rows with COUNTROWS('Table') or an existing measure.
 - Grouping: SUMMARIZECOLUMNS('T'[a], 'T'[b], "Label", [Measure]). A plain list of value pairs of ONE table: DISTINCT(SELECTCOLUMNS('T', "A", 'T'[a], "B", 'T'[b])). Columns of two tables together only if they are related (see the relationships).
-- ORDER BY only columns of the result. Count the parentheses before sending.
+- ORDER BY (and TOPN's order) only by columns of the result. Count the parentheses before sending.
+- Values of a filter (a week, a region, a code): read how they are written first — EVALUATE TOPN(20, VALUES('T'[col])) or a CONTAINSSTRING filter on that column — never guess a format ("202644" vs "2026-W44"). Read one column, never a whole table (EVALUATE 'Table' wastes the result). "Last week", "this month": the offset columns of the calendar when it has them (e.g. WeekOffset = -1), then check which label that is.
+- A row with a blank label is the data without that attribute (unassigned), not a total: say so, never call it the total.
+- A query returning no rows: a filter value does not exist or there is no data for it — check the value before concluding.
 - Plain figures (values by groups, filtered, top N): the query tool writes the DAX for you. Raw DAX (run_dax) for the rest: time intelligence, filters on a measure, calculations.
 - Limits of the app (to keep the models fast for everyone): a query returns at most a fixed number of rows (more are cut, the result says so) and is stopped after a few seconds. Aggregate (SUMMARIZECOLUMNS, TOPN) rather than reading raw rows; to know how many rows a query would return, EVALUATE ROW("n", COUNTROWS(<its table expression>)) first.
 - Names written by the user (a pasted table, a screenshot, a column header of a report) are labels, not model names: find the model's real measure or column (context, search_model) before using it.

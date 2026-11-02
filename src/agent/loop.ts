@@ -19,7 +19,7 @@ import { AiAuthError, openSession, type Session } from "./llm";
 import { ReplyError, parseReply } from "./reply";
 import { LEARN_FROM_MISTAKES } from "@/config";
 import { contextRound } from "@/features/confluence/context-pages";
-import { addMistakes, mistakesText, type Mistake } from "@/lib/mistakes";
+import { addMistakes, alike, mistakesText, type Mistake } from "@/lib/mistakes";
 import { settings } from "@/lib/store";
 import { AGENT, DIRECT, NOTES, PROTOCOL } from "@/prompts/agent";
 
@@ -149,6 +149,8 @@ const format = (tools: Tool[], now: string) =>
 Now: ${now}`,
   );
 const TERMINALS = new Set(["answer", "ask_user"]);
+/** The tools that read a model's data: a request is explored with them before the user is asked. */
+const DATA_READS = new Set(["run_dax", "query"]);
 /** A request asking for an answer in the chat only (autoImplement screens otherwise answer on the screen). */
 const CHAT_ONLY = /\b(in|dans) (the |le )?chat\b|\bjuste (me )?(dire|répondre)|\bjust (tell|answer)\b/i;
 
@@ -307,7 +309,7 @@ function mistakesOf(turn: Turn, scope: string): Mistake[] {
   return [
     ...turn.steps.flatMap((s, i) => {
       if (!s.error) return [];
-      const fix = turn.steps.slice(i + 1).find((t) => t.name === s.name && !t.error);
+      const fix = turn.steps.slice(i + 1).find((t) => t.name === s.name && !t.error && alike(args(s), args(t)));
       return [{ at, scope, tool: s.name, args: args(s), error: String(s.result ?? "").slice(0, 500), fix: fix && args(fix) }];
     }),
     ...(turn.invalid ?? []).map((error) => ({ at, scope, tool: "(reply)", args: "", error })),
@@ -341,7 +343,7 @@ export async function* runTurn(args: {
   }
 }
 
-async function* turnOf({ agent, model, conversationId, history, request, answering, signal }: TurnArgs, turn: Turn): AsyncGenerator<Update> {
+async function* turnOf({ agent, model, conversationId, history, request, answering, signal, scope }: TurnArgs, turn: Turn): AsyncGenerator<Update> {
   contextRound(conversationId);
   if (!answering || !focusOf.has(conversationId)) focusOf.set(conversationId, request);
   const focus = focusOf.get(conversationId);
@@ -372,14 +374,15 @@ async function* turnOf({ agent, model, conversationId, history, request, answeri
   };
 
   const asking = !agent.direct;
-  const tools = [...agent.tools, ...(asking ? [PROCEED, ASK_USER] : []), ANSWER];
+  // proceed only where changes wait for a confirmation (an agent acting at once has nothing to skip).
+  const tools = [...agent.tools, ...(asking ? [...(agent.autoImplement ? [] : [PROCEED]), ASK_USER] : []), ANSWER];
   let conv = live.get(conversationId);
   if (conv && (conv.model !== model || conv.session.chars > LIMITS.sessionChars)) conv = undefined;
   const fresh = !conv;
   if (!conv) live.set(conversationId, (conv = { session: openSession(model, "agent", conversationId), model }));
   const current = conv;
   // Past mistakes of this screen's tools: shown once to each new conversation, as examples not to follow.
-  const mistakes = fresh && LEARN_FROM_MISTAKES ? await mistakesText(agent.tools.map((t) => t.name)) : "";
+  const mistakes = fresh && LEARN_FROM_MISTAKES ? await mistakesText(agent.tools.map((t) => t.name), scope) : "";
   const now = yield* readShown("Reading what you see");
   // Changes need the user's agreement, unless the screen acts without asking or the user just answered.
   let confirmed = !asking || !!agent.autoImplement || answering;
@@ -400,6 +403,7 @@ async function* turnOf({ agent, model, conversationId, history, request, answeri
   let ended: Ended = { giveUp: "" };
   let note: string | undefined;
   let saveRetried = false;
+  let explorePushed = false;
   try {
     for (;;) {
       ended = yield* drive({
@@ -420,6 +424,11 @@ async function* turnOf({ agent, model, conversationId, history, request, answeri
           return confirmed ? undefined : NOTES.notConfirmed;
         },
         refuse: (name) => {
+          // On a screen with a model, a question to the user comes after exploring the data (sent back once).
+          if (name === "ask_user" && !answering && !explorePushed && tools.some((t) => DATA_READS.has(t.name)) && !turn.steps.some((st) => DATA_READS.has(st.name))) {
+            explorePushed = true;
+            return NOTES.exploreFirst;
+          }
           if (name !== "answer" || CHAT_ONLY.test(request)) return undefined;
           // Its answers are written on the screen (e.g. the canvas): the chat only when the user asks for it.
           if (agent.answerOnScreen && !changedSteps().length) return NOTES.answerOnScreen;

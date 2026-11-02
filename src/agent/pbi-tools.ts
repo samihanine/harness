@@ -2,7 +2,7 @@
 import { z } from "zod";
 import { basicFilter, checkValues, columnValues, dax, findVisual, models, rowsText, settled, visualText, type Ref, type Report } from "@/services/pbi";
 import { checkName, type ModelInfo } from "@/services/model";
-import { QUERY_HELP, queryDax, type DefinedMeasure } from "@/lib/query-spec";
+import { QUERY_HELP, filterChecks, queryDax, type DefinedMeasure, type QuerySpec } from "@/lib/query-spec";
 import { tool, type Tool } from "./loop";
 import { PERFORMANCE } from "@/config";
 import { find } from "@/lib/store";
@@ -50,9 +50,7 @@ export const daxTool = (dataset: () => Ref | undefined, several?: () => (Ref & {
     args: z.object({ query: z.string().describe("DAX query starting with EVALUATE (or DEFINE)"), dataset_id: z.string().optional().describe("Model id (when there are several)") }),
     readOnly: true,
     run: async ({ query, dataset_id }) => {
-      const list = several?.() ?? [];
-      const ref = dataset_id ? list.find((d) => d.id === dataset_id || d.name === dataset_id) : (dataset() ?? (list.length === 1 ? list[0] : undefined));
-      if (!ref) throw new Error(list.length ? `Give dataset_id: one of ${list.map((d) => `${d.id} (${d.name})`).join(", ")}.` : "No semantic model selected.");
+      const ref = pickModel(dataset_id, dataset(), several?.() ?? []);
       try {
         return rowsText(await dax(ref, defined ? withDefined(query, await defined(ref)) : query));
       } catch (error) {
@@ -61,13 +59,45 @@ export const daxTool = (dataset: () => Ref | undefined, several?: () => (Ref & {
     },
   });
 
+/**
+ * The model a DAX tool runs on: the one named (id or name), else the screen's, else the only one. A
+ * dataset_id given on a screen with one model is that model (weak models always pass one).
+ */
+function pickModel<M extends Ref & { name?: string }>(id: string | undefined, current: M | undefined, list: M[]): M {
+  const all = [...list, ...(current && !list.some((d) => d.id === current.id) ? [current] : [])];
+  const named = id ? all.find((d) => d.id === id || d.name === id) : undefined;
+  const ref = named ?? current ?? (all.length === 1 ? all[0] : undefined);
+  if (!ref) throw new Error(all.length ? `Give dataset_id: one of ${all.map((d) => `${d.id} (${d.name ?? ""})`).join(", ")}.` : "No semantic model selected.");
+  return ref;
+}
+
+/** Why a query returned nothing, when a filter asks for values its column does not have: the close values that exist. */
+export async function missingValues(model: Ref, spec: QuerySpec, info: ModelInfo | undefined) {
+  const notes: string[] = [];
+  for (const check of filterChecks(spec, info).slice(0, 3)) {
+    const found = await dax(model, check.exists).catch(() => undefined);
+    const n = Number(Object.values(found?.[0] ?? {})[0] ?? 0);
+    if (!found || n > 0) continue;
+    const near = await dax(model, check.near).catch(() => []);
+    const examples = near.map((r) => Object.values(r)[0]).filter((v) => v !== null && v !== "");
+    notes.push(`${check.values.map((v) => JSON.stringify(v)).join(", ")} ${check.values.length > 1 ? "do" : "does"} not exist in ${check.field}${examples.length ? `; values like it: ${examples.map((v) => JSON.stringify(v)).join(", ")}` : ""}.`);
+  }
+  return notes.length ? `\nNo rows because a filter value does not exist: ${notes.join(" ")} Use the exact values.` : "";
+}
+
+/** Filter operators, with the spellings weak models use ("=", "!=", "like"). */
+export const filterOp = z.preprocess(
+  (v) => (typeof v === "string" ? ({ "=": "in", "==": "in", eq: "in", equals: "in", "!=": "not_in", "<>": "not_in", not_in: "not_in", notin: "not_in", like: "contains" } as Record<string, string>)[v.toLowerCase().trim()] ?? v : v),
+  z.enum(["in", "not_in", ">", ">=", "<", "<=", "between", "contains"]),
+);
+
 const scalar = z.union([z.string(), z.number(), z.boolean()]);
 /** A list given as one value, or as "a, b" (weak models do both). */
 const list = z.preprocess((v) => (typeof v === "string" ? v.split(/,(?![^[]*\])/).map((x) => x.trim()).filter(Boolean) : v), z.array(z.string()));
 export const querySpecArgs = {
   values: list.default([]).describe("Measures [M] (model or report measures) or Sum('T'[col]) / Avg / Count / DistinctCount / Min / Max"),
   group_by: list.optional().describe("Columns 'T'[col] to group by (rows of the result)"),
-  filters: z.array(z.object({ field: z.string().describe("A column 'T'[col]"), op: z.enum(["in", "not_in", ">", ">=", "<", "<=", "between", "contains"]).optional().describe("Default in"), values: z.preprocess((v) => (v === undefined || Array.isArray(v) ? v : [v]), z.array(scalar)).optional().describe("in / not_in: the values (dates YYYY-MM-DD)"), value: z.union([z.string(), z.number()]).optional(), to: z.union([z.string(), z.number()]).optional().describe("between: the upper bound") })).optional(),
+  filters: z.array(z.object({ field: z.string().describe("A column 'T'[col]"), op: filterOp.optional().describe("Default in"), values: z.preprocess((v) => (v === undefined || Array.isArray(v) ? v : [v]), z.array(scalar)).optional().describe("in / not_in: the values (dates YYYY-MM-DD)"), value: z.union([z.string(), z.number()]).optional(), to: z.union([z.string(), z.number()]).optional().describe("between: the upper bound") })).optional(),
   top: z.object({ count: z.number(), by: z.string().optional().describe("A value of the result (default: the first)"), ascending: z.boolean().optional().describe("true: the bottom N") }).optional(),
   order_by: z.array(z.object({ field: z.string(), descending: z.boolean().optional() })).optional(),
 };
@@ -83,12 +113,11 @@ export const queryTool = (dataset: () => (Ref & { info?: ModelInfo }) | undefine
     args: z.object({ ...querySpecArgs, ...(several ? { dataset_id: z.string().optional().describe("Model id (when there are several)") } : {}) }),
     readOnly: true,
     run: async ({ dataset_id, ...spec }: any) => {
-      const list = several?.() ?? [];
-      const d = dataset_id ? list.find((x) => x.id === dataset_id || x.name === dataset_id) : (dataset() ?? (list.length === 1 ? list[0] : undefined));
-      if (!d) throw new Error(list.length ? `Give dataset_id: one of ${list.map((x) => `${x.id} (${x.name})`).join(", ")}.` : "No semantic model selected.");
+      const d = pickModel(dataset_id, dataset(), several?.() ?? []);
       const query = queryDax(spec, d.info, (await defined?.(d)) ?? []);
       try {
-        return `${rowsText(await dax(d, query))}
+        const rows = await dax(d, query);
+        return `${rowsText(rows)}${rows.length ? "" : await missingValues(d, spec, d.info)}
 
 DAX used:
 ${query}`;

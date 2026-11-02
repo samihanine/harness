@@ -92,8 +92,8 @@ export const LIVE_SCENARIOS: Scenario[] = [
       return [
         ...expect(r.text.length > 80, "no answer in the canvas text"),
         ...expect(/cat[ée]gor/i.test(r.text) && /marge|canal/i.test(r.text), "the text does not answer both questions"),
-        ...expect(r.cards.some((c) => c.kind === "pivot"), "no pivot justifying the answer"),
-        ...r.cards.flatMap((c) => (c.error || !c.rows?.length ? [`card "${c.title}": ${c.error ?? "no rows"}`] : [])),
+        ...expect(r.sheets.some((c) => c.kind === "pivot"), "no pivot justifying the answer"),
+        ...r.sheets.flatMap((c) => (c.kind !== "calc" && (c.error || !c.rows?.length) ? [`sheet "${c.name}": ${c.error ?? "no rows"}`] : [])),
       ];
     },
   },
@@ -111,8 +111,8 @@ export const LIVE_SCENARIOS: Scenario[] = [
       const r = readResearch(peek("researches")[0]) as ResearchEntry;
       return [
         ...expect(r.text.length > 80, "no answer in the canvas text"),
-        ...expect(r.cards.some((c) => c.kind === "pivot"), "no pivot checking the figures"),
-        ...r.cards.flatMap((c) => (c.error || !c.rows?.length ? [`card "${c.title}": ${c.error ?? "no rows"}`] : [])),
+        ...expect(r.sheets.some((c) => c.kind === "pivot"), "no pivot checking the figures"),
+        ...r.sheets.flatMap((c) => (c.kind !== "calc" && (c.error || !c.rows?.length) ? [`sheet "${c.name}": ${c.error ?? "no rows"}`] : [])),
       ];
     },
   },
@@ -183,11 +183,11 @@ export const LIVE_SCENARIOS: Scenario[] = [
     },
     check: async () => {
       const r = readResearch(peek("researches")[0]) as ResearchEntry;
-      const daxOf = (c: ResearchEntry["cards"][number]) => (c.kind === "chart" ? c.dax : JSON.stringify(c.spec));
+      const daxOf = (c: ResearchEntry["sheets"][number]) => (c.kind === "calc" ? JSON.stringify(c.cells) : JSON.stringify(c.spec ?? c.dax));
       return [
-        ...r.cards.flatMap((c) => (c.error || !c.rows?.length ? [`card "${c.title}": ${c.error ?? "no rows"}`] : [])),
-        ...expect(r.cards.some((c) => /Target/i.test(daxOf(c)) && /Region/i.test(daxOf(c))), "no card of regions vs target"),
-        ...expect(r.cards.some((c) => c.kind === "chart"), "no chart for the complete analysis"),
+        ...r.sheets.flatMap((c) => (c.kind !== "calc" && (c.error || !c.rows?.length) ? [`sheet "${c.name}": ${c.error ?? "no rows"}`] : [])),
+        ...expect(r.sheets.some((c) => /Target/i.test(daxOf(c)) && /Region/i.test(daxOf(c))), "no sheet of regions vs target"),
+        ...expect(r.sheets.some((c) => c.kind === "chart"), "no chart for the complete analysis"),
         ...expect(/r[ée]gion/i.test(r.text), "no text naming the regions"),
       ];
     },

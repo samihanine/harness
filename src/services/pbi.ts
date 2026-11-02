@@ -399,15 +399,29 @@ export async function pageText(report: Report, withData = true, dataset?: Ref, p
   // Exporting each visual's data is what takes time: reported visual by visual.
   let done = 0;
   progress?.(0, visuals.length);
-  const parts = await Promise.all(visuals.map((v) => visualText(v, withData, shared(v), dataset).finally(() => progress?.(++done, visuals.length))));
+  const [parts, slicers] = await Promise.all([Promise.all(visuals.map((v) => visualText(v, withData, shared(v), dataset).finally(() => progress?.(++done, visuals.length)))), slicersText(visuals)]);
   return [
     `pages: ${pages.map((p) => `${p.displayName} (name=${p.name}${p.isActive ? ", current" : ""}${p.visibility === 1 ? ", hidden" : ""})`).join(", ")}`,
+    `slicers of the current page (filter with them first): ${slicers.length ? `\n${slicers.join("\n")}` : "none"}`,
     `report filters: ${reportFilters.map(filterText).join("; ") || "none"}`,
     `current page "${page.displayName}" filters: ${pageFilters.map(filterText).join("; ") || "none"}`,
     `visuals on the current page (page ${page.defaultSize?.width ?? 1280}×${page.defaultSize?.height ?? 720}, z = stacking order, higher is in front):`,
     ...parts,
     ...layoutIssues(visuals, page.defaultSize),
   ].join("\n");
+}
+
+/** The page's slicers in short: title, name, field and what is selected now (their options are with each visual). */
+async function slicersText(visuals: Visual[]) {
+  const slicers = visuals.filter((v) => v.type === "slicer" && v.layout.displayState?.mode !== 1);
+  return Promise.all(
+    slicers.map(async (v) => {
+      const state = await v.getSlicerState().catch(() => null);
+      const fields = state?.targets?.map((t) => fieldName(t as never)).join(" > ") ?? "?";
+      const selected = active(state?.filters ?? []);
+      return `- "${v.title ?? ""}" name=${v.name} on ${fields}: ${selected.length ? selected.map(filterText).join("; ") : "nothing selected (all)"}`;
+    }),
+  );
 }
 
 const BACKGROUNDS = ["shape", "basicShape", "image"];

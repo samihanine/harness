@@ -16,7 +16,7 @@ import { DAX_RULES, daxTool, queryTool, viewerTools } from "@/agent/pbi-tools";
 import { resolveField } from "@/services/model";
 import { findVisual, models, pageText, type Report } from "@/services/pbi";
 import type { DatasetEntry, ReportEntry } from "@/lib/store";
-import { ROLES, TYPE_NOTES, roleKey } from "@/features/builder/visual-spec";
+import { ROLES, TYPE_NOTES, fitRoles, roleKey } from "@/features/builder/visual-spec";
 import { BUILDER_EDITOR_INSTRUCTIONS } from "@/prompts/builder";
 import { styleSpec, type StyleSpec } from "./visual-style";
 
@@ -147,7 +147,12 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
     const { visual } = await p.createVisual(type, { ...box, displayState: { mode: 0 } });
     await p.setVisualDisplayState(visual.name, 0).catch(() => undefined);
     const v = findVisual(await p.getVisuals(), visual.name);
-    if (fields) await setFields(v, fields);
+    // A visual whose fields are refused is removed: no half-made "Card" left on the page.
+    if (fields)
+      await setFields(v, fitRoles(type, fields)!).catch(async (e) => {
+        await p.deleteVisual(visual.name).catch(() => undefined);
+        throw new Error(`${e instanceof Error ? e.message : e} Roles of a ${type}: ${(ROLES[type] ?? []).join(", ")}.`);
+      });
     // A titled card would say its field twice (its label is also cut in a short box).
     const style = { ...(title && type === "card" && { categoryLabels: { visible: false } }), ...(given ?? {}), ...(title && { title: { visible: true, titleText: title, ...(given?.title ?? {}) } }) };
     const note = await format(v, style);
@@ -217,7 +222,8 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
       description: "Replaces the fields of roles of a visual (others kept; an empty list empties the role).",
       args: z.object({ visual: z.string(), page: z.string().optional(), fields: fieldsArg }),
       run: async ({ visual, page, fields }) => {
-        await setFields(await visualOf(visual, page), fields);
+        const v = await visualOf(visual, page);
+        await setFields(v, fitRoles(v.type, fields)!);
         return "Fields set.";
       },
     }),
@@ -234,8 +240,10 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
     tool({
       name: "style_visual",
       description: "The look of one or several visuals in one call, plain values: title (text, size, color, bold, align), field display names (rename), frame (background, border, radius), legend. In this mode the inside of charts and tables (series colors, text size, labels, header colors) goes through update_theme \"styles\" (by visual type): what is not reachable is said in the result.",
-      args: z.object({ visuals: z.array(z.string()), page: z.string().optional(), style: styleSpec }),
-      run: async ({ visuals, page, style }) => {
+      // The style's keys written next to "visuals" (weak models do) are taken as the style.
+      args: z.object({ visuals: z.array(z.string()), page: z.string().optional(), style: styleSpec.optional() }).loose(),
+      run: async ({ visuals, page, style: given, ...rest }) => {
+        const style = given ?? styleSpec.parse(rest);
         const notes: string[] = [];
         for (const name of visuals) {
           const v = await visualOf(name, page);

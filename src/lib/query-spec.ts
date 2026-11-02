@@ -93,6 +93,28 @@ function filterOf(f: FilterSpec, info: ModelInfo | undefined) {
   }
 }
 
+/**
+ * For a query that returned nothing: per "in" filter, a query counting its values that exist in the
+ * column, and one listing values close to them (containing their longest word or number) — so the AI
+ * learns that "202644" is written "2026-W44" instead of concluding there is no data.
+ */
+export function filterChecks(spec: QuerySpec, info: ModelInfo | undefined) {
+  return (spec.filters ?? [])
+    .filter((f) => (f.op ?? "in") === "in")
+    .flatMap((f) => {
+      const values = f.values ?? (f.value !== undefined ? [f.value] : []);
+      if (!values.length) return [];
+      const c = columnOf(f.field, info);
+      const token = String(values[0]).match(/[\p{L}\p{N}]+/gu)?.sort((a, b) => b.length - a.length)[0]?.slice(-4) ?? "";
+      return [{
+        field: c.ref,
+        values,
+        exists: `EVALUATE ROW("n", COUNTROWS(FILTER(VALUES(${c.ref}), ${c.ref} IN {${values.map((v) => literal(v, c.type)).join(", ")}})))`,
+        near: token ? `EVALUATE TOPN(8, FILTER(VALUES(${c.ref}), CONTAINSSTRING(${c.ref}, "${token.replace(/"/g, '""')}")))` : `EVALUATE TOPN(8, VALUES(${c.ref}))`,
+      }];
+    });
+}
+
 /** The DAX query of a spec (report measures defined first, all of them: they may use each other). */
 export function queryDax(spec: QuerySpec, info: ModelInfo | undefined, defined: DefinedMeasure[] = []) {
   if (!spec.values?.length && !spec.group_by?.length) throw new Error('Give "values" (measures) and/or "group_by" (columns).');

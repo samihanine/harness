@@ -145,11 +145,27 @@ export const newName = () => Array.from(crypto.getRandomValues(new Uint8Array(10
 const VISUAL_SCHEMA = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.14.0/schema.json";
 const PAGE_SCHEMA = "https://developer.microsoft.com/json-schemas/fabric/item/report/definition/page/2.1.0/schema.json";
 
+/** Role names models use for another one ("Values" on a cardVisual, whose role is "Data"; "Axis", "Legend" of the old editor). */
+const ROLE_ALIASES: Record<string, string[]> = { Values: ["Data", "Y"], Data: ["Values"], Value: ["Values", "Data", "Y"], Y: ["Values"], Axis: ["Category", "Rows"], Legend: ["Series", "Columns"], Category: ["Rows"], Rows: ["Category"] };
+
+/** The fields with their roles as the visual type names them: a wrong role goes to its usual equivalent, or to the type's only role. */
+export function fitRoles(type: string, fields: Record<string, string[]> | undefined) {
+  const roles = ROLES[type];
+  if (!roles || !fields) return fields;
+  return Object.fromEntries(
+    Object.entries(fields).map(([role, list]) => {
+      if (roles.includes(role)) return [role, list];
+      const to = ROLE_ALIASES[role]?.find((r) => roles.includes(r) && !(r in fields)) ?? (roles.length === 1 ? roles[0] : undefined);
+      return [to ?? role, list];
+    }),
+  );
+}
+
 /** visual.json of a spec; `schema` = the $schema the report's other visuals use (same version). */
 export function buildVisual(spec: VisualSpec, name: string, z: number, info: ModelInfo | undefined, extension: ReportMeasures, schema = VISUAL_SCHEMA) {
   const roles = ROLES[spec.type];
   if (!roles) throw new Error(`Visual type "${spec.type}" is not built by create_visual. Types: ${Object.keys(ROLES).join(", ")} (${TYPE_NOTES}).`);
-  const given = Object.entries(spec.fields ?? {}).filter(([, list]) => list?.length);
+  const given = Object.entries(fitRoles(spec.type, spec.fields) ?? {}).filter(([, list]) => list?.length);
   const wrong = given.map(([role]) => role).filter((r) => !roles.includes(r));
   if (wrong.length) throw new Error(`A ${spec.type} has no role ${wrong.join(", ")}. Its roles: ${roles.join(", ") || "none"}.`);
   // Every field checked before anything is written (a wrong name is refused with the closest ones).

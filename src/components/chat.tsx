@@ -24,6 +24,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { forgetSession, runTurn, type Agent, type Choices, type Status, type Update } from "@/agent/loop";
+import { contextRound } from "@/features/confluence/context-pages";
 import { AI_MODELS, addFileToConversation, deleteRemoteConversation, uploadAiFile } from "@/agent/llm";
 import { FILE_UPLOAD, MASCOT, PROMPTS, RATINGS, withPrompts, type PromptScreen } from "@/config";
 import { WakingMascot, outfitOf, runningState, type MascotState, type Outfit } from "@/features/mascot";
@@ -181,6 +182,15 @@ export function Chat({ scope, agent, placeholder = "Ask anything…", onConversa
   useEffect(() => onConversation?.(currentId), [currentId]); // eslint-disable-line react-hooks/exhaustive-deps
   const agentRef = useRef(agent);
   agentRef.current = agent;
+  // The context read ahead (model samples, Confluence pages, all cached): the first message does not
+  // wait for it ("Reading what you see").
+  useEffect(() => {
+    const t = setTimeout(() => {
+      contextRound(currentId);
+      void agentRef.current.context().catch(() => undefined);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [scope, currentId]);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
