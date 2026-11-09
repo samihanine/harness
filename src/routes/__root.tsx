@@ -2,17 +2,18 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, Navigate, Outlet, createRootRoute, useLocation } from "@tanstack/react-router";
 import { SettingsIcon } from "lucide-react";
+import "@/app/registry";
 import { ScreenLogo } from "@/components/screen-logo";
 import { HealthBanner } from "@/components/health-banner";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { ensureBuiltIns } from "@/lib/library";
 import { persist } from "@/lib/store";
 import { applyTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { tokenStatus } from "@/services/ms";
 import { loadHubConfig } from "@/services/hub-config";
-import { APP_TITLE, HOME, PRIMARY_COLOR, SCREENS, SCREEN_GROUPS, SCREEN_LABELS, SCREEN_PATHS, firstScreen, onConfigChange, type Screen } from "@/config";
+import { APP_TITLE, HOME, PRIMARY_COLOR, useConfig } from "@/config";
+import { features, firstScreen, shownFeatures } from "@/lib/features";
 import "@/styles.css";
 
 /** The app is a single page: index.html loads src/main.tsx, which mounts the router (no server). */
@@ -49,7 +50,7 @@ const colorVars = () => {
 };
 
 
-const hiddenPaths = () => (Object.keys(SCREENS) as Screen[]).filter((k) => !SCREENS[k]).map((k) => SCREEN_PATHS[k]);
+const hiddenPaths = () => features().filter((f) => !shownFeatures().includes(f)).map((f) => f.path);
 
 type Status = Awaited<ReturnType<typeof tokenStatus>>;
 
@@ -58,13 +59,11 @@ function Layout() {
   const path = useLocation({ select: (l) => l.pathname });
   // Read again on each screen change (e.g. after signing in from Settings).
   useEffect(() => void tokenStatus().then(setStatus, () => setStatus(undefined)), [path]);
-  // Options: the SharePoint file is read at start; any change draws the screens again.
-  const [version, setVersion] = useState(0);
-  useEffect(() => onConfigChange(() => setVersion((v) => v + 1)), []);
+  // Options: the SharePoint file is read at start; any change draws the layout again (the screens redraw themselves in place).
+  const version = useConfig();
   useEffect(() => {
     applyTheme();
     void loadHubConfig().catch((e) => console.warn("Config file not read", e));
-    void ensureBuiltIns();
     persist();
   }, []);
   useEffect(() => {
@@ -85,7 +84,7 @@ function Layout() {
       <span className="line-clamp-2 max-w-full text-center leading-tight">{label}</span>
     </Link>
   );
-  const groups = SCREEN_GROUPS.map((g) => g.filter((k) => SCREENS[k])).filter((g) => g.length);
+  const groups = ([0, 1] as const).map((g) => shownFeatures().filter((f) => f.group === g)).filter((g) => g.length);
 
   return (
     <TooltipProvider delayDuration={400}>
@@ -97,13 +96,15 @@ function Layout() {
           <nav className="flex min-h-0 flex-1 flex-col overflow-y-auto" aria-label="Screens">
             {groups.map((g, i) => (
               <div key={i} className={cn("flex flex-col gap-0.5 py-2", i > 0 && "border-t")}>
-                {g.map((k) => item(SCREEN_PATHS[k], SCREEN_LABELS[k], <ScreenLogo screen={k} size={k in { reports: 1, datasets: 1, excel: 1, confluence: 1 } ? 30 : 38} />))}
+                {g.map((f) => item(f.path, f.label, <ScreenLogo feature={f} size={"logo" in f.picture ? 30 : 38} />))}
               </div>
             ))}
           </nav>
-          <div className="flex flex-col border-t pt-2">{item("/settings", "Settings", <SettingsIcon className="size-6" strokeWidth={1.7} aria-hidden />)}</div>
+          <div className="flex flex-col border-t pt-2">
+            {item("/settings", "Settings", <SettingsIcon className="size-6" strokeWidth={1.7} aria-hidden />)}
+          </div>
         </aside>
-        <main key={version} className="flex min-w-0 flex-1 flex-col">
+        <main className="flex min-w-0 flex-1 flex-col">
           <HealthBanner signedIn={status?.signedIn} />
           <div className="min-h-0 flex-1">
             <Outlet />

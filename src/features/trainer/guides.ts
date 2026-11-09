@@ -5,7 +5,15 @@
 import { readSheet } from "read-excel-file/browser";
 import writeXlsxFile from "write-excel-file/browser";
 import type { ReportSchema } from "@/services/report-schema";
-import { all, put, type GuideEntry } from "@/lib/store";
+import { all, put } from "@/lib/store";
+
+/** The guide of a visual of a report (Trainer › guide of the clicked visual), in markdown. */
+export type GuideEntry = { id: string; reportId: string; page: string; visual: string; title: string; content: string; updatedAt: number };
+declare module "@/lib/store" {
+  interface Collections {
+    guides: GuideEntry;
+  }
+}
 
 /** The columns of the Excel / CSV file, in order. */
 export const GUIDE_COLUMNS = ["id", "report_id", "page", "visual", "title", "content"] as const;

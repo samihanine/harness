@@ -7,6 +7,7 @@
  */
 import { TOKEN_SERVER } from "@/config";
 import { settings } from "@/lib/store";
+import { fromStorage } from "@/lib/markdown/storage";
 
 export type ConfluenceConfig = { url: string; email?: string; key: string; folderId: string };
 export type ConfluencePage = { id: string; title: string; version: number; html: string; webUrl?: string };
@@ -31,7 +32,10 @@ async function call<T = any>(path: string, init: RequestInit = {}): Promise<T> {
   const auth = basic ? `Basic ${btoa(basic)}` : `Bearer ${key.trim()}`;
   let r: Response;
   try {
-    r = await fetch(`${base}${path}`, { ...init, headers: { Accept: "application/json", "Content-Type": "application/json", Authorization: auth, ...(init.headers ?? {}) } });
+    // A form (file upload) sets its own Content-Type (with its boundary).
+    const headers: Record<string, string> = { Accept: "application/json", Authorization: auth, "X-Atlassian-Token": "no-check", ...(init.headers as Record<string, string> | undefined) };
+    if (!(init.body instanceof FormData)) headers["Content-Type"] = "application/json";
+    r = await fetch(`${base}${path}`, { ...init, headers });
   } catch {
     throw new Error(cloud ? `Confluence cannot be reached through the token server (${TOKEN_SERVER}): is it running (bun dev)?` : `Confluence cannot be reached from the browser at ${base} (network, or the route does not allow calls from this app: CORS).`);
   }
@@ -85,4 +89,48 @@ export async function createPage(title: string, html = ""): Promise<ConfluencePa
           body: JSON.stringify({ type: "page", title, space: { key: folder.space?.key }, ancestors: [{ id: folderId }], body: { storage: { value: html, representation: "storage" } } }),
         });
   return { id: String(p.id), title: p.title, version: typeof p.version === "object" ? (p.version?.number ?? 1) : 1, html, webUrl: link(url, p) };
+}
+
+/* -------------------------------- Attachments -------------------------------- */
+
+/** The names of the files attached to a page. */
+export async function attachmentNames(pageId: string): Promise<Set<string>> {
+  const r = await call<{ results: { title: string }[] }>(`/rest/api/content/${pageId}/child/attachment?limit=250`);
+  return new Set(r.results.map((a) => a.title));
+}
+
+/** Attaches a file to a page (a file of the same name gets a new version). */
+export async function attachFile(pageId: string, name: string, data: Blob) {
+  const form = new FormData();
+  form.append("file", new File([data], name, { type: data.type || "application/octet-stream" }));
+  form.append("minorEdit", "true");
+  // PUT creates the file or adds a version (Cloud); Data Center only has POST (a new file).
+  await call(`/rest/api/content/${pageId}/child/attachment`, { method: "PUT", body: form }).catch(() => call(`/rest/api/content/${pageId}/child/attachment`, { method: "POST", body: form }));
+}
+
+/* ------------------------------ Markdown sources ------------------------------ */
+
+/**
+ * The markdown each page was last written from, by version (in this browser). A page not changed in
+ * Confluence since gives back exactly that markdown (no conversion, so no drift); a page changed there
+ * is converted from its storage format.
+ */
+const SOURCES = "hub-confluence-markdown";
+const sources = (): Record<string, { version: number; markdown: string }> => {
+  try {
+    return JSON.parse(localStorage.getItem(SOURCES) ?? "{}") ?? {};
+  } catch {
+    return {};
+  }
+};
+
+export function markdownOf(page: Pick<ConfluencePage, "id" | "version" | "html">) {
+  const kept = sources()[page.id];
+  return kept?.version === page.version ? kept.markdown : fromStorage(page.html);
+}
+
+export function keepMarkdown(page: Pick<ConfluencePage, "id" | "version">, markdown: string) {
+  try {
+    localStorage.setItem(SOURCES, JSON.stringify({ ...sources(), [page.id]: { version: page.version, markdown } }));
+  } catch {}
 }

@@ -3,18 +3,13 @@
  * French (as users write), and checks on the data afterwards (empty list = passed).
  */
 import type { Agent } from "@/agent/loop";
-import { excelData } from "@/features/excel/excel-tools";
-import { slidesAgent } from "@/features/presenter/slides-tools";
-import type { Table } from "@/services/excel";
-import type { Field } from "@/features/excel/schema";
-import type { DeckEntry, SchemaEntry } from "@/lib/store";
-import { EMPTY_VIEW } from "@/features/excel/table-view";
-import type { Write } from "@/features/excel/use-table";
-import { EXAMPLE_DECK, checkSlide } from "@/features/presenter/slides";
-import * as store from "@/lib/store";
-
-/** The in-memory store loaded in place of the real one (preload.ts). */
-const { all, peek, reset } = store as unknown as typeof import("./fake-store");
+import type { ExcelTable } from "@/features/excel/sync";
+import { checkValue, columnOf, DEFAULT_VIEW, type Column, type Row, type TableEntry, type View } from "@/features/excel/table";
+import { excelAgent } from "@/features/excel/tools";
+import { Deck } from "@/features/presenter/pptx/deck";
+import { slideTypes } from "@/features/presenter/pptx/template";
+import { presenterAgent } from "@/features/presenter/tools";
+import { sampleDeck, templateDeck } from "../../tests/fixtures";
 
 export type Scenario = {
   name: string;
@@ -27,103 +22,98 @@ export type Scenario = {
 };
 
 const expect = (ok: unknown, problem: string) => (ok ? [] : [problem]);
-const deck = async () => ((await all("decks")) as DeckEntry[])[0];
-
-/** The slides agent reading the in-memory deck at call time, as the screen does. */
-async function slidesSetup(entry: DeckEntry) {
-  reset({ decks: [entry], reports: [] });
-  let shown = 0;
-  return slidesAgent(() => peek("decks")[0], (i) => (shown = i), () => shown);
-}
 
 /* ---------------------------------- Excel ---------------------------------- */
 
-const TASK_FIELDS: Field[] = [
-  { name: "id", type: "string", label: "ID" },
-  { name: "Title", type: "string", required: true },
+const TASK_COLUMNS: Column[] = [
+  { name: "Title", type: "text" },
   { name: "Status", type: "option", options: [{ value: "Open", color: "blue" }, { value: "In progress", color: "amber" }, { value: "Done", color: "green" }] },
   { name: "Priority", type: "option", options: [{ value: "Haute", color: "red" }, { value: "Moyenne", color: "orange" }, { value: "Basse", color: "green" }] },
   { name: "Due", type: "date" },
 ];
-const TASK_ROWS = [
-  { id: "TASK_001", Title: "Mettre à jour le tableau de bord", Status: "Open", Priority: "Basse", Due: "2026-11-02" },
-  { id: "TASK_002", Title: "Relancer le fournisseur", Status: "Done", Priority: "Moyenne", Due: "2026-10-12" },
-  { id: "TASK_003", Title: "Préparer le comité", Status: "Open", Priority: "Moyenne", Due: "2026-11-15" },
-  { id: "TASK_004", Title: "Corriger les doublons clients", Status: "In progress", Priority: "Basse", Due: "2026-10-30" },
-  { id: "TASK_005", Title: "Former l'équipe", Status: "Open", Priority: null, Due: null },
-  { id: "TASK_006", Title: "Archiver 2024", Status: "Done", Priority: "Basse", Due: "2026-09-01" },
+const TASK_ROWS: Row[] = [
+  { Title: "Mettre à jour le tableau de bord", Status: "Open", Priority: "Basse", Due: "2026-11-02" },
+  { Title: "Relancer le fournisseur", Status: "Done", Priority: "Moyenne", Due: "2026-10-12" },
+  { Title: "Préparer le comité", Status: "Open", Priority: "Moyenne", Due: "2026-11-15" },
+  { Title: "Corriger les doublons clients", Status: "In progress", Priority: "Basse", Due: "2026-10-30" },
+  { Title: "Former l'équipe", Status: "Open", Priority: "", Due: "" },
+  { Title: "Archiver 2024", Status: "Done", Priority: "Basse", Due: "2026-09-01" },
 ];
-const TASKS: SchemaEntry = { id: "s1", title: "Tasks", excel: { link: "x", driveId: "d", itemId: "i", name: "Tasks.xlsx", table: "Tasks", fileUrl: "x" }, fields: TASK_FIELDS, contextIds: [] };
 
-/** The data agent on an in-memory table: writes apply their optimistic change only (no Graph). */
-let table: Table;
+/** The Excel agent on an in-memory table (the same checks of values as the screen, no Graph). */
+let rows: Row[] = [];
+let entry: TableEntry;
 function excelSetup(): Agent {
-  reset({ schemas: [TASKS] });
-  table = { fields: TASK_FIELDS, rows: structuredClone(TASK_ROWS), header: TASK_FIELDS.map((f) => f.name) };
-  let view = EMPTY_VIEW;
-  const write = (async (_task, { optimistic } = {}) => void (optimistic && (table = optimistic(table)))) as Write;
-  // Made again at each call, as the screen does at each render (the table changes).
-  const fresh = () => excelData({ schema: TASKS, table, shown: () => table.rows.map((_, i) => i), checked: [], view, setView: (v) => (view = { ...view, ...v }), openRow: () => undefined, write });
-  const first = fresh();
-  return {
-    instructions: first.instructions,
-    context: () => fresh().context(),
-    state: () => fresh().state!(),
-    tools: first.tools.map((t) => ({ ...t, run: (args: unknown) => fresh().tools.find((x) => x.name === t.name)!.run(args) })),
-  };
+  rows = structuredClone(TASK_ROWS);
+  entry = { id: "t1", title: "Tasks", excel: { link: "x", driveId: "d", itemId: "i", name: "Tasks.xlsx", table: "Tasks", fileUrl: "x" }, columns: TASK_COLUMNS, views: [DEFAULT_VIEW], contextIds: [] };
+  let view: View = DEFAULT_VIEW;
+  const checked = (values: Record<string, unknown>) => Object.fromEntries(Object.entries(values).map(([k, v]) => [columnOf(entry.columns, k)!.name, checkValue(columnOf(entry.columns, k)!, v)]));
+  const table = {
+    get data() {
+      return { header: entry.columns.map((c) => c.name), rows, cells: [] };
+    },
+    update: async (changes: { index: number; values: Record<string, unknown> }[]) => (changes.forEach(({ index, values }) => (rows[index] = { ...rows[index], ...checked(values) })), changes.length),
+    add: async (added: Record<string, unknown>[]) => ((rows = [...rows, ...added.map(checked)]), added.map((_, i) => rows.length - added.length + i)),
+    remove: async (indexes: number[]) => ((rows = rows.filter((_, i) => !indexes.includes(i))), indexes.length),
+    setColumns: async (columns: Column[]) => void (entry = { ...entry, columns }),
+  } as unknown as ExcelTable;
+  return excelAgent(() => entry, () => table, () => view, (v) => (view = v));
+}
+
+/* -------------------------------- Presenter -------------------------------- */
+
+let deck: Deck;
+async function presenterSetup(withTemplate = true): Promise<Agent> {
+  deck = await Deck.open(await sampleDeck());
+  const template = await Deck.open(await templateDeck());
+  const types = await slideTypes(template);
+  let shown = 1;
+  return presenterAgent({ deck: () => deck, template: () => (withTemplate ? { deck: template, types } : undefined), changed: async () => undefined, undo: async () => false, show: (n) => (shown = n), current: () => shown, sources: () => ({ datasets: [], reports: [] }) });
 }
 
 /* -------------------------------- Scenarios -------------------------------- */
 
 export const SCENARIOS: Scenario[] = [
   {
-    name: "slides-new",
-    description: "Slides: write a 5-6 slide deck from figures",
-    request: "Fais une présentation de 6 slides sur les résultats du trimestre : CA 12,4 M€ (+8 %), marge 38 %, 1 240 commandes. Termine par les prochaines étapes.",
-    setup: async () => {
-      return slidesSetup({ id: "d1", name: "Résultats", deck: { ...EXAMPLE_DECK, title: "Résultats", slides: [] }, updatedAt: 0 });
-    },
-    check: async () => {
-      const slides = (await deck()).deck.slides;
-      const invalid = slides.flatMap((s, i) => {
-        try {
-          checkSlide(s);
-          return [];
-        } catch (e) {
-          return [`slide ${i + 1}: ${e instanceof Error ? e.message : e}`];
-        }
-      });
-      return [
-        ...expect(slides.length >= 5 && slides.length <= 8, `${slides.length} slides (asked 6)`),
-        ...expect(["hero", "title", "cover"].includes(String(slides[0]?.template)), "does not start with a cover slide"),
-        ...expect(["end", "title", "cover"].includes(String(slides.at(-1)?.template)) || /étape|next/i.test(JSON.stringify(slides.slice(-2))), "does not end with the next steps / a closing slide"),
-        ...expect(/12[,.]4/.test(JSON.stringify(slides)), "the revenue figure is missing"),
-        ...invalid,
-      ];
-    },
-  },
-  {
-    name: "slides-edit",
-    description: "Slides: change the theme color and delete a slide",
-    request: "Passe la couleur principale en vert et supprime la slide « Priorities ».",
-    setup: async () => {
-      return slidesSetup({ id: "d1", name: "Review", deck: structuredClone(EXAMPLE_DECK), updatedAt: 0 });
-    },
-    check: async () => {
-      const d = (await deck()).deck;
-      const [r, g, b] = (d.theme.primary.replace("#", "").match(/../g) ?? []).map((x) => parseInt(x, 16));
-      return [...expect(g > r && g > b, `primary color ${d.theme.primary} is not green`), ...expect(!d.slides.some((s) => s.title === "Priorities"), "the Priorities slide is still there"), ...expect(d.slides.length === EXAMPLE_DECK.slides.length - 1, `${d.slides.length} slides (expected ${EXAMPLE_DECK.slides.length - 1})`)];
-    },
-  },
-  {
     name: "excel-update",
-    description: "Excel data: set the priority of every open task",
+    description: "Excel data: set the priority of every open task (by condition)",
     request: "Mets toutes les tâches ouvertes en priorité Haute.",
     setup: async () => excelSetup(),
     check: async () => {
-      const wrong = table.rows.filter((r, i) => (r.Status === "Open" ? r.Priority !== "Haute" : r.Priority !== TASK_ROWS[i].Priority));
-      return expect(!wrong.length, `wrong rows: ${wrong.map((r) => `${r.id} (${r.Status}, ${r.Priority})`).join(", ")}`);
+      const wrong = rows.filter((r, i) => (r.Status === "Open" ? r.Priority !== "Haute" : r.Priority !== TASK_ROWS[i].Priority));
+      return expect(!wrong.length, `wrong rows: ${wrong.map((r) => `${r.Title} (${r.Status}, ${r.Priority})`).join(", ")}`);
     },
   },
-
+  {
+    name: "excel-column",
+    description: "Excel columns: add an option column with its values",
+    request: "Ajoute une colonne « Équipe » avec les choix Finance, RH et IT.",
+    setup: async () => excelSetup(),
+    check: async () => {
+      const c = columnOf(entry.columns, "Équipe");
+      return [...expect(c?.type === "option", `column ${c ? `of type ${c.type}` : "missing"}`), ...expect(["Finance", "RH", "IT"].every((v) => c?.options?.some((o) => o.value === v)), `options: ${c?.options?.map((o) => o.value).join(", ")}`)];
+    },
+  },
+  {
+    name: "slides-figures",
+    description: "Presenter: update the quarter and the figures of a real deck",
+    request: "Passe la présentation au T3 (Q3) : le CA est de 12,4 M€ et la marge de 38 %.",
+    setup: async () => presenterSetup(),
+    check: async () => {
+      const text = await deck.outline(true);
+      return [...expect(!/Q2/.test(text), "Q2 is still in the deck"), ...expect(/12[,.]4/.test(text), "the revenue is not updated"), ...expect(/38/.test(text), "the margin is not updated"), ...expect((await deck.count()) === 3, `${await deck.count()} slides (expected 3)`)];
+    },
+  },
+  {
+    name: "slides-add",
+    description: "Presenter: add a slide of a template type and fill it",
+    request: "Ajoute avant la dernière slide une slide en deux colonnes : à gauche les points forts (croissance, marge), à droite les risques (stocks).",
+    setup: async () => presenterSetup(),
+    check: async () => {
+      const slides = await deck.slides();
+      const added = slides[slides.length - 2];
+      const text = added?.shapes.map((s) => s.paragraphs.map((p) => p.text).join(" ")).join(" ") ?? "";
+      return [...expect(slides.length === 4, `${slides.length} slides (expected 4)`), ...expect(/croissance/i.test(text) && /stock/i.test(text), "the new slide does not hold both columns' texts"), ...expect(!/Left column|Right column/.test(text), "the template's texts are left")];
+    },
+  },
 ];

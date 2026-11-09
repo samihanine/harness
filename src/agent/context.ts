@@ -1,7 +1,7 @@
 /** Pieces of the AI context shared by the screens. */
-import { contextPagesText } from "@/features/confluence/context-pages";
+import { contextPagesText } from "@/services/context-pages";
 import { modelSummary } from "@/services/model";
-import { modelSamples, profileText } from "@/features/datasets/model-samples";
+import { modelSamples, profileText } from "@/services/model-samples";
 import type { DatasetEntry, ReportEntry } from "@/lib/store";
 
 /**

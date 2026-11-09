@@ -10,7 +10,7 @@ import { Button } from "./ui/button";
 import { Switch } from "./ui/switch";
 import { Empty, Section } from "./workspace";
 import { withToast } from "./entity";
-import { refreshPages, useContextPages } from "@/features/confluence/context-pages";
+import { refreshPages, useContextPages } from "@/services/context-pages";
 import { listPages } from "@/services/confluence";
 import { errorText } from "@/services/ms";
 

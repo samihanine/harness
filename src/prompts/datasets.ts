@@ -1,5 +1,5 @@
 /** The Datasets screen. */
-import { STEPS_TEXT } from "@/features/datasets/model-editor-tools";
+import { STEPS_TEXT } from "@/agent/model-editor-tools";
 import { DAX_RULES } from "./dax";
 
 /** The Datasets screen (editable model or read only). */

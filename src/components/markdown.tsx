@@ -1,5 +1,17 @@
-import ReactMarkdown from "react-markdown";
+/**
+ * The one markdown renderer of the app (answers, guides, analyses, Confluence pages, slides' notes):
+ * GitHub markdown plus the constructs of lib/markdown/syntax.ts (mermaid diagrams, colored code,
+ * panels, statuses, icons, task lists), the same that are written to Confluence.
+ */
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ChevronRightIcon, CircleAlertIcon, InfoIcon, LightbulbIcon, TriangleAlertIcon } from "lucide-react";
+import { Mermaid } from "./diagram";
+import { iconOf } from "./icon";
+import { highlight } from "@/lib/markdown/highlight";
+import { panelOf, statusOf, withPanels, type PanelKind } from "@/lib/markdown/syntax";
+import { cn } from "@/lib/utils";
 
 /**
  * The model's text made readable as markdown: the private LLM sometimes wraps it in a ```markdown
@@ -18,8 +30,88 @@ export function cleanMarkdown(text: string) {
   return lines.map((line, i) => (i > 0 && item(line) && lines[i - 1].trim() && !item(lines[i - 1]) ? `\n${line}` : line)).join("\n");
 }
 
-export const Markdown = ({ children }: { children: string }) => (
-  <div className="markdown">
-    <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanMarkdown(children)}</ReactMarkdown>
+const PANELS: Record<PanelKind, { icon: typeof InfoIcon; className: string; bar: string }> = {
+  NOTE: { icon: InfoIcon, className: "bg-blue-500/8 [&_svg]:text-blue-600", bar: "bg-blue-500" },
+  TIP: { icon: LightbulbIcon, className: "bg-emerald-500/8 [&_svg]:text-emerald-600", bar: "bg-emerald-500" },
+  WARNING: { icon: TriangleAlertIcon, className: "bg-amber-500/10 [&_svg]:text-amber-600", bar: "bg-amber-500" },
+  IMPORTANT: { icon: CircleAlertIcon, className: "bg-violet-500/8 [&_svg]:text-violet-600", bar: "bg-violet-500" },
+  EXPAND: { icon: ChevronRightIcon, className: "border bg-muted/40", bar: "" },
+};
+const STATUS: Record<string, string> = { green: "bg-emerald-600", blue: "bg-blue-600", red: "bg-red-600", yellow: "bg-amber-500", grey: "bg-zinc-500", gray: "bg-zinc-500", purple: "bg-violet-600" };
+
+function CodeBlock({ lang, code }: { lang?: string; code: string }) {
+  return (
+    <div className="overflow-hidden rounded-lg border bg-zinc-50 dark:bg-zinc-900">
+      {lang && <div className="flex h-7 items-center border-b px-3 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">{lang}</div>}
+      <pre className="!m-0 overflow-x-auto !rounded-none !bg-transparent p-3 text-[12.5px] leading-relaxed">
+        <code className="!bg-transparent !p-0">{highlight(code, lang)}</code>
+      </pre>
+    </div>
+  );
+}
+
+/** A fenced block: a diagram, a panel or code. */
+function Fence({ lang, code }: { lang: string; code: string }) {
+  if (lang === "mermaid") return <Mermaid code={code} />;
+  const panel = panelOf(lang, code);
+  if (panel) {
+    const { icon: Icon, className, bar } = PANELS[panel.kind];
+    if (panel.kind === "EXPAND")
+      return (
+        <details className={cn("rounded-lg border px-3 py-2", className)}>
+          <summary className="cursor-pointer text-[13.5px] font-medium">{panel.title || "Details"}</summary>
+          <div className="pt-2">
+            <Markdown>{panel.body}</Markdown>
+          </div>
+        </details>
+      );
+    return (
+      <div className={cn("flex overflow-hidden rounded-lg", className)}>
+        <span className={cn("w-1 shrink-0", bar)} />
+        <div className="flex min-w-0 gap-2.5 px-3 py-2.5">
+          <Icon className="mt-0.5 size-4 shrink-0" />
+          <div className="flex min-w-0 flex-col gap-1">
+            {panel.title && <b>{panel.title}</b>}
+            <Markdown>{panel.body}</Markdown>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return <CodeBlock lang={lang} code={code} />;
+}
+
+const components: Components = {
+  pre: ({ children }) => {
+    const code = Children.toArray(children).find(isValidElement) as ReactElement<{ className?: string; children?: ReactNode }> | undefined;
+    return <Fence lang={code?.props.className?.match(/language-([\w-]+)/)?.[1] ?? ""} code={String(code?.props.children ?? "").replace(/\n$/, "")} />;
+  },
+  code: ({ children, className }) => {
+    const status = !className && statusOf(String(children));
+    if (status) return <span className={cn("inline-flex h-5 items-center rounded px-1.5 align-middle text-[10.5px] font-bold tracking-wide text-white uppercase", STATUS[status.color] ?? STATUS.grey)}>{status.text}</span>;
+    return <code className={className}>{children}</code>;
+  },
+  img: ({ src, alt }) => {
+    const icon = String(src ?? "").match(/^icon:([\w-]+)$/)?.[1];
+    if (icon) {
+      const Icon = iconOf(icon);
+      return <Icon className="inline size-[1.15em] -translate-y-px align-middle text-primary" aria-label={alt || icon} />;
+    }
+    // A picture attached to a Confluence page: shown by its name (the app does not download attachments).
+    if (String(src).startsWith("attachment:")) return <span className="rounded bg-muted px-1.5 text-[12px] text-muted-foreground">🖼 {alt || String(src).slice(11)}</span>;
+    return <img src={src as string} alt={alt ?? ""} className="max-w-full rounded" />;
+  },
+  table: ({ children }) => (
+    <div className="max-w-full overflow-x-auto">
+      <table>{children}</table>
+    </div>
+  ),
+};
+
+export const Markdown = ({ children, className }: { children: string; className?: string }) => (
+  <div className={cn("markdown [&_.contains-task-list]:list-none [&_.contains-task-list]:pl-1 [&_.task-list-item_input]:mr-1.5 [&_.task-list-item_input]:align-middle", className)}>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(u) => u}>
+      {withPanels(cleanMarkdown(children))}
+    </ReactMarkdown>
   </div>
 );

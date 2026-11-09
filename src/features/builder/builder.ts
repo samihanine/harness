@@ -5,7 +5,7 @@
 import { reportContext } from "@/agent/context";
 import { examplesText, referenceReports } from "@/services/report-schema";
 import { PBIR_GUIDE, draftProblems, editorState, editorTools } from "./editor-tools";
-import { draftInfo, fieldParameterTool, saveModelDraft } from "@/features/datasets/model-editor-tools";
+import { draftInfo, fieldParameterTool, saveModelDraft } from "@/agent/model-editor-tools";
 import type { Agent } from "@/agent/loop";
 import { modelTools } from "@/agent/model-tools";
 import { DAX_RULES } from "@/agent/pbi-tools";

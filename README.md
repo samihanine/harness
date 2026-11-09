@@ -25,6 +25,12 @@ Pour arrêter : `Ctrl + C` dans PowerShell. Les fois suivantes, seules les étap
 Le serveur de jetons Microsoft (`localhost:3301`) démarre avec `bun dev` : la première fois, ouvrir
 **Paramètres › Power BI** et se connecter avec le code affiché.
 
+## Vérifier
+
+- `bun run typecheck` : les types et les frontières entre modules ([docs/structure.md](docs/structure.md)).
+- `bun test` : conversions markdown ⇄ Confluence, présentations PowerPoint, tables Excel.
+- `bun run screens` puis `bun run screens --check` (avec `bun dev` lancé) : ce que montre chaque écran, avant / après un changement.
+
 ## Exports
 
 - `bun run export:html` : toute l'application dans un seul fichier, `dist/hub.html`.
@@ -42,7 +48,8 @@ Office, sans inscription d'application ni consentement administrateur.
 | Power BI JavaScript SDK (`powerbi-client`) | Intégration des rapports (lecture et édition) | Rapports affichés, filtres, segments, pages, signets, export des données d'un visuel |
 | Power BI Report Authoring (`powerbi-report-authoring`) | Édition du rapport intégré | Mode éditeur du Builder (rapports dont la définition n'est pas lisible), champs des visuels |
 | Fabric REST API (`api.fabric.microsoft.com`) | Lecture et écriture des définitions (PBIR, TMDL) | Builder (pages, visuels, mesures de rapport), mesures et colonnes des modèles, nouveaux rapports |
-| Microsoft Graph (`graph.microsoft.com`) | Fichiers OneDrive / SharePoint | Images, options de l'application |
+| Microsoft Graph (`graph.microsoft.com`) | Fichiers OneDrive / SharePoint ; API workbook d'Excel | Tables Excel (lignes, colonnes, mise en forme), présentations PowerPoint enregistrées sur SharePoint, options de l'application |
+| Confluence REST API (via le serveur de jetons pour Confluence Cloud) | Lecture et écriture des pages, pièces jointes | Pages en markdown (diagrammes joints en images), contextes de l'IA |
 
 Bonnes pratiques de performance : [docs/performance.md](docs/performance.md).
 

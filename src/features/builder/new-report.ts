@@ -3,6 +3,7 @@
  * semantic model: the Builder starts from it ("New report from a semantic model").
  */
 import { all } from "@/lib/store";
+import { addDataset, addReport } from "@/lib/library";
 import type { Ref } from "@/services/pbi";
 import { fabric } from "@/services/ms";
 import { definition, textPayload, type Part } from "@/services/report-def";
@@ -59,3 +60,16 @@ export function createBlankReport(name: string, dataset: Ref) {
   ]);
 }
 
+
+/**
+ * A new report on a semantic model (its link or id), live-connected to it, created in My workspace in
+ * the format the Builder edits (PBIR), with one blank page; added to the app. Needs Build (or edit)
+ * on the model.
+ */
+export async function createReportFromModel(modelLink: string, name?: string) {
+  const model = await addDataset(modelLink);
+  if (model.access === "view") throw new Error(`You cannot build on "${model.name}": a report on it needs the Build permission on the semantic model.${model.error ? ` (${model.error})` : ""}`);
+  const title = name?.trim() || `${model.name} — report`;
+  const id = await createBlankReport(title, { id: model.id, groupId: model.groupId });
+  return addReport(`https://app.powerbi.com/groups/me/reports/${id}`);
+}

@@ -25,3 +25,4 @@ export const settings = {
   get: async (): Promise<Settings> => ({ aiKey: process.env.AI_KEY, model: process.env.AI_MODEL }),
   set: async () => undefined,
 };
+export const registerNormalizer = () => undefined;

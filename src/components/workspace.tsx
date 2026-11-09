@@ -12,7 +12,7 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
-import { AI_PANEL } from "@/config";
+import { AI_PANEL, useConfig } from "@/config";
 import type { Agent } from "@/agent/loop";
 import { last } from "@/lib/last";
 import { cn } from "@/lib/utils";
@@ -212,6 +212,7 @@ export function Workspace({
   /** What the user should know (an icon right of the tabs opens them). */
   notices?: ScreenNotice[];
 }) {
+  useConfig();
   const [own, setOwn] = useState(tabs[0]?.id);
   const active = tab && tabs.some((t) => t.id === tab) ? tab : tabs.some((t) => t.id === own) ? own : tabs[0]?.id;
   const select = (id: string) => (onTab ? onTab(id) : setOwn(id));
@@ -382,3 +383,13 @@ export function StatusText({ state }: { state: { busy?: string; done?: string; e
     );
   return null;
 }
+
+/** A page of sections, centered and scrolling (Settings tabs, lists of sources). */
+export const ScrollPage = ({ children }: { children: ReactNode }) => (
+  <div className="min-h-0 flex-1 overflow-y-auto">
+    <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-8">{children}</div>
+  </div>
+);
+
+/** Shown while a screen's code loads (each screen is its own chunk). */
+export const ScreenFallback = () => <div className="flex h-full items-center justify-center text-[13px] text-muted-foreground">Loading…</div>;

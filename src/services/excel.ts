@@ -1,17 +1,27 @@
 /**
- * Excel tables on SharePoint / OneDrive through the Graph workbook API. Rows are addressed by their
- * position in the table; the columns are the table's own, read from its header each time (the app
- * never types, adds or moves them: no gap between the app and the file).
+ * Excel tables on SharePoint / OneDrive through the Graph workbook API: generic reads and writes of a
+ * table (header, rows by position, columns), many requests sent together ($batch), the file's
+ * version (to see changes made in Excel), a hidden sheet for the app's own data, and the look of the
+ * table. What the API cannot do (validation lists, conditional colors) is written into the file
+ * itself by features/excel/xlsx.ts.
  */
-import { graph, request, uploadFile } from "./ms";
-import { coerce, idPrefix, isIdField, nextIds, toCell, type Field, type Row } from "@/features/excel/schema";
-import type { ExcelRef } from "@/lib/store";
+import { call, graph } from "./ms";
 
-export type Table = { fields: Field[]; rows: Row[]; header: string[] };
+/** An Excel table on SharePoint / OneDrive, as found from its link. */
+export type ExcelRef = { link: string; driveId: string; itemId: string; name: string; table: string; fileUrl: string; webUrl?: string };
+export type Cell = string | number | boolean | null;
 
 export const shareId = (url: string) => "u!" + btoa(String.fromCharCode(...new TextEncoder().encode(url.trim()))).replace(/=+$/, "").replace(/\//g, "_").replace(/\+/g, "-");
-const book = (e: Pick<ExcelRef, "driveId" | "itemId">) => `/drives/${e.driveId}/items/${e.itemId}/workbook`;
-const tablePath = (e: ExcelRef) => `${book(e)}/tables/${encodeURIComponent(e.table)}`;
+export const book = (e: Pick<ExcelRef, "driveId" | "itemId">) => `/drives/${e.driveId}/items/${e.itemId}/workbook`;
+export const tablePath = (e: ExcelRef) => `${book(e)}/tables/${encodeURIComponent(e.table)}`;
+const sheetPath = (e: Pick<ExcelRef, "driveId" | "itemId">, sheet: string) => `${book(e)}/worksheets('${encodeURIComponent(sheet.replace(/'/g, "''"))}')`;
+
+export const letter = (n: number) => {
+  let s = "";
+  for (n++; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+  return s;
+};
+export const columnIndex = (col: string) => [...col].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
 
 /** Sharing link of an .xlsx → file reference, its server-relative URL (for Power BI) and its tables. */
 export async function resolveExcel(link: string) {
@@ -24,210 +34,151 @@ export async function resolveExcel(link: string) {
   return { ...ref, name: (item.name as string).replace(/\.xlsx$/i, ""), webUrl: item.webUrl as string, fileUrl: `${drive.webUrl}${folder}/${item.name}`, tables: tables.map((t: { name: string }) => t.name) as string[] };
 }
 
-/** The columns of a table, from its header row (a text field each; the id column, when there is one, kept as such). */
-const headerFields = (names: string[]): Field[] => names.map((name) => ({ name, type: isIdField({ name }) ? "string" : "text" }));
-
-export async function detectFields(e: ExcelRef): Promise<Field[]> {
-  const { values } = await graph(`${tablePath(e)}/headerRowRange?$select=values`);
-  return headerFields((values[0] as unknown[]).map(String));
+/** The file's version: changes when anyone saves it (Excel, the app, another tool). */
+export async function versionOf(e: Pick<ExcelRef, "driveId" | "itemId">) {
+  const m = await graph(`/drives/${e.driveId}/items/${e.itemId}?$select=eTag,lastModifiedDateTime,lastModifiedBy`);
+  return { eTag: m.eTag as string, at: m.lastModifiedDateTime as string, by: (m.lastModifiedBy?.user?.displayName as string | undefined) ?? undefined };
 }
 
-/** Rows of the table and its columns, as the file has them now. Rows without id get one (when the table has an id column). */
-export async function readRows(e: ExcelRef): Promise<Table> {
-  const range = await graph(`${tablePath(e)}/range?$select=values`);
-  const [header, ...data] = range.values as unknown[][];
-  const names = header.map(String);
-  const fields = headerFields(names);
-  const rows = data.map((values) => Object.fromEntries(names.map((n, i) => [n, values[i]])) as Row);
-  await fillIds(e, fields, rows);
-  return { fields, rows, header: names };
-}
-
-/** Rows without id get the next ones (existing ids never change), written to the id column. */
-async function fillIds(e: ExcelRef, fields: Field[], rows: Row[]) {
-  const id = fields.find(isIdField);
-  const empty = (v: unknown) => !String(toCell(v)).trim();
-  // Blank rows (e.g. the one row of a new table) get none.
-  const missing = id ? rows.filter((r) => empty(r[id.name]) && fields.some((f) => f !== id && !empty(r[f.name]))) : [];
-  if (!id || !missing.length) return;
-  const ids = nextIds(idPrefix(e.table), rows.map((r) => r[id.name]), missing.length);
-  missing.forEach((r, i) => (r[id.name] = ids[i]));
-  await graph(`${tablePath(e)}/columns/${encodeURIComponent(id.name)}/dataBodyRange`, "PATCH", { values: rows.map((r) => [toCell(r[id.name])]) }).catch(() =>
-    missing.forEach((r) => (r[id.name] = null)), // not saved: not shown either
-  );
-}
-
-/** Why a row (by index) cannot take this id: empty, or already used by another row (case ignored). */
-export function idError(t: Pick<Table, "fields" | "rows">, index: number, value: unknown) {
-  const id = t.fields.find(isIdField);
-  if (!id) return undefined;
-  const v = String(value ?? "").trim();
-  if (!v) return "The id cannot be empty.";
-  const other = t.rows.findIndex((r, i) => i !== index && String(r[id.name] ?? "").trim().toLowerCase() === v.toLowerCase());
-  return other >= 0 ? `The id "${v}" is already used by row ${other + 1}.` : undefined;
-}
-
-/** A field by its name, the case and spaces aside ("Expected Result" is the column "Expected result"). */
-export const fieldOf = (t: Pick<Table, "fields">, name: string) => {
-  const key = (s: string) => s.toLowerCase().replace(/[\s_]+/g, " ").trim();
-  return t.fields.find((f) => f.name === name) ?? t.fields.find((f) => key(f.name) === key(name));
+/** Where the table is: its sheet, first column, header line and size. */
+export type Anchor = { sheet: string; left: number; top: number; width: number; height: number };
+const anchorOf = (address: string): Anchor => {
+  const [, sheet, c1, r1, c2, r2] = address.match(/^'?(.*?)'?!\$?([A-Z]+)\$?(\d+)(?::\$?([A-Z]+)\$?(\d+))?/)!;
+  const left = columnIndex(c1);
+  const top = Number(r1);
+  return { sheet: sheet.replace(/''/g, "'"), left, top, width: columnIndex(c2 ?? c1) - left + 1, height: Number(r2 ?? r1) - top + 1 };
 };
 
-/** Typed values of a write. Ids are given by the app (addRows); they change only on an explicit edit (`index` given). */
-const check = (t: Table, values: Row, index?: number) => {
-  const out: Row = {};
-  for (const [name, value] of Object.entries(values)) {
-    const field = fieldOf(t, name);
-    if (!field) throw new Error(`Unknown field "${name}" (fields: ${t.fields.map((f) => f.name).join(", ")})`);
-    if (isIdField(field)) {
-      if (index === undefined) continue;
-      const error = idError(t, index, value);
-      if (error) throw new Error(error);
-      out[name] = String(value).trim();
-      continue;
+/** The table as the file has it now: its header, its rows (cells by position) and where it is. */
+export async function readTable(e: ExcelRef): Promise<{ header: string[]; rows: Cell[][]; anchor: Anchor }> {
+  const range = await graph(`${tablePath(e)}/range?$select=values,address`);
+  const [header, ...rows] = range.values as Cell[][];
+  return { header: header.map((h) => String(h ?? "")), rows, anchor: anchorOf(range.address) };
+}
+
+/* ----------------------------------- Batch ----------------------------------- */
+
+export type BatchRequest = { method: "GET" | "POST" | "PATCH" | "DELETE"; url: string; body?: unknown };
+
+/**
+ * Requests sent together (Graph $batch: 20 per call), in order: each waits for the one before (row
+ * positions stay right). The first failure stops the rest and is thrown with its message.
+ */
+export async function batch(requests: BatchRequest[]) {
+  const results: unknown[] = [];
+  for (let start = 0; start < requests.length; start += 20) {
+    const chunk = requests.slice(start, start + 20).map((r, i) => ({
+      id: String(i + 1),
+      method: r.method,
+      url: r.url,
+      ...(i > 0 && { dependsOn: [String(i)] }),
+      ...(r.body !== undefined && { body: r.body, headers: { "Content-Type": "application/json" } }),
+    }));
+    const { responses } = await call<{ responses: { id: string; status: number; body?: any }[] }>("graph", "/$batch", "POST", { requests: chunk });
+    for (const r of [...responses].sort((a, b) => Number(a.id) - Number(b.id))) {
+      if (r.status >= 400) throw new Error(r.body?.error?.message ?? `Excel refused a change (${r.status}).`);
+      results.push(r.body);
     }
-    out[field.name] = coerce(field, value);
   }
-  return out;
-};
-/* Local versions of the writes, applied before the request (optimistic updates). */
-export const withUpdates = (t: Table, changes: { index: number; values: Row }[]): Table => {
-  const next = { ...t, rows: [...t.rows] };
-  // One after the other: two ids changed together are checked against each other.
-  for (const { index, values } of changes) next.rows[index] = { ...next.rows[index], ...check(next, values, index) };
-  return next;
-};
-export const withoutRows = (t: Table, indexes: number[]): Table => ({ ...t, rows: t.rows.filter((_, i) => !indexes.includes(i)) });
-export const withRows = (t: Table, added: Row[]): Table => ({ ...t, rows: [...t.rows, ...added.map((r) => check(t, withDefaults(t.fields, r)))] });
-
-const cells = (t: Table, row: Row) => t.header.map((name) => toCell(row[name]));
-
-/** Sheet, first column and header line of a table (cached; columns are only added at the end). */
-const anchors = new Map<string, Promise<{ sheet: string; left: number; top: number }>>();
-function anchor(e: ExcelRef) {
-  const key = tablePath(e);
-  if (!anchors.has(key))
-    anchors.set(
-      key,
-      graph(`${key}/range?$select=address`).then(({ address }) => {
-        const [, sheet, col, row] = address.match(/^'?(.*?)'?!\$?([A-Z]+)\$?(\d+)/);
-        return { sheet: sheet.replace(/''/g, "'"), left: columnIndex(col), top: Number(row) };
-      }),
-    );
-  return anchors.get(key)!.catch((error) => {
-    anchors.delete(key);
-    throw error;
-  });
+  return results;
 }
+
+/* ------------------------------------ Rows ----------------------------------- */
+
+/** Writes whole rows (cells in the file's column order) at their positions in the table's body. */
+export const writeRows = (e: ExcelRef, rows: { index: number; cells: Cell[] }[]) =>
+  batch(rows.map(({ index, cells }) => ({ method: "PATCH", url: `${tablePath(e)}/rows/itemAt(index=${index})`, body: { values: [cells] } })));
+
+/** Adds rows at the end of the table. */
+export const appendRows = (e: ExcelRef, rows: Cell[][]) => (rows.length ? batch([{ method: "POST", url: `${tablePath(e)}/rows/add`, body: { index: null, values: rows } }]) : Promise.resolve([]));
+
+/** Deletes rows by position (from the last: the others keep theirs). */
+export const deleteRows = (e: ExcelRef, indexes: number[]) => batch([...new Set(indexes)].sort((a, b) => b - a).map((i) => ({ method: "DELETE", url: `${tablePath(e)}/rows/itemAt(index=${i})` })));
+
+/* ---------------------------------- Columns ---------------------------------- */
+
+/** Adds columns at the end of the table (their header names). */
+export const addColumns = (e: ExcelRef, names: string[]) => batch(names.map((name) => ({ method: "POST", url: `${tablePath(e)}/columns/add`, body: { index: null, name } })));
+
+export const deleteColumns = (e: ExcelRef, names: string[]) => batch(names.map((name) => ({ method: "DELETE", url: `${tablePath(e)}/columns/${encodeURIComponent(name)}` })));
+
+/** Rewrites the whole table (header and rows) in place: columns reordered or renamed, same width. */
+export async function rewriteTable(e: ExcelRef, header: string[], rows: Cell[][]) {
+  const { anchor } = await readTable(e);
+  if (header.length !== anchor.width) throw new Error("The table's width changed meanwhile: read it again.");
+  const address = `${letter(anchor.left)}${anchor.top}:${letter(anchor.left + anchor.width - 1)}${anchor.top + rows.length}`;
+  await graph(`${sheetPath(e, anchor.sheet)}/range(address='${address}')`, "PATCH", { values: [header, ...rows] });
+}
+
+/* ------------------------------- The app's sheet ------------------------------ */
+
+/** A hidden sheet keeping the app's data with the file (the columns' types and colors, the views): a JSON text in column A. */
+const APP_SHEET = "_hub";
+const CHUNK = 30_000;
+
+export async function readAppData<T>(e: ExcelRef): Promise<T | undefined> {
+  try {
+    const { values } = await graph(`${sheetPath(e, APP_SHEET)}/range(address='A1:A40')?$select=values`);
+    const text = (values as Cell[][]).map((r) => String(r[0] ?? "")).join("");
+    return text ? (JSON.parse(text) as T) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function writeAppData(e: ExcelRef, data: unknown) {
+  const text = JSON.stringify(data);
+  const chunks = Array.from({ length: 40 }, (_, i) => [text.slice(i * CHUNK, (i + 1) * CHUNK)]);
+  if (text.length > 40 * CHUNK) throw new Error("The app's data is too large for its sheet.");
+  const sheets = (await graph(`${book(e)}/worksheets?$select=name`)).value as { name: string }[];
+  if (!sheets.some((s) => s.name === APP_SHEET)) await graph(`${book(e)}/worksheets/add`, "POST", { name: APP_SHEET });
+  await batch([
+    { method: "PATCH", url: `${sheetPath(e, APP_SHEET)}/range(address='A1:A40')`, body: { values: chunks } },
+    { method: "PATCH", url: sheetPath(e, APP_SHEET), body: { visibility: "Hidden" } },
+  ]);
+}
+
+/* ---------------------------------- The look ---------------------------------- */
+
+export type ColumnLook = { width: number; wrap: boolean; numberFormat?: string };
 
 /**
- * Partial updates (`values` = changed fields only): one request per row, where unchanged cells are
- * `null` (left as they are: formulas and columns not shown by the app are never rewritten).
+ * The look of the table: light gray bold header, thin gray grid, each column's width, wrapping and
+ * number format, rows fitted to their text, header frozen. Steps the API refuses are skipped (a table
+ * still works without its look).
  */
-export async function updateRows(e: ExcelRef, t: Table, changes: { index: number; values: Row }[]) {
-  const { sheet, left, top } = await anchor(e);
-  const ws = `${book(e)}/worksheets('${encodeURIComponent(sheet.replace(/'/g, "''"))}')`;
-  for (const { index, values } of changes) {
-    if (!t.rows[index]) throw new Error(`No row at index ${index}`);
-    const checked = check(t, values, index);
-    const unknown = Object.keys(checked).filter((name) => !t.header.includes(name));
-    if (unknown.length) throw new Error(`Column(s) not in the Excel table: ${unknown.join(", ")}`);
-    const line = top + 1 + index;
-    const address = `${letter(left)}${line}:${letter(left + t.header.length - 1)}${line}`;
-    const cellsRow = t.header.map((name) => (name in checked ? toCell(checked[name]) : null));
-    await graph(`${ws}/range(address='${address}')`, "PATCH", { values: [cellsRow] }).catch((error) => {
-      throw new Error(`Row ${index + 1} (${Object.keys(checked).join(", ")}): ${error instanceof Error ? error.message : error}`);
-    });
-    t.rows[index] = { ...t.rows[index], ...checked };
-  }
-}
-
-/** A row with the fields' default values where it gives none. */
-export const withDefaults = (fields: Field[], row: Row): Row => ({
-  ...Object.fromEntries(fields.filter((f) => f.default !== undefined && !isIdField(f)).map((f) => [f.name, f.default])),
-  ...Object.fromEntries(Object.entries(row).filter(([, v]) => v !== undefined)),
-});
-
-/**
- * Adds rows at the end (defaults filled, ids given). `partial`: a row started in the app, completed
- * afterwards (its required fields may still be empty).
- */
-export async function addRows(e: ExcelRef, t: Table, rows: Row[], { partial = false } = {}) {
-  const required = partial ? [] : t.fields.filter((f) => f.required && !isIdField(f));
-  const checked = rows.map((r) => {
-    const row = check(t, withDefaults(t.fields, r));
-    const missing = required.filter((f) => row[f.name] === undefined || row[f.name] === null || row[f.name] === "" || (Array.isArray(row[f.name]) && !(row[f.name] as unknown[]).length));
-    if (missing.length) throw new Error(`Missing required field(s): ${missing.map((f) => f.label ?? f.name).join(", ")}`);
-    return row;
-  });
-  // Next ids from the file itself (not the screen): unique even when several adds are queued.
-  const id = t.fields.find((f) => isIdField(f) && t.header.includes(f.name));
-  if (id) {
-    const { values } = await graph(`${tablePath(e)}/columns/${encodeURIComponent(id.name)}/dataBodyRange?$select=values`);
-    const ids = nextIds(idPrefix(e.table), (values as unknown[][]).map((v) => v[0]), checked.length);
-    checked.forEach((r, i) => (r[id.name] = ids[i]));
-  }
-  await graph(`${tablePath(e)}/rows/add`, "POST", { index: null, values: checked.map((r) => cells(t, r)) });
-  return checked;
-}
-
-export async function deleteRows(e: ExcelRef, indexes: number[]) {
-  for (const index of [...indexes].sort((a, b) => b - a)) await graph(`${tablePath(e)}/rows/$/itemAt(index=${index})`, "DELETE");
-}
-
-/* -------------------------------- Schema → file ------------------------------- */
-
-/** Reports a long task: what it does now, steps done / total. */
-export type Progress = (label: string, done: number, total: number) => void;
-
-/** The look of every table: light gray bold header, gray 1 px grid, wrapped text. */
-const LOOK = { header: "#E5E7EB", headerFont: "#111827", border: "#9CA3AF", headerHeight: 24, idWidth: 80, width: 180 };
-const EDGES = ["EdgeTop", "EdgeBottom", "EdgeLeft", "EdgeRight", "InsideVertical", "InsideHorizontal"];
-const letter = (n: number) => {
-  let s = "";
-  for (n++; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
-  return s;
-};
-const columnIndex = (col: string) => [...col].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1;
-
-/**
- * "Sync the formatting": only the look of the table changes, never its columns or values — gray bold
- * header, borders around every cell, column widths, text wrapped and rows fitted to it (a step the
- * API refuses is skipped).
- */
-export async function formatTable(e: ExcelRef) {
-  const step = (path: string, body: unknown, method = "PATCH") => graph(path, method, body).catch(() => undefined);
-  const { address } = await graph(`${tablePath(e)}/range?$select=address`);
-  const [, sheetName, firstCol, firstRow, , lastRow] = address.match(/^'?(.*?)'?!\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)/)!;
-  const ws = `${book(e)}/worksheets('${encodeURIComponent(sheetName.replace(/''/g, "'").replace(/'/g, "''"))}')`;
-  const header = ((await graph(`${tablePath(e)}/headerRowRange?$select=values`)).values[0] as unknown[]).map(String);
-  const top = Number(firstRow);
-  const left = columnIndex(firstCol);
-  await step(tablePath(e), { style: "TableStyleLight1", showBandedRows: false, showBandedColumns: false });
-  await step(`${tablePath(e)}/dataBodyRange/format/fill/clear`, {}, "POST");
-  await step(`${tablePath(e)}/headerRowRange/format`, { rowHeight: LOOK.headerHeight, verticalAlignment: "Center", wrapText: false });
-  await step(`${tablePath(e)}/headerRowRange/format/fill`, { color: LOOK.header });
-  await step(`${tablePath(e)}/headerRowRange/format/font`, { color: LOOK.headerFont, bold: true });
-  for (const edge of EDGES) await step(`${tablePath(e)}/range/format/borders/${edge}`, { style: "Continuous", color: LOOK.border, weight: "Thin" });
-  // Widths on a bounded range of each column: through the whole-column address ('C:C') they were not reliably applied.
-  for (const [i, name] of header.entries()) {
-    const col = letter(left + i);
-    await step(`${ws}/range(address='${col}${top}:${col}${Math.max(Number(lastRow), top + 1)}')/format`, { columnWidth: isIdField({ name }) ? LOOK.idWidth : LOOK.width });
-  }
-  await step(`${tablePath(e)}/dataBodyRange/format`, { wrapText: true, verticalAlignment: "Top" });
-  await step(`${tablePath(e)}/dataBodyRange/format/autofitRows`, {}, "POST");
+export async function formatTable(e: ExcelRef, columns: ColumnLook[]) {
+  const { anchor, rows } = await readTable(e);
+  const ws = sheetPath(e, anchor.sheet);
+  const bottom = anchor.top + Math.max(rows.length, 1);
+  const col = (i: number, from = anchor.top, to = bottom) => `${ws}/range(address='${letter(anchor.left + i)}${from}:${letter(anchor.left + i)}${to}')`;
+  const t = tablePath(e);
+  const steps: BatchRequest[] = [
+    { method: "PATCH", url: t, body: { style: "TableStyleLight1", showBandedRows: false, showBandedColumns: false } },
+    { method: "PATCH", url: `${t}/headerRowRange/format`, body: { rowHeight: 24, verticalAlignment: "Center", wrapText: false } },
+    { method: "PATCH", url: `${t}/headerRowRange/format/fill`, body: { color: "#E5E7EB" } },
+    { method: "PATCH", url: `${t}/headerRowRange/format/font`, body: { color: "#111827", bold: true } },
+    ...["EdgeTop", "EdgeBottom", "EdgeLeft", "EdgeRight", "InsideVertical", "InsideHorizontal"].map((edge) => ({ method: "PATCH" as const, url: `${t}/range/format/borders/${edge}`, body: { style: "Continuous", color: "#9CA3AF", weight: "Thin" } })),
+    ...columns.flatMap((c, i): BatchRequest[] => [
+      { method: "PATCH", url: `${col(i)}/format`, body: { columnWidth: c.width, wrapText: c.wrap, verticalAlignment: "Top" } },
+      ...(c.numberFormat && rows.length ? [{ method: "PATCH" as const, url: col(i, anchor.top + 1, bottom), body: { numberFormat: rows.map(() => [c.numberFormat]) } }] : []),
+    ]),
+  ];
+  // Ten at a time, a refused step skipped.
+  for (let i = 0; i < steps.length; i += 10) await Promise.all(steps.slice(i, i + 10).map((s) => graph(s.url, s.method, s.body).catch(() => undefined)));
+  // Then the rows fitted to their (wrapped) text, the header frozen.
+  await graph(`${t}/dataBodyRange/format/autofitRows`, "POST", {}).catch(() => undefined);
+  await graph(`${ws}/freezePanes/freezeRows`, "POST", { count: anchor.top }).catch(() => undefined);
 }
 
 /** A table on the first sheet of an empty workbook, with the given header. */
 export async function createTable(file: Pick<ExcelRef, "driveId" | "itemId">, header: string[]) {
   const { value } = await graph(`${book(file)}/worksheets?$select=name`);
-  const sheet = `${book(file)}/worksheets('${encodeURIComponent(value[0].name)}')`;
+  const sheet = sheetPath(file, value[0].name);
   const address = `A1:${letter(header.length - 1)}1`;
   await graph(`${sheet}/range(address='${address}')`, "PATCH", { values: [header] });
   return (await graph(`${sheet}/tables/add`, "POST", { address, hasHeaders: true })).name as string;
 }
-
-/* --------------------------------- Preview --------------------------------- */
 
 /**
  * URL showing the file in Excel for the web, read only, in an iframe (Graph "preview": the access
@@ -236,49 +187,4 @@ export async function createTable(file: Pick<ExcelRef, "driveId" | "itemId">, he
 export async function previewUrl(e: Pick<ExcelRef, "driveId" | "itemId">) {
   const { getUrl } = await graph(`/drives/${e.driveId}/items/${e.itemId}/preview`, "POST", {});
   return getUrl as string;
-}
-
-/* ---------------------------------- Files ---------------------------------- */
-
-const urls = new Map<string, Promise<string | null>>();
-
-/** Displayable URL of an image cell: SharePoint / OneDrive links are read through Graph with the user's rights. */
-export function imageUrl(value: unknown): Promise<string | null> {
-  const url = String(value ?? "").trim();
-  if (!/^https?:\/\//i.test(url)) return Promise.resolve(null);
-  if (!/sharepoint\.com|1drv\.ms|onedrive\.live\.com/i.test(url)) return Promise.resolve(url);
-  if (!urls.has(url))
-    urls.set(
-      url,
-      request("graph", `/shares/${shareId(url)}/driveItem/content`)
-        .then((r) => (r.ok ? r.blob() : null))
-        .then((b) => (b ? URL.createObjectURL(b) : null))
-        .catch(() => null),
-    );
-  return urls.get(url)!;
-}
-
-/** Sharing link of a SharePoint / OneDrive folder → reference. */
-export async function resolveFolder(link: string) {
-  const item = await graph(`/shares/${shareId(link)}/driveItem?$select=id,name,folder,parentReference`);
-  if (!item.folder) throw new Error("This link is not a folder.");
-  return { link, driveId: item.parentReference.driveId as string, itemId: item.id as string, name: item.name as string };
-}
-
-export const toBase64 = (file: Blob) =>
-  new Promise<string>((resolve) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",")[1]);
-    reader.readAsDataURL(file);
-  });
-
-/**
- * Uploads a file into a folder and returns its direct URL (stored in the cell): usable as is by Power
- * BI (image fields) and by the app. A sharing link for the organization is created so readers can see it.
- */
-export async function uploadFileTo(folder: { driveId: string; itemId: string }, file: File) {
-  if (file.size > 4 * 1024 * 1024) throw new Error("Files up to 4 MB.");
-  const item = await uploadFile({ driveId: folder.driveId, parentId: folder.itemId, path: file.name.replace(/[^\w./ -]+/g, "-"), file });
-  await graph(`/drives/${folder.driveId}/items/${item.id}/createLink`, "POST", { type: "view", scope: "organization" }).catch(() => undefined);
-  return (await graph(`/drives/${folder.driveId}/items/${item.id}?$select=webUrl`)).webUrl as string;
 }

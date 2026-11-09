@@ -3,16 +3,13 @@
  * and what the user may do with each (access). Kept in this browser (IndexedDB); every entry can be
  * downloaded as JSON and imported again.
  */
-import { detectFields, resolveExcel } from "@/services/excel";
 import { fabric, pbi } from "@/services/ms";
 import { addSamples, readModel } from "@/services/model";
 import { parseDatasetUrl, parseReportUrl, scope, type Ref } from "@/services/pbi";
-import { addEmptyGuides } from "@/features/trainer/guides";
 import { definition, legacyDefinition } from "@/services/report-def";
 import { describeReport } from "@/services/report-schema";
-import { COLORS, ID_FIELD, fieldsErrors, isIdField, type Field, type FormSection } from "@/features/excel/schema";
-import { all, find, patch, put, remove, type DatasetEntry, type ExcelRef, type Name, type ReportEntry, type SchemaEntry } from "./store";
-import { workspaceId } from "@/services/tmdl";
+import { find, patch, put, type DatasetEntry, type Name, type ReportEntry } from "./store";
+import type { ReportSchema } from "@/services/report-schema";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -33,6 +30,10 @@ async function reportAccess(ref: Ref): Promise<Pick<ReportEntry, "access" | "acc
   }
 }
 
+/** Called with each report added and its schema (e.g. the Trainer makes an empty guide per visual). */
+const reportListeners = new Set<(entry: ReportEntry, schema: ReportSchema) => unknown>();
+export const onReportAdded = (listener: (entry: ReportEntry, schema: ReportSchema) => unknown) => (reportListeners.add(listener), () => void reportListeners.delete(listener));
+
 export async function addReport(link: string): Promise<ReportEntry> {
   const ref = parseReportUrl(link);
   const r = await pbi(ref.appId ? `/apps/${ref.appId}/reports/${ref.id}` : `${scope(ref.groupId)}/reports/${ref.id}`);
@@ -51,23 +52,9 @@ export async function addReport(link: string): Promise<ReportEntry> {
   });
   // Its semantic model comes with it (in the background: reading a model takes a while).
   if (!(await find("datasets", r.datasetId))) void addDataset(r.datasetId, entry.datasetGroupId, `${r.name} (model)`).catch(() => undefined);
-  // Its schema, then an empty guide for each visual (the guides file then lists them all), in the background too.
-  void (old?.schema ? Promise.resolve(old.schema) : describeReport(entry)).then((schema) => addEmptyGuides(entry.id, schema)).catch(() => undefined);
+  // Its schema, then what the features do with a new report (e.g. a guide per visual), in the background too.
+  void (old?.schema ? Promise.resolve(old.schema) : describeReport(entry)).then((schema) => Promise.all([...reportListeners].map((l) => l(entry, schema)))).catch(() => undefined);
   return entry;
-}
-
-/**
- * A new report on a semantic model (its link or id), live-connected to it, created in My workspace in
- * the format the Builder edits (PBIR), with one blank page; added to the app. Needs Build (or edit)
- * on the model.
- */
-export async function createReportFromModel(modelLink: string, name?: string) {
-  const model = await addDataset(modelLink);
-  if (model.access === "view") throw new Error(`You cannot build on "${model.name}": a report on it needs the Build permission on the semantic model.${model.error ? ` (${model.error})` : ""}`);
-  const title = name?.trim() || `${model.name} — report`;
-  const { createBlankReport } = await import("@/features/builder/new-report");
-  const id = await createBlankReport(title, { id: model.id, groupId: model.groupId });
-  return addReport(`https://app.powerbi.com/groups/me/reports/${id}`);
 }
 
 /** Why a report cannot be edited by the Builder (a report of a Power BI app), with the way out. */
@@ -103,101 +90,12 @@ export async function addDataset(linkOrId: string, groupId?: string, fallbackNam
 
 export const refreshDataset = (entry: DatasetEntry) => addDataset(entry.id, entry.groupId, entry.name);
 
-const q = (name: string) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : `'${name.replace(/'/g, "''")}'`);
-/** Field type → TMDL dataType and Power Query type (choices, long text and file links are text). */
-const TYPES: Record<Field["type"], [string, string]> = {
-  string: ["string", "type text"],
-  text: ["string", "type text"],
-  option: ["string", "type text"],
-  url: ["string", "type text"],
-  image: ["string", "type text"],
-  file: ["string", "type text"],
-  number: ["double", "type number"],
-  rating: ["int64", "Int64.Type"],
-  date: ["dateTime", "type date"],
-};
-
-/** An Excel table as a TMDL table: typed columns read from the file (Power Query), and a row count measure. */
-function excelTableTmdl(name: string, excel: ExcelRef, fields: Field[]) {
-  const columns = fields.map((f) =>
-    [
-      f.description && `\t/// ${f.description.replace(/\n/g, " ")}`,
-      `\tcolumn ${q(f.name)}`,
-      `\t\tdataType: ${TYPES[f.type][0]}`,
-      f.type === "date" && "\t\tformatString: Short Date",
-      `\t\tsummarizeBy: ${f.type === "number" && !isIdField(f) ? "sum" : "none"}`,
-      `\t\tsourceColumn: ${f.name}`,
-      (f.type === "image" || f.type === "file") && "\t\tdataCategory: ImageUrl",
-      f.type === "url" && "\t\tdataCategory: WebUrl",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  );
-  const types = fields.map((f) => `{"${f.name.replace(/"/g, '""')}", ${TYPES[f.type][1]}}`).join(", ");
-  return `table ${q(name)}
-
-${columns.join("\n\n")}
-
-\tmeasure 'Rows of ${name.replace(/'/g, "''")}' = COUNTROWS(${q(name)})
-
-\tpartition ${q(name)} = m
-\t\tmode: import
-\t\tsource =
-\t\t\t\tlet
-\t\t\t\t    Source = Excel.Workbook(Web.Contents("${excel.fileUrl}"), null, true),
-\t\t\t\t    Data = Source{[Item="${excel.table}",Kind="Table"]}[Data],
-\t\t\t\t    Typed = Table.TransformColumnTypes(Data, {${types}})
-\t\t\t\tin
-\t\t\t\t    Typed
-`;
-}
-
-/* --------------------------------- Schemas --------------------------------- */
-
-/** Built-in schemas of the report viewer: fixed fields; one Excel file holds the rows of every report (report_id). */
-export const GUIDE_FIELDS: Field[] = [
-  ID_FIELD,
-  { name: "report_id", type: "string", required: true, description: "Id of the Power BI report" },
-  { name: "page", type: "string", required: true, description: "Page name (id) of the report" },
-  { name: "visual", type: "string", required: true, description: "Visual name (id) on that page" },
-  { name: "title", type: "string", required: true },
-  { name: "content", type: "text", description: "The guide, in markdown" },
-];
-/**
- * The guides now live in this browser (src/features/trainer/guides.ts): the built-in schemas of older versions (guides
- * and links in Excel files) leave the library (their Excel files are kept).
- */
-export async function ensureBuiltIns() {
-  for (const s of await all("schemas")) if (s.builtIn || s.id === "links") await remove("schemas", s.id);
-}
-
-/** An Excel table of a link: the given table, else the first one. */
-async function excelOf(link: string, table?: string): Promise<ExcelRef & { tables: string[] }> {
-  const file = await resolveExcel(link);
-  const name = table && file.tables.includes(table) ? table : file.tables[0];
-  return { link, driveId: file.driveId, itemId: file.itemId, name: file.name, table: name ?? "", fileUrl: file.fileUrl, webUrl: file.webUrl, tables: file.tables };
-}
-
-/** Adds an Excel table (its columns are the header of the table, read again each time it is opened). */
-export async function addSchema({ excel: link, table, title }: { excel: string; table?: string; title?: string }) {
-  const { tables, ...excel } = await excelOf(link, table);
-  if (!excel.table) throw new Error(`"${excel.name}" has no Excel table: select the data in Excel and use Insert › Table.`);
-  const fields = await detectFields(excel);
-  const old = (await all("schemas")).find((s) => s.excel?.itemId === excel.itemId && s.excel.table === excel.table);
-  return put("schemas", {
-    ...old,
-    id: old?.id ?? crypto.randomUUID(),
-    title: title?.trim() || old?.title || (tables.length > 1 ? `${excel.name} › ${excel.table}` : excel.name),
-    excel,
-    fields,
-    contextIds: old?.contextIds ?? [],
-  });
-}
-
 /* ------------------------------ Download / import ------------------------------ */
 
-export type Kind = "reports" | "datasets" | "schemas" | "researches" | "decks";
-const KINDS: Kind[] = ["reports", "datasets", "schemas", "researches", "decks"];
+/** The collections whose entries can be downloaded and imported again (features add theirs). */
+export type Kind = Name;
+const KINDS = new Set<Kind>(["reports", "datasets"]);
+export const registerKind = (kind: Kind) => void KINDS.add(kind);
 
 /** Saves a file in the browser. */
 export function downloadText(name: string, text: string, type = "application/json") {
@@ -218,7 +116,7 @@ export async function importEntries(files: FileList | File[]) {
     const data = JSON.parse(await file.text());
     const items: { hub: Kind; entry: { id: string } }[] = Array.isArray(data) ? data : [data];
     for (const item of items) {
-      if (!KINDS.includes(item?.hub) || typeof item.entry?.id !== "string") throw new Error(`${file.name}: not an entry downloaded from the library.`);
+      if (!KINDS.has(item?.hub) || typeof item.entry?.id !== "string") throw new Error(`${file.name}: not an entry downloaded from the library.`);
       await put(item.hub as Name, { contextIds: [], ...item.entry } as never);
       count++;
     }

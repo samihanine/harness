@@ -18,7 +18,7 @@ import { z } from "zod";
 import { AiAuthError, openSession, type Session } from "./llm";
 import { ReplyError, parseReply } from "./reply";
 import { LEARN_FROM_MISTAKES } from "@/config";
-import { contextRound } from "@/features/confluence/context-pages";
+import { contextRound } from "@/services/context-pages";
 import { addMistakes, alike, mistakesText, type Mistake } from "@/lib/mistakes";
 import { settings } from "@/lib/store";
 import { AGENT, DIRECT, NOTES, PROTOCOL } from "@/prompts/agent";

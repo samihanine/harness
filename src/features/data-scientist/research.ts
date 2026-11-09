@@ -25,6 +25,11 @@ export type ChartSheet = DataSheet & { kind: "chart"; chart: ChartKind; spec?: P
 export type CalcSheet = SheetBase & { kind: "calc"; cells: string[][] };
 export type Sheet = PivotSheet | ChartSheet | CalcSheet;
 
+declare module "@/lib/store" {
+  interface Collections {
+    researches: ResearchEntry;
+  }
+}
 export type ResearchEntry = { id: string; name: string; datasetIds: string[]; text: string; sheets: Sheet[]; updatedAt: number };
 
 export const newResearch = (name: string): ResearchEntry => ({ id: crypto.randomUUID(), name, datasetIds: [], text: "", sheets: [], updatedAt: Date.now() });

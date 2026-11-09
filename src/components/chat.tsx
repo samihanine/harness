@@ -24,10 +24,10 @@ import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, Command
 import { Input } from "./ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { forgetSession, runTurn, type Agent, type Choices, type Status, type Update } from "@/agent/loop";
-import { contextRound } from "@/features/confluence/context-pages";
+import { contextRound } from "@/services/context-pages";
 import { AI_MODELS, addFileToConversation, deleteRemoteConversation, uploadAiFile } from "@/agent/llm";
 import { FILE_UPLOAD, MASCOT, PROMPTS, RATINGS, withPrompts, type PromptScreen } from "@/config";
-import { WakingMascot, outfitOf, runningState, type MascotState, type Outfit } from "@/features/mascot";
+import { WakingMascot, outfitOf, runningState, type MascotState, type Outfit } from "@/components/mascot";
 import { RateButtons } from "./rating";
 import { find, put, remove, settings, useCollection, useLoaded, type Conversation } from "@/lib/store";
 import { last } from "@/lib/last";

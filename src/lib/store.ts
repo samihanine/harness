@@ -5,8 +5,6 @@
 import { useEffect, useState } from "react";
 import { get, set } from "idb-keyval";
 import type { ModelInfo } from "@/services/model";
-import type { Field, FormSection } from "@/features/excel/schema";
-import { upgradeSlide } from "@/features/presenter/slides/upgrade";
 
 /** What the signed-in user may do: edit (definition readable and writable), build (DAX queries), view. */
 export type Access = "edit" | "build" | "view";
@@ -50,35 +48,6 @@ export type DatasetEntry = {
   renamed?: boolean;
 };
 
-/** An Excel table on SharePoint / OneDrive, as found from its link. */
-export type ExcelRef = { link: string; driveId: string; itemId: string; name: string; table: string; fileUrl: string; webUrl?: string };
-/** A Microsoft Form (its id holds the tenant and the owner). */
-export type FormRef = { url: string; id: string; title: string };
-
-/**
- * A schema: an Excel table (required), the Microsoft Form filling it (optional) and the definition of
- * its columns. `builtIn` schemas (the report viewer's guides) have fixed fields: only their
- * Excel file can be set.
- */
-export type SchemaEntry = {
-  id: string;
-  title: string;
-  builtIn?: "guides";
-  excel?: ExcelRef;
-  form?: FormRef;
-  fields: Field[];
-  /** Sections of the form (and where each goes when done); none: one page. */
-  sections?: FormSection[];
-  /** Folder receiving uploaded files (chosen by the user; required to upload). */
-  filesFolder?: { link: string; driveId: string; itemId: string; name: string };
-  /** Named views of the Excel editor. */
-  views?: { name: string; view: Record<string, unknown> }[];
-  contextIds: string[];
-};
-
-/** A research (kept in this browser): see research.ts. */
-export type ResearchEntry = import("@/features/data-scientist/research").ResearchEntry;
-
 /** The user's opinion of an answer or of a whole conversation (optional), with an optional note. */
 export type Rating = { score: "good" | "bad"; note?: string; at: number };
 
@@ -90,14 +59,21 @@ export type Conversation = { id: string; scope: string; title: string; messages:
 /** `model`: the assistants' (and of the one-call features). `maxSteps`: tool turns per message. `configLink`: the SharePoint JSON file holding the app's options (read at start). */
 export type Settings = { aiKey?: string; model?: string; maxSteps?: number; configLink?: string; confluence?: { url: string; email?: string; key: string; folderId: string } };
 
-/** A slide deck (its JSON: see src/features/presenter/slides) and the models and reports it is written from. */
-export type DeckEntry = { id: string; name: string; deck: import("@/features/presenter/slides").Deck; updatedAt: number; sources?: { datasetIds: string[]; reportIds: string[]; schemaIds?: string[] } };
-
-/** The guide of a visual of a report (Trainer › guide of the clicked visual), in markdown. */
-export type GuideEntry = { id: string; reportId: string; page: string; visual: string; title: string; content: string; updatedAt: number };
-
-type Collections = { reports: ReportEntry; datasets: DatasetEntry; schemas: SchemaEntry; researches: ResearchEntry; decks: DeckEntry; conversations: Conversation; guides: GuideEntry };
+/**
+ * The collections of the library. The features add theirs to this interface (TypeScript declaration
+ * merging, e.g. `declare module "@/lib/store" { interface Collections { researches: ResearchEntry } }`),
+ * so this file never has to know them.
+ */
+export interface Collections {
+  reports: ReportEntry;
+  datasets: DatasetEntry;
+  conversations: Conversation;
+}
 export type Name = keyof Collections;
+
+/** How a feature reads its entries of an older version (lists left out by it are there, empty). */
+const normalizers = new Map<string, (item: any) => unknown>();
+export const registerNormalizer = (name: Name, normalize: (item: any) => unknown) => void normalizers.set(name, normalize);
 
 const cache = new Map<Name, unknown[]>();
 const loading = new Map<Name, Promise<void>>();
@@ -123,14 +99,10 @@ function normalize(name: Name, item: any) {
           info: { ...item.info, tables: list(item.info.tables).map((t: any) => ({ ...t, columns: list(t?.columns), measures: list(t?.measures), hierarchies: list(t?.hierarchies) })), relationships: list(item.info.relationships), roles: list(item.info.roles), warnings: list(item.info.warnings) },
         }),
       };
-    case "schemas":
-      return { ...withContexts, fields: list(item.fields) };
     case "conversations":
       return { ...item, messages: list(item.messages) };
-    case "decks":
-      return item.deck ? { ...item, deck: { ...item.deck, slides: list(item.deck.slides).map(upgradeSlide) } } : item;
     default:
-      return item;
+      return normalizers.get(name)?.(withContexts) ?? withContexts;
   }
 }
 

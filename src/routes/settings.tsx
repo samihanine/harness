@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { BookOpenIcon, FileTextIcon, GaugeIcon, UploadIcon, BarChart3Icon, DownloadIcon, LogOutIcon, MonitorIcon, MoonIcon, PresentationIcon, RotateCcwIcon, SaveIcon, SearchIcon, Settings2Icon, SettingsIcon, SmileIcon, SparklesIcon, SunIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -7,19 +7,18 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { Section, Workspace } from "@/components/workspace";
+import { ScrollPage as Page, ScreenFallback, Section, Workspace } from "@/components/workspace";
 import { ConversationsDialog } from "@/components/conversations";
-import { Mascot, OUTFIT_LABELS, STATES, STATE_LABELS, type MascotState, type Outfit } from "@/features/mascot";
+import { Mascot, OUTFIT_LABELS, STATES, STATE_LABELS, type MascotState, type Outfit } from "@/components/mascot";
 import { AI_MODELS } from "@/agent/llm";
-import { DEFAULT_CONFIG, SCREEN_LABELS, TOKEN_SERVER, applyConfig, currentConfig, type HubConfig, type Screen } from "@/config";
+import { DEFAULT_CONFIG, TOKEN_SERVER, applyConfig, currentConfig, type HubConfig } from "@/config";
+import { featureOf, features } from "@/lib/features";
 import { allMistakes, clearMistakes } from "@/lib/mistakes";
 import { settings } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { signOut, tokenStatus } from "@/services/ms";
-import { downloadGuides, importGuides } from "@/features/trainer/guides";
 import { listPages } from "@/services/confluence";
 import { all, useCollection } from "@/lib/store";
-import { TemplateGallery } from "@/features/presenter/slides/gallery";
 
 export const Route = createFileRoute("/settings")({
   validateSearch: (s: Record<string, unknown>): { tab?: string } => ({ tab: (s.tab as string) || undefined }),
@@ -27,7 +26,6 @@ export const Route = createFileRoute("/settings")({
 });
 
 const LABELS: Record<string, string> = {
-  ...SCREEN_LABELS,
   home: "Home page (a card per screen)",
   aiPanel: "AI panel on every screen",
   visualPreview: "Guides: live preview of the clicked visual",
@@ -38,7 +36,6 @@ const LABELS: Record<string, string> = {
   fileUpload: "Add files to a conversation (paperclip)",
   ratings: "Rate the answers and the conversations (thumbs up / down, optional note)",
   guideEditor: "Guides: edit the guides in the viewer",
-  excelUpload: "Excel: upload files into image / file columns",
   guides: "Trainer tab: Guides",
   measures: "Builder tab: Measures",
   visualPdf: "Visual as PDF (Guides)",
@@ -59,7 +56,6 @@ function Settings() {
   const [applied, setApplied] = useState(false);
   const set = <K extends keyof HubConfig>(key: K, value: HubConfig[K]) => (setDraft((d) => ({ ...d, [key]: value })), setApplied(false));
   const changed = JSON.stringify(draft) !== JSON.stringify(currentConfig());
-  const reports = useCollection("reports");
   return (
     <Workspace
       title="Settings"
@@ -91,7 +87,7 @@ function Settings() {
                 <div className="flex flex-col gap-4">
                   {(Object.keys(draft.prompts) as (keyof HubConfig["prompts"])[]).map((k) => (
                     <div key={k} className="flex flex-col gap-1.5">
-                      <Label htmlFor={`prompt-${k}`}>{k === "all" ? "Every screen" : (SCREEN_LABELS[k as Screen] ?? k)}</Label>
+                      <Label htmlFor={`prompt-${k}`}>{k === "all" ? "Every screen" : (featureOf(k)?.label ?? k)}</Label>
                       <Textarea id={`prompt-${k}`} rows={2} value={draft.prompts[k]} onChange={(e) => set("prompts", { ...draft.prompts, [k]: e.target.value })} />
                     </div>
                   ))}
@@ -116,31 +112,23 @@ function Settings() {
               <Section title="Builder" description="Tabs of the Builder.">
                 <Flags value={{ measures: draft.builderTabs.measures }} onChange={(v) => set("builderTabs", { ...draft.builderTabs, ...v })} />
               </Section>
-              <Section title="Excels">
-                <Flags value={{ excelUpload: draft.excelUpload }} onChange={(v) => set("excelUpload", v.excelUpload)} />
-              </Section>
               <Section title="Exports" description="The Power BI export API needs a Premium capacity: on Pro, PDF goes through the browser's print dialog.">
                 <Flags value={draft.export} onChange={(v) => set("export", v)} />
               </Section>
             </Page>
           ),
         },
-        {
-          id: "guides",
-          label: "Guides",
-          icon: BookOpenIcon,
+        // The tabs given by the features (e.g. Trainer › Guides, Presenter › Template).
+        ...features().flatMap((f) => f.settings ?? []).map((t) => ({
+          id: t.id,
+          label: t.label,
+          icon: t.icon,
           content: (
-            <Page>
-              <Guides />
-            </Page>
+            <Suspense fallback={<ScreenFallback />}>
+              <t.Panel />
+            </Suspense>
           ),
-        },
-        {
-          id: "slides",
-          label: "Slides",
-          icon: PresentationIcon,
-          content: <TemplateGallery report={reports[0]?.id} />,
-        },
+        })),
         {
           id: "performance",
           label: "Performance",
@@ -187,11 +175,6 @@ function Settings() {
                     <Input id="app-title" value={draft.appTitle} onChange={(e) => set("appTitle", e.target.value)} />
                   </div>
                   <div className="flex flex-col gap-1.5">
-                    <Label htmlFor="brand-name">Brand of the slide decks</Label>
-                    <Input id="brand-name" value={draft.brandName} onChange={(e) => set("brandName", e.target.value)} />
-                    <p className="text-[12px] text-muted-foreground">Default brand name in slide headers and covers (a deck can set its own).</p>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
                     <Label htmlFor="app-color">Primary color</Label>
                     <span className="flex items-center gap-2">
                       <input id="app-color" type="color" className="h-9 w-11 cursor-pointer rounded-md border" value={/^#[0-9a-f]{6}$/i.test(draft.primaryColor) ? draft.primaryColor : "#2563eb"} onChange={(e) => set("primaryColor", e.target.value)} />
@@ -215,19 +198,13 @@ function Settings() {
   );
 }
 
-const Page = ({ children }: { children: ReactNode }) => (
-  <div className="min-h-0 flex-1 overflow-y-auto">
-    <div className="mx-auto flex max-w-3xl flex-col gap-5 px-6 py-8">{children}</div>
-  </div>
-);
-
 function Flags<T extends Record<string, boolean>>({ value, onChange }: { value: T; onChange: (v: T) => void }) {
   return (
     <div className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
       {Object.entries(value).map(([k, on]) => (
         <label key={k} className="flex cursor-pointer items-center gap-3 text-[13.5px]">
           <Switch checked={on} onCheckedChange={(v) => onChange({ ...value, [k]: v })} />
-          {LABELS[k] ?? k}
+          {featureOf(k)?.label ?? LABELS[k] ?? k}
         </label>
       ))}
     </div>
@@ -299,41 +276,6 @@ function Microsoft({ server, onServer }: { server: string; onServer: (v: string)
         <Input id="token-server" className="font-mono text-[13px]" value={server} onChange={(e) => onServer(e.target.value)} />
         <p className="text-[12px] text-muted-foreground">Started with the app by "bun dev" (or alone: "bun run token", or the dist/hub-token-server program).</p>
       </div>
-    </Section>
-  );
-}
-
-/* --------------------------------- Guides --------------------------------- */
-
-/** The guides of the report viewer, kept in this browser: download them as Excel, import Excel or CSV. */
-function Guides() {
-  const guides = useCollection("guides");
-  const file = useRef<HTMLInputElement>(null);
-  const [state, setState] = useState<{ busy?: string; done?: string; error?: string }>({});
-  const run = (busy: string, task: () => Promise<string>) => (setState({ busy }), task().then((done) => setState({ done }), (e) => setState({ error: e instanceof Error ? e.message : String(e) })));
-  return (
-    <Section
-      title="Guides"
-      description={`The guide of each visual of the reports (Trainer), kept in this browser: ${guides.length} guide(s). The Excel / CSV file has the columns id, report_id, page, visual, title, content.`}
-      actions={
-        <>
-          <input ref={file} type="file" accept=".xlsx,.csv" hidden onChange={(e) => {
-            const f = e.target.files?.[0];
-            e.target.value = "";
-            if (f) run("Importing…", async () => `${await importGuides(f)} guide(s) imported.`);
-          }} />
-          <Button size="sm" variant="outline" onClick={() => file.current?.click()}>
-            <UploadIcon /> Import Excel / CSV
-          </Button>
-          <Button size="sm" variant="outline" disabled={!guides.length} onClick={() => run("Writing the file…", async () => (await downloadGuides(), "Downloaded."))}>
-            <DownloadIcon /> Download as Excel
-          </Button>
-        </>
-      }
-    >
-      {state.busy && <p className="text-[13px] text-muted-foreground">{state.busy}</p>}
-      {state.done && <p className="text-[13px] text-success">{state.done}</p>}
-      {state.error && <p className="text-[13px] text-destructive">{state.error}</p>}
     </Section>
   );
 }

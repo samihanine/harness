@@ -2,14 +2,15 @@
 import { useState } from "react";
 import { AddDialog } from "./entity";
 import { EntityPicker } from "./workspace";
-import { addDataset, addReport, createReportFromModel, notEditable } from "@/lib/library";
+import { addDataset, addReport, notEditable } from "@/lib/library";
+import type { ReportEntry } from "@/lib/store";
 import { useCollection } from "@/lib/store";
 
 /**
  * Reports known to the app. `editable` (Builder): only those whose definition can be changed; a report
- * added that is not editable is refused with the reason; a new report can be made from a model.
+ * added that is not editable is refused with the reason; `createFromModel` (Builder): a new report from a model.
  */
-export function ReportPicker({ value, onChange, editable = false }: { value?: string; onChange: (id: string) => void; editable?: boolean }) {
+export function ReportPicker({ value, onChange, editable = false, createFromModel }: { value?: string; onChange: (id: string) => void; editable?: boolean; createFromModel?: (model: string, name?: string) => Promise<ReportEntry> }) {
   // Builder: every report that is not an app's (definition closed → edited through the Power BI editor).
   const reports = useCollection("reports").filter((r) => !editable || !r.appId);
   const [adding, setAdding] = useState<"link" | "model">();
@@ -22,7 +23,7 @@ export function ReportPicker({ value, onChange, editable = false }: { value?: st
         placeholder={reports.length ? "Choose a report" : "Add a report"}
         onAdd={() => setAdding("link")}
         addLabel="Add a report…"
-        more={editable ? [{ label: "New report from a semantic model…", onSelect: () => setAdding("model") }] : undefined}
+        more={editable && createFromModel ? [{ label: "New report from a semantic model…", onSelect: () => setAdding("model") }] : undefined}
       />
       <AddDialog
         open={adding === "link"}
@@ -37,7 +38,7 @@ export function ReportPicker({ value, onChange, editable = false }: { value?: st
           onChange(entry.id);
         }}
       />
-      {editable && (
+      {editable && createFromModel && (
         <AddDialog
           open={adding === "model"}
           onOpenChange={(o) => setAdding(o ? "model" : undefined)}
@@ -48,7 +49,7 @@ export function ReportPicker({ value, onChange, editable = false }: { value?: st
             { name: "name", label: "Report name", optional: true },
           ]}
           submit="Create"
-          onSubmit={async ({ model, name }) => onChange((await createReportFromModel(model, name)).id)}
+          onSubmit={async ({ model, name }) => onChange((await createFromModel(model, name || undefined)).id)}
         />
       )}
     </>

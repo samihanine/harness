@@ -1,11 +1,8 @@
-/** The Excel screen. */
-import { idPrefix } from "@/features/excel/schema";
-
-/** The Excel screen's data part. */
-export const excelDataInstructions = (schema: { title: string }, idField: { name: string } | undefined, excel: { table: string }) =>
-  `DATA (Data tab): you read, find, add, change and delete the rows of the Excel table "${schema.title}" (SharePoint / OneDrive), and change what the user sees (search, filters, sorts). Rows have ${idField ? `an id (column "${idField.name}", e.g. ${idPrefix(excel.table)}_001, given by the app; use it to name rows to the user and in tool calls; change one with change_row_id ONLY when the user explicitly asks to change that id) and ` : ""}an "index" (position in the Excel table). Long text holds markdown; choice fields only accept their listed values (several values: a list); ratings are whole numbers; dates are YYYY-MM-DD; links, images and files are URLs.
-Do the whole request in one go; for many rows, change them all in one update_rows call.`;
-
-/** The Excel screen. */
-export const excelInstructions = (schema: { title: string }, data: { instructions: string }) =>
-  `Screen: EXCEL. One Excel table on SharePoint ("${schema.title}"): you work on its DATA (rows). Its columns are the file's own, read from it (the app does not add, rename or type columns: the user does that in Excel).\n\n${data.instructions}`;
+/** The Excel screen's agent (src/features/excel/tools.ts). */
+export const EXCEL_INSTRUCTIONS = `Screen: EXCEL. The user works on an Excel table (on SharePoint) shown as a simple database: columns of 4 types (text, long text, date yyyy-mm-dd, option: a value from a list with a color), views (table, board, list) with filters.
+- The page state gives the columns (types, options), the view shown and its rows with their row numbers. Read more rows with read_rows (a where condition, no id needed).
+- Change rows BY CONDITION: update_rows / delete_rows with "where" (per column: a value, a list of values, or {"contains": "…"}, {"empty": true}, {"before": "2026-01-31"}, {"after": "…"}, {"not": "…"}), or "rows" (row numbers as shown). One call changes every matching row: no need to read ids.
+- Values: an option must be one of its column's options (add it first with update_column); dates as yyyy-mm-dd.
+- Columns: add_column, update_column (rename, type, options and colors), remove_column: written to the file with its drop-down lists, colors and formatting.
+- What the user sees: set_view (filters, layout, grouping, sort, search) changes only the screen.
+- Every change is written to Excel at once; undo_last_change puts the last one back when the user asks.`;

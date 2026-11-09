@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 /**
  * The app's options. The values below are the defaults; an admin can change them from Settings
  * (saved in a JSON file on SharePoint, and cached in this browser), without a developer. They are
@@ -6,8 +8,6 @@
 
 /** Name shown in the sidebar and the browser tab. */
 export let APP_TITLE = "Hub";
-/** Default brand name of the slide decks (a deck's theme.brand replaces it): headers, covers, monogram. */
-export let BRAND_NAME = "Hub";
 /** Primary color (buttons, active states), any CSS color. */
 export let PRIMARY_COLOR = "#2563eb";
 
@@ -44,8 +44,6 @@ export let MASCOT = true;
 export let RATINGS = true;
 /** Report viewer › Guides: "Why did it change?" button of a time chart (the app breaks the change down by dimension, the AI tells it). */
 export let VISUAL_WHY = true;
-/** Excel editor: uploading files into image / file fields (to the schema's uploads folder, set in the Schema editor). */
-export let EXCEL_UPLOAD = true;
 
 /** Export features and their buttons. */
 export const EXPORT = {
@@ -70,7 +68,7 @@ export const SCREENS = {
   slides: true,
   reports: true,
   datasets: true,
-  excel: false,
+  excel: true,
   /** Confluence pages (Settings › Confluence), edited as markdown; each one is a context linked to items. */
   confluence: true,
 };
@@ -96,31 +94,11 @@ export const withPrompts = (screen: PromptScreen, instructions: string) => {
   return added ? `${instructions}\n\nAdditional instructions from the administrator (follow them):\n${added}` : instructions;
 };
 
-/** Address and name of each screen. */
-export const SCREEN_PATHS: Record<Screen, string> = { viewer: "/viewer", editor: "/editor", research: "/research", reports: "/reports", datasets: "/datasets", excel: "/excel", slides: "/slides", confluence: "/confluence" };
-export const SCREEN_LABELS: Record<Screen, string> = { viewer: "Trainer", editor: "Builder", research: "Data Scientist", slides: "Presenter", reports: "Reports", datasets: "Datasets", excel: "Excels", confluence: "Confluence" };
-/** The screens by group (sidebar, home page): the AI assistants, then the library. */
-export const SCREEN_GROUPS: Screen[][] = [["viewer", "editor", "research", "slides"], ["reports", "datasets", "excel", "confluence"]];
-/** What each screen is for, in a line (home page). */
-export const SCREEN_DESCRIPTIONS: Record<Screen, string> = {
-  viewer: "Read a Power BI report with an assistant that explains it, filters it and answers from its data.",
-  editor: "Build and change Power BI reports — pages, visuals, formatting — from your requests.",
-  research: "Answer business questions from your models with figures, matrices and charts.",
-  slides: "Write slide decks from your data and reports, then present them or export them.",
-  reports: "Your Power BI reports: their pages, visuals, fields and notes.",
-  datasets: "Your semantic models: tables, measures, relationships, DAX and Power Query.",
-  excel: "Excel tables on SharePoint and their forms: data, columns and views.",
-  confluence: "Confluence pages of a folder, edited with the assistant and given to it as context.",
-};
-/** First screen shown (where a hidden screen leads). */
-export const firstScreen = () => SCREEN_PATHS[(Object.keys(SCREENS) as Screen[]).find((k) => SCREENS[k]) ?? "viewer"] ?? "/settings";
-
 /* ------------------------------ Runtime config ----------------------------- */
 
 /** Every option, as saved in the JSON file. */
 export type HubConfig = {
   appTitle: string;
-  brandName: string;
   primaryColor: string;
   tokenServer: string;
   fileUpload: boolean;
@@ -130,7 +108,6 @@ export type HubConfig = {
   visualPreview: boolean;
   visualExplain: boolean;
   guideEditor: boolean;
-  excelUpload: boolean;
   learnFromMistakes: boolean;
   visualWhy: boolean;
   ratings: boolean;
@@ -145,7 +122,6 @@ export type HubConfig = {
 export const currentConfig = (): HubConfig =>
   structuredClone({
     appTitle: APP_TITLE,
-    brandName: BRAND_NAME,
     primaryColor: PRIMARY_COLOR,
     tokenServer: TOKEN_SERVER,
     fileUpload: FILE_UPLOAD,
@@ -155,7 +131,6 @@ export const currentConfig = (): HubConfig =>
     visualPreview: VISUAL_PREVIEW,
     visualExplain: VISUAL_EXPLAIN,
     guideEditor: GUIDE_EDITOR,
-    excelUpload: EXCEL_UPLOAD,
     learnFromMistakes: LEARN_FROM_MISTAKES,
     visualWhy: VISUAL_WHY,
     ratings: RATINGS,
@@ -171,8 +146,15 @@ export const currentConfig = (): HubConfig =>
 export const DEFAULT_CONFIG = currentConfig();
 
 const listeners = new Set<() => void>();
-/** Called after each change (the root layout draws the screens again). */
+let version = 0;
+/** Called after each change. */
 export const onConfigChange = (listener: () => void) => (listeners.add(listener), () => void listeners.delete(listener));
+/**
+ * Draws the calling component again when an option changes (the layout, each screen's host and the
+ * Workspace use it): the screens are redrawn in place, never mounted again, so embedded reports and
+ * chats keep their state.
+ */
+export const useConfig = () => useSyncExternalStore(onConfigChange, () => version);
 
 /** Only the known options, of the right type, are taken (a hand-edited file cannot break the app). */
 const take = <T extends Record<string, unknown>>(target: T, given: unknown) => {
@@ -183,7 +165,6 @@ const take = <T extends Record<string, unknown>>(target: T, given: unknown) => {
 export function applyConfig(given: Partial<HubConfig>, { cache = true } = {}) {
   const pick = <T,>(v: unknown, current: T): T => (typeof v === typeof current ? (v as T) : current);
   APP_TITLE = pick(given.appTitle, APP_TITLE);
-  BRAND_NAME = pick(given.brandName, BRAND_NAME);
   PRIMARY_COLOR = pick(given.primaryColor, PRIMARY_COLOR);
   TOKEN_SERVER = pick(given.tokenServer, TOKEN_SERVER);
   FILE_UPLOAD = pick(given.fileUpload, FILE_UPLOAD);
@@ -193,7 +174,6 @@ export function applyConfig(given: Partial<HubConfig>, { cache = true } = {}) {
   VISUAL_PREVIEW = pick(given.visualPreview, VISUAL_PREVIEW);
   VISUAL_EXPLAIN = pick(given.visualExplain, VISUAL_EXPLAIN);
   GUIDE_EDITOR = pick(given.guideEditor, GUIDE_EDITOR);
-  EXCEL_UPLOAD = pick(given.excelUpload, EXCEL_UPLOAD);
   LEARN_FROM_MISTAKES = pick(given.learnFromMistakes, LEARN_FROM_MISTAKES);
   VISUAL_WHY = pick(given.visualWhy, VISUAL_WHY);
   RATINGS = pick(given.ratings, RATINGS);
@@ -215,6 +195,7 @@ export function applyConfig(given: Partial<HubConfig>, { cache = true } = {}) {
       else localStorage.removeItem(CACHE);
     } catch {}
   }
+  version++;
   listeners.forEach((l) => l());
 }
 

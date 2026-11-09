@@ -2,10 +2,8 @@
  * The picture of each screen (sidebar, home page): the mascot dressed for the four assistants, the
  * logo of what the four library screens hold (Power BI reports, semantic models, Excel, documents).
  */
-import { WakingMascot, Mascot, type Outfit } from "@/features/mascot";
-import type { Screen } from "@/config";
-
-const OUTFIT: Partial<Record<Screen, Outfit>> = { viewer: "trainer", editor: "builder", research: "datascientist", slides: "presenter" };
+import { WakingMascot, Mascot } from "@/components/mascot";
+import type { Feature } from "@/lib/features";
 
 /** Power BI: three yellow bars. */
 export const PowerBiLogo = ({ size = 24 }: { size?: number }) => (
@@ -47,15 +45,17 @@ export const WikiLogo = ({ size = 24 }: { size?: number }) => (
   </svg>
 );
 
-const LOGOS: Partial<Record<Screen, typeof PowerBiLogo>> = { reports: PowerBiLogo, datasets: ModelLogo, excel: ExcelLogo, confluence: WikiLogo };
+const LOGOS = { powerbi: PowerBiLogo, model: ModelLogo, excel: ExcelLogo, wiki: WikiLogo };
 
 /**
  * A screen's picture at `size` px. `live`: the mascot asleep, awake while hovered (or `awake`); else
  * standing still (the sidebar).
  */
-export function ScreenLogo({ screen, size, live, awake }: { screen: Screen; size: number; live?: boolean; awake?: boolean }) {
-  const outfit = OUTFIT[screen];
-  if (outfit) return live ? <WakingMascot outfit={outfit} size={size} awake={awake} /> : <Mascot outfit={outfit} size={size} still />;
-  const Logo = LOGOS[screen] ?? PowerBiLogo;
+export function ScreenLogo({ feature, size, live, awake }: { feature: Feature; size: number; live?: boolean; awake?: boolean }) {
+  if ("outfit" in feature.picture) {
+    const { outfit } = feature.picture;
+    return live ? <WakingMascot outfit={outfit} size={size} awake={awake} /> : <Mascot outfit={outfit} size={size} still />;
+  }
+  const Logo = LOGOS[feature.picture.logo];
   return <Logo size={size} />;
 }
