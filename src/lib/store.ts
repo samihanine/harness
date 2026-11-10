@@ -57,6 +57,7 @@ export type Rating = { score: "good" | "bad"; note?: string; at: number };
  */
 export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number; viewState?: string; rating?: Rating; ratings?: Record<string, Rating> };
 /** `model`: the assistants' (and of the one-call features). `maxSteps`: tool turns per message. `configLink`: the SharePoint JSON file holding the app's options (read at start). */
+/** `confluence`: only read to hand the settings of an earlier version to the local server (services/confluence.ts), which keeps them now. */
 export type Settings = { aiKey?: string; model?: string; maxSteps?: number; configLink?: string; confluence?: { url: string; email?: string; key: string; folderId: string } };
 
 /**

@@ -1,11 +1,11 @@
 # Instructions for Claude
 
-Front-end-only TanStack Router app (Vite SPA) for Power BI work. Every screen is a `Workspace` (`src/components/workspace.tsx`):
+TanStack Router app (Vite SPA) for Power BI work, with a small local server beside it (sign-in, secrets, calls that need them, PowerPoint preview). Every screen is a `Workspace` (`src/components/workspace.tsx`):
 the AI assistant on the left (foldable), a header (screen / chosen item, actions) and tabs on the right.
 Screens: Viewer "Trainer" (Report / Dataset / Context; the guide of the clicked visual is a tab of the AI panel), Builder (Report / Dataset / Measures / Reports), Research "Data Scientist" (Canvas: the analysis and a workbook /
 Datasets), Slides "Presenter" (Slides / Outline / Datasets / Reports: a real .pptx), Reports (Schema / Context), Datasets (Schema / DAX / Context), Excels (Data — Notion-like views — / Columns /
 Context), Confluence (Edit — markdown and preview side by side — / Preview / Linked to), Settings (AI / Power BI / the features' tabs: Guides, Slides — the template deck — / Performance / Confluence / Mascot / General). Code layout: `docs/structure.md` (one folder per feature in `src/features/`, each described by its `module.ts`; shared code in `src/lib`, `src/services`, `src/agent`, `src/components`; every prompt in `src/prompts/`; the app layer `src/app` + `src/routes` is the only one that knows every feature). The home page (`/`, flag `HOME`) shows a card per screen. There is no
-library screen: each screen adds and manages its own items (`EntityPicker`, `EntityMenu`). Run with `bun dev` (app on http://localhost:3300 + the token server on :3301), check with `bun run typecheck` (types + the boundaries between modules, `scripts/check-imports.ts`) and `bun test` (converters, decks, Excel tables); `bun run screens` / `bun run screens --check` (dev server running) saves / compares each screen's accessibility tree, for changes that must not change what users see. `bun run export:html` (one HTML file), `bun run export:server` (the token server as one executable).
+library screen: each screen adds and manages its own items (`EntityPicker`, `EntityMenu`). Run with `bun dev` (app on http://localhost:3300 + the local server on :3301), check with `bun run typecheck` (types + the boundaries between modules, `scripts/check-imports.ts`) and `bun test` (converters, decks, Excel tables); `bun run screens` / `bun run screens --check` (dev server running) saves / compares each screen's accessibility tree, for changes that must not change what users see. `bun run export:html` (one HTML file, served by the local server), `bun run export:server` (the local server as one executable). Security: `docs/security.md`.
 
 ## Never modify
 
@@ -17,14 +17,20 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
 ## Constraints of every change
 
 - **Generic Microsoft sign-in, any tenant.** One device-code sign-in with the Microsoft Office public
-  client, done by the local token server (`scripts/token-server.ts`, `GET /get-token?scope=…`): no app registration, no admin consent, no per-tenant setup. Other
+  client, done by the local server (`scripts/token-server.ts`): no app registration, no admin consent, no per-tenant setup. Other
   Microsoft resources (Power BI, Fabric, Graph, SharePoint, Forms…) are reached by asking the same
   refresh token for their scope. Never add a solution that needs an app registration, a client secret
   or a tenant-specific setting.
-- **Front end only.** All the logic lives in the browser, which calls the Microsoft APIs directly
-  (`src/services/ms.ts`: REST of Power BI / Fabric / Graph; `src/services/pbi.ts`: the embedding SDKs and DAX).
-  The only other process is the local token server (tokens, kept in localStorage until they
-  expire, and a pass-through to Confluence Cloud, which allows no browser calls). No backend, no business logic outside the browser. The LLM is called from the browser only.
+- **Browser first, secrets in the local server** (`docs/security.md`). The logic lives in the browser; the
+  local server (`scripts/token-server.ts`, `scripts/server/`) holds what a page must not: the Microsoft session
+  (in the system's credential store), the Confluence key, and it forwards the calls that need them
+  (`/ms/<service>/…` to Power BI REST / Fabric / Graph, `/confluence/…`), so those tokens never reach the page —
+  `src/services/ms.ts` (`request`, `server`) is the only way out of the page besides the AI API. Only the Power BI
+  token comes to the page, in memory, for the embedding SDKs (`src/services/pbi.ts`). The server answers the app
+  only (loopback, Host / Origin allowlist, custom header: `scripts/server/guard.ts`). It also draws PowerPoint
+  decks (LibreOffice WebAssembly, `scripts/server/office.ts`). **The LLM is called from the browser only**
+  (`src/agent/llm.ts`), never through the server. No business logic in the server, no other backend. A heavy
+  dependency is fine when it is the right tool (the preview engine is 240 MB): keep it out of the page's bundle.
 - **Limited LLM: build around it.** Plain text in, plain text out: no native tool use, no JSON mode,
   limited context. Structure comes from the harness (`src/agent/loop.ts`: JSON tool-call protocol,
   tools, page state). Keep prompts and contexts short; prefer deterministic code to free-form
@@ -63,6 +69,11 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   constants): an admin changes them at runtime from Settings (JSON file on SharePoint, see
   `src/services/hub-config.ts`). A new option goes into `HubConfig` and the Settings form too. The Settings
   page itself can never be hidden.
+- **Security** (`docs/security.md`, kept in step with the code): a new secret goes to the local server's store,
+  never to the browser or the repo; a new origin the page must reach goes into the content security policy
+  (`vite.config.ts`) with its reason; text from the AI, a file or a remote page is shown through `Markdown` or as
+  React text, never as HTML (`safeUrl` filters link and picture addresses); a cell written to Excel never becomes
+  a formula (`toCell`); TLS verification is never turned off (the server uses the system's certificate store).
 - **Agents** (`src/agent/loop.ts`): one model conversation per chat, with every tool of the screen (the
   context is sent once, then only what changed; it is read ahead when the chat opens, so the first
   message does not wait for model samples or Confluence). Always EXPLORE (read tools, DAX: names, values,
@@ -80,7 +91,7 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   missing (e.g. the Data Scientist's pivot).
   `run_dax` (raw DAX) and `query` (a spec written as DAX by code) are thinking tools on every screen
   that has a model. One model and a maximum of steps per message (Settings › AI); a long conversation
-  is restarted (with the chat as text) so calls stay fast. Model calls failing for a moment (network, invalid completion, 5xx) are sent again; tool arguments written next to the name are accepted; a refused final tool shows in the trace. Failed tool
+  is restarted (with the chat as text) so calls stay fast. Model calls failing for a moment (network, invalid completion, 5xx) are sent again; tool arguments written next to the name are accepted; a refused final tool shows in the trace. A reply in plain text is sent back once, then taken as the answer (checked like any answer); a lone `answer` whose quotes break the JSON is read anyway. A question needing no figures of the models is answered in the chat even on a screen that writes its answers on the canvas; any read of the screen counts as exploring. Errors that are not the AI's doing (nobody signed in, the local server down) are not kept as mistakes. Tool arguments are read tolerantly wherever a weak model slips (a shape as 6 or "#6", a whole `'T'[col]` where a column name is expected, `title` for `name`, a missing `width`); DAX errors come with the fix for the usual slips (`daxError`). Failed tool
   calls are kept in IndexedDB (`src/lib/mistakes.ts`) and the latest ones of a screen shown to the AI as
   mistakes not to repeat (downloadable from Settings): those naming data only in the same scope (another
   model's names would mislead), a "worked instead" only when the fix is a call about the same thing. A
@@ -117,15 +128,21 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
 - **Presenter** (`src/features/presenter`): any real PowerPoint (no template required), from this computer
   (saved back in place where the browser allows it, else downloaded) or SharePoint (read and written through
   Graph, only if nobody saved it meanwhile). The deck is changed through its XML (`pptx/deck.ts` on
-  `src/lib/ooxml`): the AI never sees the slides, it reads them as text — each shape with its id, kind, place in
-  %, size and room for text — and uses small tools (`set_text` keeps the shape's look, `replace_text`,
-  `add_slide` from a type of the template deck, `duplicate_slide`, `insert_visual`, `set_box`…), plus
-  `read_xml` / `write_xml` on any part for anything else. The template deck (Settings › Slides) is a .pptx where
-  each slide is a type (named in its notes: "type: Two columns"); its slides are copied with their pictures,
-  taking this deck's layout of the same name. Power BI visuals go in as pictures: embedded over the screen
-  for a moment and cut from a capture of the tab (`capture.ts`, shared once per session; works on Pro). Each
-  change is kept in IndexedDB with the earlier versions (undo); the slides are drawn from their XML
-  (`preview.tsx`).
+  `src/lib/ooxml`). The AI never sees the slides: it reads them as text (`describe`) — the shapes with content in
+  reading order (id, kind, place in %, size, room; texts as lines with "- " bullets and **bold**, tables as rows),
+  the frames (empty boxes around content: places to name), the decoration only counted. Its tools: `set_text`
+  (keeps each paragraph's look, `pptx/text.ts`), `add_text`, `set_table` / `add_table`, `add_slide` (a type of the
+  template deck, or a layout of the deck itself with its placeholders filled by role), `duplicate_slide`,
+  `insert_visual`, `set_style`, `set_box`, `add_box`, `delete_shape`, `replace_text`, plus `read_xml` /
+  `write_xml` on any part. Places are computed by code (`pptx/place.ts`: inside a frame, below / right of a
+  shape, else the largest free area; pictures fitted in their proportions), and every result says what the AI
+  cannot see (a text too long for its box, a shape now over another one). The template deck (Settings › Slides)
+  is a .pptx where each slide is a type (named in its notes: "type: Two columns"). Power BI visuals go in as
+  pictures cut from a capture of the tab (`capture.ts`, shared once per session; works on Pro). Each change is
+  kept in IndexedDB with the earlier versions (undo). **Preview**: the slides are drawn by LibreOffice itself
+  (WebAssembly, in the local server: `scripts/server/office.ts`, `src/services/office.ts`, `rendered.ts`), with the
+  computer's fonts, the shapes' places laid over the picture; the app's own simple drawing (`preview.tsx`) only
+  while the engine starts or when it is not installed.
 - **Prompts**: every text sent to the model lives in `src/prompts/<feature>.ts` (constants, or small functions
   when they depend on the screen), imported by the code that sends it.
 - **Markdown** (`src/lib/markdown`, one renderer: `src/components/markdown.tsx`, for answers, guides, analyses and
@@ -136,15 +153,14 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   Confluence storage format without loss: each construct has a macro whose parameters keep it (a diagram: its
   picture attached + its source in an expand macro; DAX / M / TMDL: the code macro's title), round trip tested.
 - **Confluence** (`src/services/confluence.ts`, `src/features/confluence/`): the pages of one folder (Settings ›
-  Confluence: route URL, key, folder id; kept in the browser), edited as markdown, written as the page's next
+  Confluence: route URL, email, key, folder id; kept by the local server), edited as markdown, written as the page's next
   version with its diagrams and icons attached as PNG (only the missing ones: their names are their hashes). A
   page not changed in Confluence since reads back as the exact markdown it was written from (`markdownOf`). Each
   page is a context: an item's Context tab (or the page's "Linked to" tab, filled from the features' `linkable`)
   links pages (`contextIds`, kept in the browser); their markdown is kept in localStorage
   (`src/services/context-pages.ts`), read again once per conversation, the copy used when Confluence
-  fails. Called from the browser: the route must allow CORS;
-  Confluence Cloud does not, so the token server forwards to it (`/confluence/<site>.atlassian.net/…`, Atlassian
-  hosts only, the user's key passed through).
+  fails. Its settings and key are kept by the local server (`/confluence-settings`: the key never comes back to the
+  page), which forwards every call (`/confluence/…`) and adds the key.
 - **Builder modes**: PBIR (`src/features/builder/builder.ts`, the definition through Fabric) when the report's
   definition is readable; otherwise "editor mode" (`src/features/builder/builder-sdk.ts`): the AI edits the
   embedded Power BI editor with `powerbi-report-authoring` (pages, visuals, filters, Top N, frame

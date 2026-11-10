@@ -70,11 +70,16 @@ export function toText(column: Column | undefined, v: Cell): string {
     const t = Date.parse(s);
     return /^\d{4}-\d{2}-\d{2}$/.test(s) || Number.isNaN(t) ? s : iso(new Date(t - new Date(t).getTimezoneOffset() * 60_000));
   }
-  return String(v);
+  // The apostrophe the app puts before a text starting like a formula (toCell) is not part of the text.
+  return String(v).replace(/^'(?=[=+\-@])/, "");
 }
 
-/** A value as written to the file (Excel reads yyyy-mm-dd as a date). */
-export const toCell = (v: string | undefined): Cell => (v === undefined || v === "" ? "" : v);
+/**
+ * A value as written to the file (Excel reads yyyy-mm-dd as a date). A text starting like a formula
+ * (= + - @) is written as text (a leading apostrophe, which Excel does not show): a cell written by
+ * the AI or pasted by a user never becomes a formula running in someone's Excel.
+ */
+export const toCell = (v: string | undefined): Cell => (v === undefined || v === "" ? "" : /^[=+\-@\t\r]/.test(v) && !/^-?\d+([.,]\d+)?$/.test(v) ? `'${v}` : v);
 
 /** The value of a row for a column, checked: an option not in the list, a date not readable → an error. */
 export function checkValue(column: Column, value: unknown): string {

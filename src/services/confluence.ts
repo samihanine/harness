@@ -1,48 +1,63 @@
 /**
- * Confluence pages, read and written from the browser through the Confluence REST API (v1 content
- * API: Cloud and Data Center). The address, key and folder are set in Settings › Confluence and kept
- * in this browser only. With an email, email + token are sent as Basic auth (Cloud); without, the
- * token as a Bearer token (a personal access token of Data Center). Confluence Cloud allows no call from a browser page:
- * its sites (*.atlassian.net) are reached through the local token server (scripts/token-server.ts).
+ * Confluence pages, read and written through the Confluence REST API (v1 content API: Cloud and Data
+ * Center). The address, email, key and folder are set in Settings › Confluence and kept by the local
+ * server (scripts/token-server.ts), in the system's credential store: the key never stays in the
+ * browser, and every call goes through the server, which adds it (Confluence Cloud allows no call
+ * from a browser page anyway).
  */
-import { TOKEN_SERVER } from "@/config";
 import { settings } from "@/lib/store";
 import { fromStorage } from "@/lib/markdown/storage";
+import { server } from "./ms";
 
-export type ConfluenceConfig = { url: string; email?: string; key: string; folderId: string };
+/** The settings as the app sees them: never the key, only whether one is saved. */
+export type ConfluenceConfig = { url: string; email?: string; folderId: string; hasKey: boolean };
 export type ConfluencePage = { id: string; title: string; version: number; html: string; webUrl?: string };
 
+let config: Promise<ConfluenceConfig | null> | undefined;
+
+/** A key saved in this browser by an earlier version: handed to the local server once, then removed from here. */
+async function migrate() {
+  const old = (await settings.get()).confluence;
+  if (!old) return;
+  if (old.key) await (await server("/confluence-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(old) })).text();
+  await settings.set({ confluence: undefined });
+}
+
+/** The settings (asked once to the local server), or null when Confluence is not set up. */
+export const readConfluenceConfig = () =>
+  (config ??= (async () => {
+    await migrate();
+    const r = await server("/confluence-settings");
+    return r.ok ? ((await r.json()) as ConfluenceConfig | null) : null;
+  })().catch((e) => {
+    config = undefined;
+    throw e;
+  }));
+
+/** Saves the settings in the local server (an empty key keeps the one saved). */
+export async function saveConfluenceConfig(values: { url: string; email?: string; key?: string; folderId: string }) {
+  const r = await server("/confluence-settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
+  if (!r.ok) throw new Error((await r.json().catch(() => undefined))?.error ?? `The settings were not saved (${r.status}).`);
+  config = undefined;
+}
+
 export async function confluenceConfig(): Promise<ConfluenceConfig> {
-  const c = (await settings.get()).confluence;
-  if (!c?.url || !c.key || !c.folderId) throw new Error("Confluence is not set up: give its address, your email, an API token and a folder id in Settings › Confluence.");
+  const c = await readConfluenceConfig();
+  if (!c?.url || !c.hasKey || !c.folderId) throw new Error("Confluence is not set up: give its address, your email, an API token and a folder id in Settings › Confluence.");
   return c;
 }
 
-/** A Confluence Cloud address (https://<site>.atlassian.net/…) as the token server's route to it; any other as given. */
-const viaTokenServer = (url: string) => url.replace(/^https?:\/\/([a-z0-9-]+\.atlassian\.net)(?=\/|$)/i, (_, host) => `${TOKEN_SERVER.replace(/\/+$/, "")}/confluence/${host}`);
-
-/** One call; its errors said plainly (a browser call refused by Confluence's CORS cannot be read: said too). */
+/** One call (through the local server); its errors said plainly. */
 async function call<T = any>(path: string, init: RequestInit = {}): Promise<T> {
-  const { url, email, key } = await confluenceConfig();
-  const base = viaTokenServer(url.trim().replace(/\/+$/, ""));
-  const cloud = base !== url.trim().replace(/\/+$/, "");
-  // "email:token" in the key alone: the form of earlier versions.
-  const basic = email?.trim() ? `${email.trim()}:${key.trim()}` : key.includes(":") ? key.trim() : undefined;
-  if (cloud && !basic) throw new Error("Confluence Cloud needs the email of your Atlassian account with the token (Settings › Confluence).");
-  const auth = basic ? `Basic ${btoa(basic)}` : `Bearer ${key.trim()}`;
-  let r: Response;
-  try {
-    // A form (file upload) sets its own Content-Type (with its boundary).
-    const headers: Record<string, string> = { Accept: "application/json", Authorization: auth, "X-Atlassian-Token": "no-check", ...(init.headers as Record<string, string> | undefined) };
-    if (!(init.body instanceof FormData)) headers["Content-Type"] = "application/json";
-    r = await fetch(`${base}${path}`, { ...init, headers });
-  } catch {
-    throw new Error(cloud ? `Confluence cannot be reached through the token server (${TOKEN_SERVER}): is it running (bun dev)?` : `Confluence cannot be reached from the browser at ${base} (network, or the route does not allow calls from this app: CORS).`);
-  }
+  await confluenceConfig();
+  // A form (file upload) sets its own Content-Type (with its boundary).
+  const headers: Record<string, string> = { ...(init.headers as Record<string, string> | undefined) };
+  if (init.body && !(init.body instanceof FormData)) headers["Content-Type"] = "application/json";
+  const r = await server(`/confluence${path}`, { ...init, headers });
   const text = await r.text();
   const body = text ? (() => { try { return JSON.parse(text); } catch { return text; } })() : null;
-  if (r.status === 401 || r.status === 403) throw new Error(`Confluence refused the key (HTTP ${r.status}): check the email (your Atlassian account's) and the token in Settings › Confluence.`);
-  if (!r.ok) throw new Error(`Confluence error ${r.status}: ${typeof body === "string" ? body.slice(0, 300) : (body?.message ?? JSON.stringify(body).slice(0, 300))}`);
+  if (r.status === 401 || r.status === 403) throw new Error(body?.error && r.status === 403 && /Origin|header|localhost/.test(body.error) ? body.error : `Confluence refused the key (HTTP ${r.status}): check the email (your Atlassian account's) and the token in Settings › Confluence.`);
+  if (!r.ok) throw new Error(`Confluence error ${r.status}: ${typeof body === "string" ? body.slice(0, 300) : (body?.error ?? body?.message ?? JSON.stringify(body).slice(0, 300))}`);
   return body as T;
 }
 

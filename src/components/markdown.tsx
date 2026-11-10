@@ -10,7 +10,7 @@ import { ChevronRightIcon, CircleAlertIcon, InfoIcon, LightbulbIcon, TriangleAle
 import { Mermaid } from "./diagram";
 import { iconOf } from "./icon";
 import { highlight } from "@/lib/markdown/highlight";
-import { panelOf, statusOf, withPanels, type PanelKind } from "@/lib/markdown/syntax";
+import { panelOf, safeUrl, statusOf, withPanels, type PanelKind } from "@/lib/markdown/syntax";
 import { cn } from "@/lib/utils";
 
 /**
@@ -101,6 +101,12 @@ const components: Components = {
     if (String(src).startsWith("attachment:")) return <span className="rounded bg-muted px-1.5 text-[12px] text-muted-foreground">🖼 {alt || String(src).slice(11)}</span>;
     return <img src={src as string} alt={alt ?? ""} className="max-w-full rounded" />;
   },
+  // Links leave the app in a new tab, without handing it over (no opener, no referrer).
+  a: ({ href, children }) => (
+    <a href={href} target={href?.startsWith("#") ? undefined : "_blank"} rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
   table: ({ children }) => (
     <div className="max-w-full overflow-x-auto">
       <table>{children}</table>
@@ -110,7 +116,7 @@ const components: Components = {
 
 export const Markdown = ({ children, className }: { children: string; className?: string }) => (
   <div className={cn("markdown [&_.contains-task-list]:list-none [&_.contains-task-list]:pl-1 [&_.task-list-item_input]:mr-1.5 [&_.task-list-item_input]:align-middle", className)}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(u) => u}>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url, key) => safeUrl(url, key === "src")}>
       {withPanels(cleanMarkdown(children))}
     </ReactMarkdown>
   </div>

@@ -229,12 +229,18 @@ async function* drive(opts: {
       retries = 0;
     } catch (error) {
       if (!(error instanceof ReplyError)) throw error;
-      // Plain prose: the model talking to the user. Sent back once to get the proper final tool.
-      (turn.invalid ??= []).push(`${error.message} — reply: ${reply.slice(0, 300)}`);
-      if (++retries > LIMITS.retries) return { giveUp: !reply.includes("{") && reply.trim() ? reply.trim() : `⚠️ The assistant's reply could not be read (${error.message}). Ask again.` };
-      prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\n${NOTES.invalidReply}`)}\n\n${opts.tail()}`;
-      n--;
-      continue;
+      const prose = !reply.includes("{") && proseOf(reply);
+      if (prose && retries >= 1) {
+        // Plain prose again after being asked for JSON: the model is answering the user. Taken as its answer (checked like any answer below).
+        calls = [{ name: "answer", args: { text: prose } }];
+        retries = 0;
+      } else {
+        (turn.invalid ??= []).push(`${error.message} — reply: ${reply.slice(0, 300)}`);
+        if (++retries > LIMITS.retries) return { giveUp: prose || `⚠️ The assistant's reply could not be read (${error.message}). Ask again.` };
+        prompt = `${tag("invalid_reply", `Your reply could not be used: ${error.message}\n${prose ? NOTES.proseReply : NOTES.invalidReply}`)}\n\n${opts.tail()}`;
+        n--;
+        continue;
+      }
     }
     const final = calls.find((c) => TERMINALS.has(c.name));
     if (final && calls.length === 1) {
@@ -306,8 +312,21 @@ async function* drive(opts: {
   return { giveUp: `⚠️ The assistant used all its ${opts.max} steps without finishing (Settings › AI › maximum steps). Ask again, more precisely.` };
 }
 
+/**
+ * A reply written as plain text instead of JSON, as an answer for the user: without what the model's
+ * own platform adds around it (notices about generated files and previews).
+ */
+function proseOf(reply: string) {
+  return reply
+    .replace(/\*{0,2}Some interactive elements may not work in the preview\.[^\n]*?(?:full experience\.)\*{0,2}/gi, "")
+    .replace(/\*{0,2}You are responsible for the generated file[^\n]*/gi, "")
+    .trim();
+}
+
 /** The user's answers to the questions, as sent back to the model. */
 export const answersText = (choices: Choices, answers: string[][]) => choices.questions.map((q, i) => `- ${q.question} → ${answers[i]?.join(", ") || "(no answer)"}`).join("\n");
+
+const NOT_A_MISTAKE = /Sign in to Microsoft|local server is not running|token server|Failed to fetch|NetworkError|Load failed|tab was not shared/i;
 
 /** The turn's failed calls, each with the call of the same tool that worked after it (if any). */
 function mistakesOf(turn: Turn, scope: string): Mistake[] {
@@ -315,7 +334,8 @@ function mistakesOf(turn: Turn, scope: string): Mistake[] {
   const args = (s: Step) => JSON.stringify(s.args).slice(0, 400);
   return [
     ...turn.steps.flatMap((s, i) => {
-      if (!s.error) return [];
+      // Not the AI's doing (nobody signed in, the local server or the network down): not a mistake to learn from.
+      if (!s.error || NOT_A_MISTAKE.test(String(s.result ?? ""))) return [];
       const fix = turn.steps.slice(i + 1).find((t) => t.name === s.name && !t.error && alike(args(s), args(t)));
       return [{ at, scope, tool: s.name, args: args(s), error: String(s.result ?? "").slice(0, 500), fix: fix && args(fix) }];
     }),
@@ -432,13 +452,16 @@ async function* turnOf({ agent, model, conversationId, history, request, answeri
         },
         refuse: (name) => {
           // On a screen with a model, a question to the user comes after exploring the data (sent back once).
-          if (name === "ask_user" && !answering && !explorePushed && tools.some((t) => DATA_READS.has(t.name)) && !turn.steps.some((st) => DATA_READS.has(st.name))) {
+          // (Any read of the screen counts: a slide, a page, a table read is the exploring of a request about them.)
+          const reads = (st: Step) => !st.error && st.name !== "proceed" && (DATA_READS.has(st.name) || !!tools.find((t) => t.name === st.name)?.readOnly);
+          if (name === "ask_user" && !answering && !explorePushed && tools.some((t) => DATA_READS.has(t.name)) && !turn.steps.some(reads)) {
             explorePushed = true;
             return NOTES.exploreFirst;
           }
           if (name !== "answer" || CHAT_ONLY.test(request)) return undefined;
           // Its answers are written on the screen (e.g. the canvas): the chat only when the user asks for it.
-          if (agent.answerOnScreen && !changedSteps().length) return NOTES.answerOnScreen;
+          // (A question answered without the models' figures — a definition, how something works — is a chat answer.)
+          if (agent.answerOnScreen && !changedSteps().length && turn.steps.some((st) => DATA_READS.has(st.name) && !st.error)) return NOTES.answerOnScreen;
           return changedSteps().length ? agent.beforeAnswer?.() : undefined;
         },
       });

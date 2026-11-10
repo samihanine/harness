@@ -105,6 +105,17 @@ export const SCENARIOS: Scenario[] = [
     },
   },
   {
+    name: "slides-textbox",
+    description: "Presenter: add content to a slide as a new text box (never over an existing text)",
+    request: "Ajoute sur la slide 2 une zone de texte avec les types de sites : Store, Regional Warehouse, Central Warehouse.",
+    setup: async () => presenterSetup(false),
+    check: async () => {
+      const s = await deck.slide(2);
+      const texts = s.shapes.filter((x) => x.kind === "text");
+      return [...expect((await deck.count()) === 3, `${await deck.count()} slides (expected 3: no duplicate)`), ...expect(texts.length === 3, `${texts.length} text shapes on slide 2 (expected 3: a new one)`), ...expect(s.title === "Results Q2", `the title became "${s.title}"`), ...expect(/Regional Warehouse/.test(texts.map((x) => x.paragraphs.map((p) => p.text).join(" ")).join(" ")), "the values are not on the slide")];
+    },
+  },
+  {
     name: "slides-add",
     description: "Presenter: add a slide of a template type and fill it",
     request: "Ajoute avant la dernière slide une slide en deux colonnes : à gauche les points forts (croissance, marge), à droite les risques (stocks).",

@@ -17,7 +17,7 @@ import { allMistakes, clearMistakes } from "@/lib/mistakes";
 import { settings } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { signOut, tokenStatus } from "@/services/ms";
-import { listPages } from "@/services/confluence";
+import { listPages, readConfluenceConfig, saveConfluenceConfig } from "@/services/confluence";
 import { all, useCollection } from "@/lib/store";
 
 export const Route = createFileRoute("/settings")({
@@ -230,7 +230,7 @@ function ThemeChoice() {
 type Status = Awaited<ReturnType<typeof tokenStatus>>;
 
 /**
- * The Microsoft account: the sign-in lives in the local token server (bun dev starts it); the app only
+ * The Microsoft account: the sign-in lives in the local server (bun dev starts it); the app only
  * asks it for tokens. While someone has to sign in, its URL and code are shown (read again every few seconds).
  */
 function Microsoft({ server, onServer }: { server: string; onServer: (v: string) => void }) {
@@ -247,7 +247,7 @@ function Microsoft({ server, onServer }: { server: string; onServer: (v: string)
     return () => void (stop = true);
   }, []);
   return (
-    <Section title="Microsoft account" description="One sign-in (device code, any organization), kept by the local token server: it gives the app the tokens of Power BI, Fabric and Graph.">
+    <Section title="Microsoft account" description="One sign-in (device code, any organization), kept by the local server in the system's credential store: the server calls Power BI, Fabric and Graph for the app, so their tokens never stay in the browser.">
       {!status ? (
         <p className="text-muted-foreground">Reading…</p>
       ) : status.signedIn ? (
@@ -272,7 +272,7 @@ function Microsoft({ server, onServer }: { server: string; onServer: (v: string)
         <p className="text-[13.5px] text-destructive">{status.error}</p>
       )}
       <div className="mt-4 flex flex-col gap-1.5 border-t pt-4">
-        <Label htmlFor="token-server">Token server</Label>
+        <Label htmlFor="token-server">Local server</Label>
         <Input id="token-server" className="font-mono text-[13px]" value={server} onChange={(e) => onServer(e.target.value)} />
         <p className="text-[12px] text-muted-foreground">Started with the app by "bun dev" (or alone: "bun run token", or the dist/hub-token-server program).</p>
       </div>
@@ -320,13 +320,16 @@ const folderIdOf = (text: string) => text.trim().match(/\/(?:folder|pages)\/(\d+
  */
 function ConfluenceSettings() {
   const [values, setValues] = useState({ url: "", email: "", key: "", folderId: "" });
+  const [hasKey, setHasKey] = useState(false);
   const [state, setState] = useState<{ busy?: boolean; done?: string; error?: string }>({});
-  useEffect(() => void settings.get().then((s) => s.confluence && setValues({ email: "", ...s.confluence })), []);
+  // The key itself never comes back from the local server: only whether one is saved.
+  useEffect(() => void readConfluenceConfig().then((c) => c && (setValues({ url: c.url, email: c.email ?? "", key: "", folderId: c.folderId }), setHasKey(c.hasKey)), () => undefined), []);
   const set = (v: Partial<typeof values>) => (setValues({ ...values, ...v }), setState({}));
   const save = async (test: boolean) => {
     setState({ busy: true });
     try {
-      await settings.set({ confluence: { url: values.url.trim(), email: values.email.trim(), key: values.key.trim(), folderId: folderIdOf(values.folderId) } });
+      await saveConfluenceConfig({ url: values.url.trim(), email: values.email.trim(), key: values.key.trim(), folderId: folderIdOf(values.folderId) });
+      if (values.key.trim()) (setHasKey(true), setValues((v) => ({ ...v, key: "" })));
       setState({ done: test ? `Connected: ${(await listPages()).length} page(s) in the folder.` : "Saved." });
     } catch (e) {
       setState({ error: e instanceof Error ? e.message : String(e) });
@@ -335,7 +338,7 @@ function ConfluenceSettings() {
   return (
     <Section
       title="Confluence"
-      description="Kept in this browser only. The Confluence screen (Settings › General › screens) lists the pages of this folder and edits them as markdown."
+      description="Kept by the local server, in the system's credential store (the key never stays in the browser). The Confluence screen (Settings › General › screens) lists the pages of this folder and edits them as markdown."
       actions={
         <>
           {state.done && <span className="text-[12.5px] text-success">{state.done}</span>}
@@ -354,7 +357,7 @@ function ConfluenceSettings() {
           <Label htmlFor="confluence-url">API route (URL)</Label>
           <Input id="confluence-url" placeholder="https://company.atlassian.net/wiki" value={values.url} onChange={(e) => set({ url: e.target.value })} />
           <p className="text-[12px] text-muted-foreground">
-            A Confluence Cloud site (*.atlassian.net) is reached through the token server ({TOKEN_SERVER}), since it refuses calls from a browser page. Any other route must allow CORS.
+            Called through the local server ({TOKEN_SERVER}), which adds the key: Confluence Cloud (*.atlassian.net) or a Data Center address.
           </p>
         </div>
         <div className="flex flex-col gap-1.5">
@@ -363,7 +366,7 @@ function ConfluenceSettings() {
         </div>
         <div className="flex flex-col gap-1.5">
           <Label htmlFor="confluence-key">API token</Label>
-          <Input id="confluence-key" type="password" autoComplete="off" placeholder="id.atlassian.com › Security › API tokens" value={values.key} onChange={(e) => set({ key: e.target.value })} />
+          <Input id="confluence-key" type="password" autoComplete="off" placeholder={hasKey ? "Saved — type a new one to replace it" : "id.atlassian.com › Security › API tokens"} value={values.key} onChange={(e) => set({ key: e.target.value })} />
         </div>
         <div className="flex flex-col gap-1.5 sm:col-span-2">
           <Label htmlFor="confluence-folder">Folder id</Label>

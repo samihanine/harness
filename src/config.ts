@@ -11,7 +11,7 @@ export let APP_TITLE = "Hub";
 /** Primary color (buttons, active states), any CSS color. */
 export let PRIMARY_COLOR = "#2563eb";
 
-/** The local token server (scripts/token-server.ts): Microsoft access tokens for the browser. */
+/** The local server (scripts/token-server.ts, docs/security.md): the Microsoft sign-in, the calls that need secrets, the PowerPoint preview. */
 export let TOKEN_SERVER = "http://localhost:3301";
 
 /** AI panel: files added to a conversation (the paperclip). */

@@ -35,6 +35,19 @@ export const statusOf = (code: string) => {
   return m ? { color: m[1].toLowerCase(), text: m[2] } : undefined;
 };
 
+/**
+ * The address of a link or a picture, kept only when it is harmless: http(s), mailto, a place in the
+ * page or a relative path — and the app's own icon: / attachment: for pictures (data: pictures too).
+ * Anything else (javascript:, vbscript:, data: links…) is dropped: markdown comes from the AI and
+ * from Confluence pages anyone may edit.
+ */
+export function safeUrl(url: string, picture = false) {
+  const u = String(url ?? "").trim();
+  if (/^(https?:|mailto:|tel:|#|\/(?!\/)|\.{0,2}\/)/i.test(u) || !/^[a-z][a-z0-9+.-]*:/i.test(u)) return u;
+  if (picture && (/^(icon|attachment):[\w .()\-]+$/i.test(u) || /^data:image\/(png|jpe?g|gif|webp);base64,[a-z0-9+/=]+$/i.test(u))) return u;
+  return "";
+}
+
 /** A short stable hash of a text (attachment names: the same diagram, the same file). */
 export function hashOf(text: string) {
   let h = 0x811c9dc5;

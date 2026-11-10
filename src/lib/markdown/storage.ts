@@ -9,7 +9,7 @@ import { createElement, Fragment, isValidElement, type ReactElement, type ReactN
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { PANEL_KINDS, diagramFile, iconFile, panelOf, statusOf, withPanels, type PanelKind } from "./syntax";
+import { PANEL_KINDS, diagramFile, iconFile, panelOf, safeUrl, statusOf, withPanels, type PanelKind } from "./syntax";
 
 export type StorageFile = { name: string; kind: "diagram"; code: string } | { name: string; kind: "icon"; icon: string };
 
@@ -83,7 +83,7 @@ export function toStorage(md: string): { storage: string; files: StorageFile[] }
     },
     input: () => null,
   };
-  let html = renderToStaticMarkup(createElement(ReactMarkdown, { remarkPlugins: [remarkGfm], components, urlTransform: (u: string) => u }, withPanels(md)));
+  let html = renderToStaticMarkup(createElement(ReactMarkdown, { remarkPlugins: [remarkGfm], components, urlTransform: (url: string, key: string) => safeUrl(url, key === "src") }, withPanels(md)));
   // Placeholders may hold others (a panel's content): replaced until none is left.
   for (let i = 0; i < 20 && html.includes("<hub-x"); i++) html = html.replace(/<hub-x data-i="(\d+)"><\/hub-x>/g, (_, n: string) => held[Number(n)]);
   return { storage: html, files };

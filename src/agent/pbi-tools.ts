@@ -43,14 +43,14 @@ async function withNameHints(datasetId: string, error: unknown): Promise<Error> 
  * run_dax: on the screen's model, or (`several`) on one of its models chosen by id; `defined`: the
  * report measures of that model, usable in the query. A thinking tool: results are capped.
  */
-export const daxTool = (dataset: () => Ref | undefined, several?: () => (Ref & { name: string })[], defined?: (dataset: Ref) => Promise<DefinedMeasure[]>): Tool =>
+export const daxTool = (dataset: () => Ref | undefined, several?: () => (Ref & { name: string; info?: ModelInfo })[], defined?: (dataset: Ref) => Promise<DefinedMeasure[]>): Tool =>
   tool({
     name: "run_dax",
     description: `Runs a DAX query (EVALUATE …) on ${several ? "one of the semantic models (dataset_id)" : "the semantic model"} and returns the rows (max 50 shown). Use it to check values, totals or names before acting. Use TOPN / SUMMARIZECOLUMNS to keep results small. Exact names only (see the DAX rules). ${daxLimits()}`,
     args: z.object({ query: z.string().describe("DAX query starting with EVALUATE (or DEFINE)"), dataset_id: z.string().optional().describe("Model id (when there are several)") }),
     readOnly: true,
     run: async ({ query, dataset_id }) => {
-      const ref = pickModel(dataset_id, dataset(), several?.() ?? []);
+      const ref = pickModel(dataset_id, dataset(), several?.() ?? [], query);
       try {
         return rowsText(await dax(ref, defined ? withDefined(query, await defined(ref)) : query));
       } catch (error) {
@@ -63,10 +63,13 @@ export const daxTool = (dataset: () => Ref | undefined, several?: () => (Ref & {
  * The model a DAX tool runs on: the one named (id or name), else the screen's, else the only one. A
  * dataset_id given on a screen with one model is that model (weak models always pass one).
  */
-function pickModel<M extends Ref & { name?: string }>(id: string | undefined, current: M | undefined, list: M[]): M {
+function pickModel<M extends Ref & { name?: string; info?: ModelInfo }>(id: string | undefined, current: M | undefined, list: M[], query?: string): M {
   const all = [...list, ...(current && !list.some((d) => d.id === current.id) ? [current] : [])];
   const named = id ? all.find((d) => d.id === id || d.name === id) : undefined;
-  const ref = named ?? current ?? (all.length === 1 ? all[0] : undefined);
+  // Several models and none named: the only one that has every table the query names.
+  const tables = [...(query ?? "").matchAll(/'([^']+)'\s*\[/g)].map((m) => m[1].toLowerCase());
+  const fitting = !named && !current && tables.length ? all.filter((d) => d.info && tables.every((t) => d.info!.tables.some((x) => x.name.toLowerCase() === t))) : [];
+  const ref = named ?? current ?? (all.length === 1 ? all[0] : fitting.length === 1 ? fitting[0] : undefined);
   if (!ref) throw new Error(all.length ? `Give dataset_id: one of ${all.map((d) => `${d.id} (${d.name ?? ""})`).join(", ")}.` : "No semantic model selected.");
   return ref;
 }
@@ -113,7 +116,7 @@ export const queryTool = (dataset: () => (Ref & { info?: ModelInfo }) | undefine
     args: z.object({ ...querySpecArgs, ...(several ? { dataset_id: z.string().optional().describe("Model id (when there are several)") } : {}) }),
     readOnly: true,
     run: async ({ dataset_id, ...spec }: any) => {
-      const d = pickModel(dataset_id, dataset(), several?.() ?? []);
+      const d = pickModel(dataset_id, dataset(), several?.() ?? [], [...(spec.values ?? []), ...(spec.group_by ?? []), ...(spec.filters ?? []).map((f: { field: string }) => f.field)].join(" "));
       const query = queryDax(spec, d.info, (await defined?.(d)) ?? []);
       try {
         const rows = await dax(d, query);
@@ -306,9 +309,12 @@ export function viewerTools(report: () => Report | undefined, dataset: () => Ref
         const v = await visualOf(r(), visual);
         if (kind === "values") return `${v.name}: ${await columnFilter(v, t0, c0, kept)}`;
         const { table, name: column } = checkName(info(), t0, c0);
-        const parsed = order_by?.match(/^'?([^'[]+)'?\[([^\]]+)\]$/);
-        if (!parsed) throw new Error("order_by must look like Table[Column] or Table[Measure]");
-        const by = checkName(info(), parsed[1], parsed[2]);
+        // 'Table'[Column], Table[Measure], or a measure alone ([Sales]): its table is then looked up in the model.
+        const parsed = order_by?.trim().match(/^(?:'?([^'[]+?)'?\s*)?\[([^\]]+)\]$/);
+        if (!parsed) throw new Error(`order_by must be 'Table'[Column] or [Measure] (got ${JSON.stringify(order_by ?? "")}).`);
+        const home = parsed[1] ?? info()?.tables.find((x) => [...x.measures, ...x.columns].some((c) => c.name.toLowerCase() === parsed[2].toLowerCase()))?.name;
+        if (!home) throw new Error(`No measure or column named "${parsed[2]}" in the model: give order_by as 'Table'[Name].`);
+        const by = checkName(info(), home, parsed[2]);
         const others = (await v.getFilters()).filter((f: any) => !(f.target?.table === table && f.target?.column === column));
         const filter = { $schema: "http://powerbi.com/product/schema#topN", target: { table, column }, operator: bottom ? "Bottom" : "Top", itemCount: n, orderBy: { table: by.table, column: by.name, aggregationFunction: "Max" }, filterType: 5 };
         await v.setFilters([...others, filter] as never);

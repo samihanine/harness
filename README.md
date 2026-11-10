@@ -22,8 +22,14 @@
 
 Pour arrêter : `Ctrl + C` dans PowerShell. Les fois suivantes, seules les étapes 3 et 4 sont nécessaires.
 
-Le serveur de jetons Microsoft (`localhost:3301`) démarre avec `bun dev` : la première fois, ouvrir
-**Paramètres › Power BI** et se connecter avec le code affiché.
+Le serveur local (`localhost:3301`) démarre avec `bun dev` : la première fois, ouvrir
+**Paramètres › Power BI** et se connecter avec le code affiché. Il garde la session Microsoft et la clé
+Confluence dans le trousseau du système, appelle les API Microsoft pour l'application et dessine les
+PowerPoint (LibreOffice WebAssembly, installé par `bun install` ; plus rapide à démarrer si Node.js est installé).
+Sécurité : [docs/security.md](docs/security.md).
+
+Derrière un proxy d'entreprise qui inspecte le TLS : le serveur utilise les certificats du système
+(rien à régler). Ne pas désactiver la vérification TLS.
 
 ## Vérifier
 
@@ -33,14 +39,17 @@ Le serveur de jetons Microsoft (`localhost:3301`) démarre avec `bun dev` : la p
 
 ## Exports
 
-- `bun run export:html` : toute l'application dans un seul fichier, `dist/hub.html`.
-- `bun run export:server` : le serveur de jetons en un seul exécutable, `dist/hub-token-server`.
+- `bun run export:html` : toute l'application dans un seul fichier, `dist/hub.html`, servi par le serveur local :
+  ouvrir `http://localhost:3301` (ouvert comme fichier `file://`, il est refusé par le serveur, sauf `HUB_ALLOW_FILE=1`).
+- `bun run export:server` : le serveur local en un seul exécutable, `dist/hub-token-server` (sans le moteur
+  d'aperçu PowerPoint : l'application affiche alors son aperçu simplifié).
 
 ## Dépendances Microsoft
 
-L'application appelle les API Microsoft depuis le navigateur. Les jetons viennent du serveur de jetons
-local (`scripts/token-server.ts`) : une connexion par code d'appareil avec le client public Microsoft
-Office, sans inscription d'application ni consentement administrateur.
+L'application appelle les API Microsoft à travers le serveur local (`scripts/token-server.ts`), qui ajoute
+les jetons : une connexion par code d'appareil avec le client public Microsoft Office, sans inscription
+d'application ni consentement administrateur. Seul le jeton Power BI arrive dans la page (en mémoire),
+pour l'intégration des rapports. L'API d'IA est appelée par la page uniquement.
 
 | API | Accès | Utilisation |
 | --- | --- | --- |

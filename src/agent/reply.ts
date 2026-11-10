@@ -12,7 +12,19 @@ export class ReplyError extends Error {}
 export function parseReply(given: string): Call[] {
   // {"name": "add_pivot", …, "name": "Sales"}: the first "name" is the tool, the next one an argument.
   const text = argNames(given);
-  const value = parseJson(text);
+  let value: unknown;
+  try {
+    value = parseJson(text);
+  } catch (error) {
+    // A final answer whose text breaks the JSON (quotes not escaped, the usual slip of a long answer): its text is taken as it is.
+    const answer = salvagedAnswer(given);
+    if (answer) return [{ name: "answer", args: { text: answer } }];
+    // A "tools" list closed too early (calls written after its end): the calls of the list itself are taken.
+    const at = text.search(/"tools"\s*:\s*\[/);
+    const list = at >= 0 ? [outermost(text.slice(text.indexOf("[", at)))].flatMap((block) => [block, repair(block)]).map((b) => { try { return JSON.parse(b) as unknown; } catch { return undefined; } }).find((v) => Array.isArray(v) && v.length) : undefined;
+    if (!list) throw error;
+    value = { tools: list };
+  }
   // {"tools": [a], "tools": [b]}: JSON keeps only the last key, every call is taken.
   const merged = duplicateTools(text);
   const list = merged ? merged : Array.isArray(value)
@@ -36,6 +48,17 @@ export function parseReply(given: string): Call[] {
     if (!isObject(args)) throw new ReplyError(`tools[${index}].args must be an object.`);
     return { name, args };
   });
+}
+
+/** The text of a reply that is one `answer` call with broken JSON: from after "text": " to the last quote before the closing brackets. */
+function salvagedAnswer(reply: string) {
+  if (!/"name"\s*:\s*"answer"/.test(reply) || (reply.match(/"name"\s*:/g) ?? []).length !== 1) return undefined;
+  const start = reply.match(/"text"\s*:\s*"/);
+  if (!start) return undefined;
+  const rest = reply.slice(start.index! + start[0].length);
+  const end = rest.search(/"\s*(?:,\s*"[a-z_]+"\s*:[^{}]*)?[}\]\s`]*$/);
+  if (end <= 0) return undefined;
+  return rest.slice(0, end).replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\").trim() || undefined;
 }
 
 /** The key a repeated "name" of one object is renamed to (an argument written next to the tool's name). */

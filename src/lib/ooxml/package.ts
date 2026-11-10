@@ -199,9 +199,9 @@ export class OoxmlPackage {
     const doc = await this.xml("[Content_Types].xml");
     const root = doc.documentElement as XmlEl;
     const o = kids(root, "Override").find((x) => x.getAttribute("PartName") === `/${part}`);
-    if (o) return o.getAttribute("ContentType") ?? undefined;
+    if (o) return o.getAttribute("ContentType") || undefined;
     const ext = part.split(".").pop()?.toLowerCase();
-    return kids(root, "Default").find((x) => x.getAttribute("Extension")?.toLowerCase() === ext)?.getAttribute("ContentType") ?? undefined;
+    return kids(root, "Default").find((x) => x.getAttribute("Extension")?.toLowerCase() === ext)?.getAttribute("ContentType") || undefined;
   }
 
   /** The file, every changed part serialized. */

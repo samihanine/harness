@@ -105,8 +105,16 @@ export function researchAgent(entry: () => ResearchEntry, datasets: () => Datase
     const p = s.spec && done.rows?.length ? pivot(s.spec, done.rows) : undefined;
     return `Sheet "${s.name}" (${s.kind}): ${rowsText(done.rows ?? [], 12)}${empty}${p ? `\nGETPIVOTDATA on it: values ${s.spec!.values.map((v) => `"${resultName(v)}"`).join(", ")}; fields ${[...s.spec!.rows, ...s.spec!.columns].map((f) => `"${resultName(f)}"`).join(", ") || "none"}.` : ""}`;
   };
+  /** A sheet's name, also when given as "title". */
+  const named = (name?: string, title?: string) => {
+    const n = (name ?? title ?? "").trim();
+    if (!n) throw new Error('Give "name": the name of the sheet (its tab).');
+    return n;
+  };
   const pivotArgs = {
-    name: z.string().describe("Sheet name (tab), short: it is how calc formulas reach it"),
+    name: z.string().optional().describe("Sheet name (tab), short: it is how calc formulas reach it"),
+    // Weak models write "title" for the sheet's name: taken as it.
+    title: z.string().optional().describe("Same as name"),
     dataset_id: z.string().optional(),
     rows: fieldList.describe("Columns grouped as rows, e.g. ['Product'[Category]]"),
     columns: fieldList.describe("Columns grouped as columns (e.g. 'Date'[Year]), often empty"),
@@ -144,7 +152,8 @@ export function researchAgent(entry: () => ResearchEntry, datasets: () => Datase
         name: "add_pivot",
         description: "Adds a pivot sheet (or replaces the sheet of that name): its query runs at once; its first rows and the names GETPIVOTDATA takes are returned.",
         args: z.object(pivotArgs),
-        run: async ({ name, dataset_id, rows, columns, values, filters, after }) => {
+        run: async ({ name: given, title, dataset_id, rows, columns, values, filters, after }) => {
+          const name = named(given, title);
           if (!values.length) throw new Error('Give "values" (measures).');
           const d = model(dataset_id);
           return putData({ id: sheetId(), kind: "pivot", name: sheetName(name), datasetId: d.id, spec: { rows, columns, values, filters } }, after);
@@ -154,7 +163,8 @@ export function researchAgent(entry: () => ResearchEntry, datasets: () => Datase
         name: "add_chart",
         description: "Adds a chart sheet (or replaces the sheet of that name) with a pivot's parameters: rows = the categories (x, or the dates), columns = the series (often empty), values = what is measured.",
         args: z.object({ ...pivotArgs, chart: z.enum(CHARTS).describe("column, bar (ranking), line / area (trend over time), pie (few parts of a whole), scatter (two values)") }),
-        run: async ({ name, dataset_id, rows, columns, values, filters, after, chart }) => {
+        run: async ({ name: given, title, dataset_id, rows, columns, values, filters, after, chart }) => {
+          const name = named(given, title);
           if (!values.length) throw new Error('Give "values" (measures).');
           const d = model(dataset_id);
           return putData({ id: sheetId(), kind: "chart", chart, name: sheetName(name), datasetId: d.id, spec: { rows, columns, values, filters } }, after);

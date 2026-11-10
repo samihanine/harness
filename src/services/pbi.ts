@@ -33,11 +33,20 @@ export type Rows = Record<string, unknown>[];
 
 /** A DAX error with what to do about it (weak models otherwise guess another name, or a wrong cause). */
 function daxError(message: string) {
-  const hint = /cannot be found|can't be found|not found|introuvable|n'existe pas|cannot find|cannot be determined|doesn't exist/i.test(message)
-    ? " → A name does not exist: look up the exact table / column / measure names with search_model or describe_table (never guess or translate them), then fix the query."
-    : /^Query \(\d+, \d+\)|syntax/i.test(message)
-      ? " → (line, column) of the query: fix the query exactly there."
-      : "";
+  // The slips seen most in real conversations first: each says what to write instead.
+  const hint = /ORDER argument in TOPN/i.test(message)
+    ? " → TOPN takes (n, table, order expression, ASC | DESC) and nothing else: filters never go in TOPN. Put them in the table — SUMMARIZECOLUMNS('T'[col], TREATAS({\"value\"}, 'T'[other]), \"Label\", [Measure]) or CALCULATETABLE(<table>, 'T'[col] = \"value\") — or use the query tool (filters + top)."
+    : /A single value for column .* cannot be determined/i.test(message)
+      ? " → A column is used where one value is expected. In TOPN / ORDER BY, order by a column that is IN the table (add it to SUMMARIZECOLUMNS first); elsewhere aggregate it (MAX, SELECTEDVALUE)."
+      : /syntax for '(and|or|not)'/i.test(message)
+        ? " → DAX has no and / or keywords: write && and ||, IN {…} for a list, NOT(…)."
+        : /cannot find table/i.test(message)
+          ? " → That name is not a table (it may be a column or a measure: [Measure], 'Table'[Column]). Look it up with search_model, then fix the query."
+          : /cannot be found|can't be found|not found|introuvable|n'existe pas|cannot find|cannot be determined|doesn't exist/i.test(message)
+            ? " → A name does not exist: look up the exact table / column / measure names with search_model or describe_table (never guess or translate them), then fix the query."
+            : /^Query \(\d+, \d+\)|syntax/i.test(message)
+              ? " → (line, column) of the query: fix the query exactly there."
+              : "";
   return new Error(`${message}${hint}`);
 }
 
@@ -354,6 +363,7 @@ export function findVisual<V extends { name: string; title?: string }>(visuals: 
   if (byName) return byName;
   const matches = visuals.filter((v) => sameTitle(v.title, nameOrTitle));
   if (matches.length > 1) throw new Error(`${matches.length} visuals are titled "${nameOrTitle}": give the name (id) of the one you mean: ${matches.map((v) => `name=${v.name}`).join(", ")}.`);
+  if (!visuals.length) throw new Error(`The page has no visual: "${nameOrTitle}" is already deleted, or on another page (give "page").`);
   if (!matches.length) throw new Error(`Visual "${nameOrTitle}" not on the current page. Visuals: ${visuals.map((v) => `"${v.title ?? ""}" (name=${v.name})`).join(", ")}. Use the name.`);
   return matches[0];
 }

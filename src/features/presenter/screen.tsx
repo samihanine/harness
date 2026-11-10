@@ -15,10 +15,12 @@ import { useLast } from "@/lib/last";
 import { patch, put, remove, useCollection } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { errorText } from "@/services/ms";
+import { warmOffice } from "@/services/office";
 import { stopCapture } from "./capture";
 import { download, forgetDeck, keepDeckFile, keepHandle, pickLocalFile, readDeckFile, readSharePoint, readTemplate, saveLocal, saveSharePoint, undoDeckFile, type PresentationEntry } from "./files";
 import { presenter } from "./module";
 import { SlideView, useSlides } from "./preview";
+import { useRendered, type Rendered } from "./rendered";
 import { Deck } from "./pptx/deck";
 import { slideTypes, type SlideType } from "./pptx/template";
 import { presenterAgent } from "./tools";
@@ -49,6 +51,7 @@ export default function Presenter() {
   const [adding, setAdding] = useState(false);
   const template = useTemplate();
   const slides = useSlides(deck, version);
+  const rendered = useRendered(deck, version, index);
 
   const load = useCallback(async () => {
     setDeck(undefined);
@@ -65,6 +68,8 @@ export default function Presenter() {
   }, [deckId]);
   useEffect(() => void load(), [load]);
   useEffect(() => () => stopCapture(), []);
+  // The preview engine starts while the user chooses a deck.
+  useEffect(() => warmOffice(), []);
 
   const datasets = useCollection("datasets");
   const reports = useCollection("reports");
@@ -195,7 +200,10 @@ export default function Presenter() {
       ai={{ scope: `slides:${entry?.id}`, agent, placeholder: "Ask to update the figures, add a slide, put a Power BI visual…", empty: "Open a deck to work on it with the assistant." }}
       tab={tab}
       onTab={(t) => navigate({ search: (s) => ({ ...s, tab: t }), replace: true })}
-      notices={template ? [] : [{ id: "template", level: "info", title: "No template deck", body: <span>New slides are copied from a template deck: set one in <Link to="/settings" search={{ tab: "slides" }} className="underline">Settings › Slides</Link>. Without it, the assistant duplicates slides of the deck.</span> }]}
+      notices={[
+        ...(template ? [] : [{ id: "template", level: "info" as const, title: "No template deck", body: <span>New slides can be copied from a template deck: set one in <Link to="/settings" search={{ tab: "slides" }} className="underline">Settings › Slides</Link>. Without it, the assistant uses the deck's own layouts.</span> }]),
+        ...(rendered.problem ? [{ id: "engine", level: "warning" as const, title: "Simple preview", body: <span>{rendered.problem.missing ? "The preview engine (LibreOffice) is not installed in the local server: run “bun install”, then start the app again." : rendered.problem.message} The slides are shown in a simplified drawing meanwhile; the deck itself is not affected.</span> }] : []),
+      ]}
       tabs={[
         {
           id: "slides",
@@ -205,7 +213,7 @@ export default function Presenter() {
           content: error ? (
             <Empty>{error}</Empty>
           ) : deck && slides.length ? (
-            <Slides deck={deck} slides={slides} index={index} onIndex={setIndex} />
+            <Slides deck={deck} slides={slides} index={index} onIndex={setIndex} rendered={rendered} />
           ) : entry ? (
             <Empty>Reading the deck…</Empty>
           ) : (
@@ -251,11 +259,18 @@ export default function Presenter() {
 
 /* ----------------------------------- Slides ----------------------------------- */
 
-function Slides({ deck, slides, index, onIndex }: { deck: Deck; slides: ReturnType<typeof useSlides>; index: number; onIndex: (i: number) => void }) {
+/**
+ * The slides as LibreOffice draws them (the deck's real look), the shapes' places laid over the
+ * picture: pointing a shape — on the slide or in the list under it — shows which is which, with the
+ * id the assistant uses. Without the engine, the app's own simple drawing.
+ */
+function Slides({ deck, slides, index, onIndex, rendered }: { deck: Deck; slides: ReturnType<typeof useSlides>; index: number; onIndex: (i: number) => void; rendered: Rendered }) {
   const slide = slides[Math.min(index, slides.length) - 1] ?? slides[0];
   const [shape, setShape] = useState<string>();
   const rail = useRef<HTMLDivElement>(null);
   useEffect(() => void rail.current?.querySelector(`[data-n="${slide.number}"]`)?.scrollIntoView({ block: "nearest" }), [slide.number]);
+  const picture = rendered.large[slide.number] ?? rendered.small[slide.number];
+  const listed = slide.shapes.filter((s) => s.role !== "decoration");
   return (
     <div className="flex min-h-0 flex-1">
       <div ref={rail} className="flex w-44 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-muted/30 p-3">
@@ -263,14 +278,34 @@ function Slides({ deck, slides, index, onIndex }: { deck: Deck; slides: ReturnTy
           <button key={s.part} data-n={s.number} type="button" onClick={() => onIndex(s.number)} className="flex gap-2 text-left">
             <span className="w-4 pt-0.5 text-right text-[11px] text-muted-foreground tabular-nums">{s.number}</span>
             <span className={cn("block flex-1 rounded-sm", s.number === slide.number && "ring-2 ring-primary ring-offset-2")}>
-              <SlideView deck={deck} slide={s} />
+              {rendered.small[s.number] ? <img src={rendered.small[s.number]} alt={`Slide ${s.number}`} className="block w-full shadow-sm ring-1 ring-border" /> : <SlideView deck={deck} slide={s} />}
             </span>
           </button>
         ))}
       </div>
       <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto bg-muted/40 p-6">
-        <div className="mx-auto w-full max-w-[min(100%,calc((100vh-16rem)*16/9))]">
-          <SlideView deck={deck} slide={slide} highlight={shape} className="rounded-md" />
+        <div className="mx-auto w-full" style={{ maxWidth: `min(100%, calc((100vh - 16rem) * ${deck.size.w / deck.size.h}))` }}>
+          {picture ? (
+            <div className="relative overflow-hidden rounded-md shadow-sm ring-1 ring-border">
+              <img src={picture} alt={`Slide ${slide.number}`} className={cn("block w-full transition-opacity", rendered.busy && "opacity-70")} />
+              {listed.map((s) =>
+                s.box ? (
+                  <span
+                    key={s.id}
+                    title={`#${s.id} ${s.name}`}
+                    onMouseEnter={() => setShape(s.id)}
+                    onMouseLeave={() => setShape(undefined)}
+                    style={{ left: `${(s.box.x / deck.size.w) * 100}%`, top: `${(s.box.y / deck.size.h) * 100}%`, width: `${(s.box.w / deck.size.w) * 100}%`, height: `${(s.box.h / deck.size.h) * 100}%` }}
+                    className={cn("absolute rounded-xs", shape === s.id && "bg-primary/10 outline-2 outline-primary")}
+                  >
+                    {shape === s.id && <span className="absolute -top-5 left-0 rounded bg-primary px-1.5 text-[11px] font-medium whitespace-nowrap text-primary-foreground">#{s.id}</span>}
+                  </span>
+                ) : null,
+              )}
+            </div>
+          ) : (
+            <SlideView deck={deck} slide={slide} highlight={shape} className="rounded-md" />
+          )}
         </div>
         <div className="mx-auto flex w-full max-w-3xl items-center gap-2 text-[12.5px] text-muted-foreground">
           <Button size="icon" variant="ghost" className="size-8" disabled={slide.number <= 1} onClick={() => onIndex(slide.number - 1)} aria-label="Previous slide">
@@ -283,11 +318,13 @@ function Slides({ deck, slides, index, onIndex }: { deck: Deck; slides: ReturnTy
             <ChevronRightIcon />
           </Button>
           <span className="truncate">Layout "{slide.layout}"</span>
+          {rendered.busy && <span className="ml-auto">{picture ? "Drawing…" : "Starting the preview engine (simple preview meanwhile)…"}</span>}
+          {!picture && !rendered.busy && rendered.problem && <span className="ml-auto">Simple preview (the file itself is unchanged)</span>}
         </div>
         <div className="mx-auto flex w-full max-w-3xl flex-wrap gap-1.5">
-          {slide.shapes.map((s) => (
-            <button key={s.id} type="button" onMouseEnter={() => setShape(s.id)} onMouseLeave={() => setShape(undefined)} className="chip h-7 text-[12px]">
-              <span className="text-muted-foreground">#{s.id}</span> {s.name}
+          {listed.map((s) => (
+            <button key={s.id} type="button" onMouseEnter={() => setShape(s.id)} onMouseLeave={() => setShape(undefined)} className={cn("chip h-7 text-[12px]", shape === s.id && "border-primary")}>
+              <span className="text-muted-foreground">#{s.id}</span> {s.role === "frame" ? "frame" : s.name}
             </button>
           ))}
         </div>

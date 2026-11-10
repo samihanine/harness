@@ -56,7 +56,7 @@ describe("pptx deck", () => {
   test("puts a picture in place of a shape and at a box", async () => {
     const d = await Deck.open(await sampleDeck());
     const body = (await d.slide(2)).shapes.find((x) => x.name === "Body")!;
-    await d.putPicture(2, PNG, { width: 400, height: 300 }, { shape: body.id });
+    await d.putPicture(2, PNG, { width: 400, height: 300 }, { replace: body.id });
     await d.putPicture(3, PNG, { width: 800, height: 450 }, { box: { x: 10, y: 10, w: 80, h: 60 } });
     const again = await reopen(d);
     const s2 = await again.slide(2);
@@ -73,4 +73,82 @@ describe("pptx deck", () => {
     await d.setXml(3, xml.replace("Thank you", "Questions?"));
     expect((await (await reopen(d)).slide(3)).title).toBe("Questions?");
   });
+
+  test("texts keep bullets and inline bold through a rewrite", async () => {
+    const d = await Deck.open(await sampleDeck());
+    const body = (await d.slide(2)).shapes.find((x) => x.name === "Body")!;
+    await d.setText(2, body.id, "Intro line\n- Revenue **12.4 M€**\n- Margin 38 %\n  - up 2 pts");
+    const read = (await (await reopen(d)).slide(2)).shapes.find((x) => x.name === "Body")!.paragraphs;
+    expect(read.map((p) => `${"  ".repeat(p.level)}${p.bullet ? "- " : ""}${p.marked}`)).toEqual(["Intro line", "- Revenue **12.4 M€**", "- Margin 38 %", "  - up 2 pts"]);
+    // Written back as read: the same.
+    await d.setText(2, body.id, read.map((p) => `${"  ".repeat(p.level)}${p.bullet ? "- " : ""}${p.marked}`).join("\n"));
+    expect((await d.slide(2)).shapes.find((x) => x.name === "Body")!.paragraphs.map((p) => p.marked)).toEqual(read.map((p) => p.marked));
+  });
+
+  test("a new text box is placed by code and takes the slide's look", async () => {
+    const d = await Deck.open(await sampleDeck());
+    const before = await d.slide(2);
+    const body = before.shapes.find((x) => x.name === "Body")!;
+    const id = await d.addText(2, "Location types:\n- Store\n- Warehouse", { below: body.id });
+    const added = (await (await reopen(d)).slide(2)).shapes.find((x) => x.id === id)!;
+    expect(added.kind).toBe("text");
+    expect(added.box!.x).toBe(body.box!.x);
+    expect(added.box!.y).toBeGreaterThan(body.box!.y + body.box!.h);
+    expect(added.size).toBe(body.size);
+    expect(added.paragraphs.map((p) => p.bullet)).toEqual([false, true, true]);
+    // Without a place: the largest free area, touching no shape with content.
+    const free = await d.placeFor(3);
+    const closing = (await d.slide(3)).shapes[0].box!;
+    expect(free.y >= closing.y + closing.h || free.y + free.h <= closing.y).toBe(true);
+    await expect(d.addText(2, "x", { below: "#999" })).rejects.toThrow(/No shape #999/);
+  });
+
+  test("tables: added in the slide's look, rows replaced, added and removed", async () => {
+    const d = await Deck.open(await sampleDeck());
+    const id = await d.addTable(3, [["Type", "Stores"], ["Store", "120"], ["Warehouse", "8"]], { below: "Closing" });
+    await d.setTable(3, id, [["Type", "Stores"], ["Store", "121"], ["Warehouse", "8"], ["Others", "3"]]);
+    const t = (await (await reopen(d)).slide(3)).shapes.find((x) => x.id === id)!;
+    expect(t.kind).toBe("table");
+    expect(t.rows).toEqual([["Type", "Stores"], ["Store", "121"], ["Warehouse", "8"], ["Others", "3"]]);
+    await expect(d.setTable(3, id, [["a", "b", "c"]])).rejects.toThrow(/2 columns/);
+    await expect(d.setText(3, id, "x")).rejects.toThrow(/set_table/);
+  });
+
+  test("frames and decoration are told apart, and the slide reads in order", async () => {
+    const d = await Deck.open(await sampleDeck());
+    const body = (await d.slide(2)).shapes.find((x) => x.name === "Body")!;
+    const frame = await d.addBox(2, { box: { x: 2, y: 18, w: 50, h: 50 } });
+    const dot = await d.addBox(2, { box: { x: 90, y: 90, w: 2, h: 2 } }, { fill: "#112233" });
+    const s = await d.slide(2);
+    expect(s.shapes.find((x) => x.id === frame)!.role).toBe("frame");
+    expect(s.shapes.find((x) => x.id === dot)!.role).toBe("decoration");
+    expect(s.shapes.find((x) => x.id === body.id)!.frame).toBe(frame);
+    const text = d.describe(s);
+    expect(text).toContain(`frame #${frame}`);
+    expect(text).toContain("1 decorative shape(s) without text not listed");
+    expect(text).not.toContain(`#${dot} `);
+    expect(text.indexOf('"Heading"')).toBeLessThan(text.indexOf('"Body"'));
+    // A text added inside the frame avoids what is already in it.
+    const id = await d.addText(2, "Note", { inside: frame });
+    const note = (await d.slide(2)).shapes.find((x) => x.id === id)!.box!;
+    const b = body.box!;
+    expect(note.x >= b.x + b.w || note.x + note.w <= b.x || note.y >= b.y + b.h || note.y + note.h <= b.y).toBe(true);
+  });
+
+  test("a slide from a layout of the deck, its placeholders filled by role; the look of a shape changed", async () => {
+    const d = await Deck.open(await sampleDeck());
+    const layouts = await d.layouts();
+    expect(layouts.length).toBeGreaterThan(0);
+    const name = await d.addSlideFromLayout(undefined, 2);
+    expect(layouts.map((l) => l.name)).toContain(name);
+    expect(await d.count()).toBe(4);
+    const heading = (await d.slide(3)).shapes.find((x) => x.name === "Heading")!;
+    await d.setStyle(3, `#${heading.id}`, { size: 28, bold: true, color: "#112233", fill: "#EEEEEE" });
+    const again = (await (await reopen(d)).slide(3)).shapes.find((x) => x.name === "Heading")!;
+    expect(again.size).toBe(28);
+    expect(again.paragraphs[0].color).toBe("#112233");
+    expect(again.fill).toBe("#EEEEEE");
+    expect(await d.fonts()).toBeArray();
+  });
 });
+

@@ -95,3 +95,27 @@ describe("mermaid", () => {
     ]);
   });
 });
+
+describe("security of what is rendered and written", () => {
+  test("only harmless addresses are kept in links and pictures", async () => {
+    const { safeUrl } = await import("@/lib/markdown/syntax");
+    expect(safeUrl("https://x.io/a")).toBe("https://x.io/a");
+    expect(safeUrl("#part")).toBe("#part");
+    expect(safeUrl("javascript:alert(1)")).toBe("");
+    expect(safeUrl(" JaVaScRiPt:alert(1)")).toBe("");
+    expect(safeUrl("data:text/html;base64,PHNjcmlwdD4=")).toBe("");
+    expect(safeUrl("icon:database")).toBe("");
+    expect(safeUrl("icon:database", true)).toBe("icon:database");
+    expect(safeUrl("data:image/png;base64,iVBORw0KGgo=", true)).toContain("data:image/png");
+    expect(toStorage("[x](javascript:alert(1))").storage).not.toContain("javascript:");
+  });
+
+  test("a cell starting like a formula is written as text", async () => {
+    const { toCell } = await import("@/features/excel/table");
+    expect(toCell('=HYPERLINK("http://evil","x")')).toBe(`'=HYPERLINK("http://evil","x")`);
+    expect(toCell("@cmd")).toBe("'@cmd");
+    expect(toCell("-12.5")).toBe("-12.5");
+    expect(toCell("2026-11-12")).toBe("2026-11-12");
+    expect(toCell("Plain text")).toBe("Plain text");
+  });
+});

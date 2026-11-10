@@ -180,9 +180,12 @@ export function builderSdkAgent({ entry, dataset, report, onSaved }: { entry: ()
     tool({
       name: "resize_page",
       description: "Changes a page's size in px (e.g. height 1400 for a long page read by scrolling; 1280×720 is the usual 16:9). Then arrange it again with layout_page.",
-      args: z.object({ page: z.string().optional(), width: z.number(), height: z.number() }),
-      run: async ({ page, width, height }) => {
+      args: z.object({ page: z.string().optional(), width: z.coerce.number().optional().describe("Kept when not given"), height: z.coerce.number().optional().describe("Kept when not given") }),
+      run: async ({ page, width: w, height: h }) => {
         const p = await pageOf(page);
+        const size = (p as { defaultSize?: { width?: number; height?: number } }).defaultSize;
+        const width = w ?? size?.width ?? 1280;
+        const height = h ?? size?.height ?? 720;
         if (width < 320 || height < 240 || width > 4000 || height > 8000) throw new Error("A page is between 320×240 and 4000×8000 px.");
         await p.resizePage((await models()).PageSizeType.Custom, Math.round(width), Math.round(height));
         return `Page "${p.displayName}" is now ${Math.round(width)}×${Math.round(height)}.`;

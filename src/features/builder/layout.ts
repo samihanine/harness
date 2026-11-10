@@ -23,6 +23,11 @@ export function layoutRows(rows: LayoutRow[], page: { width: number; height: num
   const free = used.filter((r) => !r.height).length;
   const share = free ? Math.floor((innerH - fixed) / free) : 0;
   if (free && share < 60) throw new Error(`The rows with a height take ${fixed} px of ${innerH} px: the others would be ${share} px high. Lower some heights or make the page higher (resize_page).`);
+  // A little too high (a few px over, the usual miscount of margins and gaps): the rows are scaled to fit; far too high is refused.
+  if (!free && fixed > innerH && fixed <= innerH * 1.2) {
+    const k = innerH / fixed;
+    return layoutRows(used.map((r) => ({ ...r, height: Math.floor((r.height ?? 0) * k) })), page, { margin, gap, top });
+  }
   if (!free && fixed > innerH) throw new Error(`The rows take ${fixed} px but only ${innerH} px fit (page ${page.height} px, margins ${margin}, gaps ${gap}). Lower some heights, or make the page higher (resize_page).`);
   const boxes: Box[] = [];
   let y = margin + top;

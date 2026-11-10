@@ -399,7 +399,11 @@ const closest = (name: string, names: string[], n = 5) =>
  * uses it: an unknown name is refused with where it really is or the closest names, so a weak model
  * fixes it at once instead of failing later in Power BI. Without the structure, kept as given.
  */
-export function checkName(info: ModelInfo | undefined, table: string, name: string): { table: string; name: string; kind?: "column" | "measure" } {
+export function checkName(info: ModelInfo | undefined, givenTable: string, givenName: string): { table: string; name: string; kind?: "column" | "measure" } {
+  // A whole reference written where a name is expected ("'Zone'[ZoneDescription]", "[Sales]", "'Zone'"): taken apart.
+  const whole = givenName.trim().match(/^(?:'?([^'[\]]+)'?)?\[([^\]]+)\]$/);
+  const name = whole ? whole[2] : givenName.trim();
+  const table = (whole?.[1] ?? givenTable ?? "").trim().replace(/^'(.*)'$/, "$1");
   if (!info?.tables.length) return { table, name };
   const t = info.tables.find((x) => norm(x.name) === norm(table));
   const homes = info.tables.filter((x) => [...x.columns, ...x.measures].some((c) => norm(c.name) === norm(name)));
