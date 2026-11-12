@@ -49,3 +49,11 @@ describe("instructions to the model", () => {
     expect(source).toMatch(/\$\{NO_WEB\}\nNow:/);
   });
 });
+
+describe("screens that fail to load", () => {
+  test("the failures a restart or an update causes are recognized (and only those)", async () => {
+    const { isLoadFailure } = await import("@/lib/lazy");
+    for (const m of ["Failed to fetch dynamically imported module: http://localhost:3400/src/features/data-scientist/screen.tsx", "error loading dynamically imported module", "Importing a module script failed.", "Loading chunk 12 failed.", "Unable to preload CSS for /assets/x.css"]) expect(isLoadFailure(new Error(m))).toBe(true);
+    for (const m of ["Cannot read properties of undefined", "Network error", "x is not a function"]) expect(isLoadFailure(new Error(m))).toBe(false);
+  });
+});

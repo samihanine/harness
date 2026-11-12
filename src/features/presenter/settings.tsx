@@ -8,7 +8,6 @@ import { DownloadIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollPage, Section, StatusText } from "@/components/workspace";
 import { download, keepTemplate, readTemplate, type TemplateFile } from "./files";
-import { SlideView, useSlides } from "./preview";
 import { useRendered } from "./rendered";
 import { Deck, PPTX_TYPE } from "./pptx/deck";
 import { slideTypes, type SlideType } from "./pptx/template";
@@ -19,8 +18,7 @@ export default function TemplateSettings() {
   const [types, setTypes] = useState<SlideType[]>([]);
   const [state, setState] = useState<{ busy?: string; done?: string; error?: string }>({});
   const input = useRef<HTMLInputElement>(null);
-  const slides = useSlides(deck, file?.at ?? 0);
-  const rendered = useRendered(deck, file?.at ?? 0, 1);
+  const rendered = useRendered(deck, file?.at ?? 0, 1, "template");
   const show = async (t?: TemplateFile) => {
     setFile(t);
     const d = t ? await Deck.open(t.bytes) : undefined;
@@ -68,10 +66,9 @@ export default function TemplateSettings() {
         {deck && (
           <div className="mt-2 grid gap-4 sm:grid-cols-2">
             {types.map((t) => {
-              const slide = slides.find((s) => s.number === t.number);
               return (
                 <div key={t.number} className="flex flex-col gap-1.5">
-                  {rendered.small[t.number] ? <img src={rendered.small[t.number]} alt={t.name} className="block w-full rounded-md shadow-sm ring-1 ring-border" /> : slide && <SlideView deck={deck} slide={slide} className="rounded-md" />}
+                  {rendered.small[t.number] ? <img src={rendered.small[t.number]} alt={t.name} className="block w-full rounded-md shadow-sm ring-1 ring-border" /> : <div style={{ aspectRatio: `${deck.size.w} / ${deck.size.h}` }} className="animate-pulse rounded-md bg-muted/60 ring-1 ring-border" />}
                   <span className="text-[13px] font-medium">{t.name}</span>
                   <span className="text-[11.5px] text-muted-foreground">Layout “{t.layout}” · {t.slots.length} slots</span>
                 </div>

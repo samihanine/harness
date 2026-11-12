@@ -6,6 +6,7 @@ import { Suspense } from "react";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { ScreenFallback } from "@/components/workspace";
 import { useConfig } from "@/config";
+import { isLoadFailure } from "@/lib/lazy";
 import type { Feature } from "@/lib/features";
 
 export function ScreenHost({ feature }: { feature: Feature }) {
@@ -17,9 +18,13 @@ export function ScreenHost({ feature }: { feature: Feature }) {
       fallback={(error, reset) => (
         <div className="flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
           <p className="text-[15px] font-medium">{feature.label} could not be drawn</p>
-          <p className="max-w-xl text-[13px] break-words text-muted-foreground">{error.message}</p>
-          <button type="button" className="btn" onClick={reset}>
-            Try again
+          {isLoadFailure(error) ? (
+            <p className="max-w-xl text-[13px] text-muted-foreground">The screen's code could not be loaded (the app was updated or its server restarted while this tab was open). Reloading the page fixes it.</p>
+          ) : (
+            <p className="max-w-xl text-[13px] break-words text-muted-foreground">{error.message}</p>
+          )}
+          <button type="button" className="btn" onClick={() => (isLoadFailure(error) ? location.reload() : reset())}>
+            {isLoadFailure(error) ? "Reload the page" : "Try again"}
           </button>
         </div>
       )}

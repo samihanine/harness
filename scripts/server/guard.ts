@@ -5,12 +5,14 @@
  * header (a page of another site cannot send it without a CORS preflight, which is refused).
  */
 export const PORT = Number(process.env.TOKEN_PORT ?? 3301);
+/** The dev server's port (bun dev: APP_PORT, default 3300). */
+const APP_PORT = Number(process.env.APP_PORT ?? 3300);
 export const HOST = process.env.TOKEN_HOST ?? "127.0.0.1";
 
 const LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
-/** The app's addresses: the dev server, this server (it serves the exported app), and HUB_ORIGINS (comma-separated). */
+/** The app's addresses: the dev server (APP_PORT), this server (it serves the exported app), and HUB_ORIGINS (comma-separated: another port, another machine). */
 const ORIGINS = new Set(
-  [`http://localhost:3300`, `http://127.0.0.1:3300`, `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, ...(process.env.HUB_ORIGINS ?? "").split(",")]
+  [`http://localhost:${APP_PORT}`, `http://127.0.0.1:${APP_PORT}`, `http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`, ...(process.env.HUB_ORIGINS ?? "").split(",")]
     .map((o) => o.trim().replace(/\/+$/, ""))
     .filter(Boolean),
 );

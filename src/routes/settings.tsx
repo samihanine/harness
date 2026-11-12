@@ -28,6 +28,7 @@ export const Route = createFileRoute("/settings")({
 const LABELS: Record<string, string> = {
   home: "Home page (a card per screen)",
   aiPanel: "AI panel on every screen",
+  presenterOffice: "Presenter: draw the slides with Microsoft Office (a work copy of the deck in your OneDrive)",
   visualPreview: "Guides: live preview of the clicked visual",
   visualExplain: 'Guides: "Explain" button',
   visualWhy: 'Guides: "Why did it change?" button (time charts)',
@@ -111,6 +112,9 @@ function Settings() {
               </Section>
               <Section title="Builder" description="Tabs of the Builder.">
                 <Flags value={{ measures: draft.builderTabs.measures }} onChange={(v) => set("builderTabs", { ...draft.builderTabs, ...v })} />
+              </Section>
+              <Section title="Presenter" description="The slides are drawn by Microsoft Office itself: the deck is copied to the folder “Hub previews” of your OneDrive (deleted when the deck leaves the app) and converted to PDF by Microsoft 365. Off: the preview engine of the local server draws them (nothing leaves this computer; the rendering is close, not identical).">
+                <Flags value={{ presenterOffice: draft.presenterOffice }} onChange={(v) => (setDraft((d) => ({ ...d, ...v })), setApplied(false))} />
               </Section>
               <Section title="Exports" description="The Power BI export API needs a Premium capacity: on Pro, PDF goes through the browser's print dialog.">
                 <Flags value={draft.export} onChange={(v) => set("export", v)} />

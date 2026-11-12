@@ -26,7 +26,7 @@ src/
     data-scientist/       analysis and workbook: pivots, charts, calc sheets, Excel export
     presenter/            real PowerPoint decks: pptx/ (deck.ts: the deck through its XML, text.ts: texts as lines,
                           place.ts: places computed by code, template.ts), tools.ts (agent), capture.ts (Power BI
-                          pictures), rendered.ts (LibreOffice pictures), preview.tsx (fallback), files.ts (+ Settings › Slides)
+                          pictures), rendered.ts (the slides drawn by Office, else LibreOffice), pdf.ts (pdf.js), use-slides.ts, files.ts (+ Settings › Slides)
     reports/, datasets/   the library screens (datasets: TMDL, Power Query, DAX)
     excel/                Excel tables as databases: table.ts (model), sync.ts (file ⇄ app), xlsx.ts (lists and
                           colors in the file), tools.ts (agent), screen.tsx (Notion-like views)
@@ -35,13 +35,15 @@ src/
   lib/                    SHARED: local state and engines
     store.ts              IndexedDB collections (features add theirs: declare module + registerNormalizer)
     features.ts           the registry of features (filled by the app layer)
+    lazy.ts               screens loaded on demand, with retry and one reload
     library.ts            reports and models of the library, download / import (registerKind, onReportAdded)
     markdown/             syntax.ts (the app's markdown), storage.ts (⇄ Confluence), mermaid.ts, layout.ts (dagre), highlight.tsx
     ooxml/package.ts      Office Open XML files (pptx, xlsx): parts, relationships, content types
     query-spec.ts, mistakes.ts, last.ts, theme.ts, utils.ts
   services/               SHARED: everything that talks to a backend
     ms.ts                 the way out of the page: calls to the local server, which forwards to Power BI / Fabric / Graph
-    office.ts             PowerPoint slides drawn by the local server's engine
+    office.ts             PowerPoint slides drawn by the local server's engine (LibreOffice)
+    office-preview.ts     a deck drawn by Microsoft Office: work copy in the user's OneDrive → PDF
     pbi.ts                embedding SDKs, DAX (limits, queue, cache)
     excel.ts              Graph workbook API (tables, $batch, look, the app's hidden sheet)
     confluence.ts         Confluence REST API (through the local server, which keeps the key), attachments, pages' markdown

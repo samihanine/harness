@@ -27,6 +27,13 @@ export const PERFORMANCE = { maxRows: 500, timeoutMs: 10_000, concurrency: 4, in
 /** Home page ("/"): a card per screen; false opens the first screen shown instead. */
 export let HOME = true;
 
+/**
+ * Presenter: the slides are drawn by Microsoft Office itself (a work copy of the deck in the user's
+ * own OneDrive, converted to PDF by Microsoft 365: the real PowerPoint rendering). false: only the
+ * local preview engine draws them (nothing leaves the computer).
+ */
+export let PRESENTER_OFFICE = true;
+
 /** AI panel on every screen: false hides every AI chat (the screens' own AI flags below also apply). */
 export let AI_PANEL = true;
 
@@ -104,6 +111,7 @@ export type HubConfig = {
   fileUpload: boolean;
   performance: typeof PERFORMANCE;
   home: boolean;
+  presenterOffice: boolean;
   aiPanel: boolean;
   visualPreview: boolean;
   visualExplain: boolean;
@@ -127,6 +135,7 @@ export const currentConfig = (): HubConfig =>
     fileUpload: FILE_UPLOAD,
     performance: PERFORMANCE,
     home: HOME,
+    presenterOffice: PRESENTER_OFFICE,
     aiPanel: AI_PANEL,
     visualPreview: VISUAL_PREVIEW,
     visualExplain: VISUAL_EXPLAIN,
@@ -170,6 +179,7 @@ export function applyConfig(given: Partial<HubConfig>, { cache = true } = {}) {
   FILE_UPLOAD = pick(given.fileUpload, FILE_UPLOAD);
   take(PERFORMANCE, given.performance);
   HOME = pick(given.home, HOME);
+  PRESENTER_OFFICE = pick(given.presenterOffice, PRESENTER_OFFICE);
   AI_PANEL = pick(given.aiPanel, AI_PANEL);
   VISUAL_PREVIEW = pick(given.visualPreview, VISUAL_PREVIEW);
   VISUAL_EXPLAIN = pick(given.visualExplain, VISUAL_EXPLAIN);

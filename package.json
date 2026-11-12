@@ -44,6 +44,7 @@
     "jszip": "^3.10.2",
     "lucide-react": "^1.71.0",
     "motion": "^14.11.1",
+    "pdfjs-dist": "5.4.149",
     "powerbi-client": "^2.25.0",
     "powerbi-report-authoring": "^3.0.0",
     "radix-ui": "^1.8.1",

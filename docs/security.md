@@ -39,7 +39,7 @@ The server holds the user's session, so it answers the app only:
 1. **Loopback only**: it listens on `127.0.0.1` (`TOKEN_HOST` to change), never on the network.
 2. **Host check**: the `Host` header must be `localhost` / `127.0.0.1` — a site whose name is pointed
    at 127.0.0.1 (DNS rebinding) is refused.
-3. **Origin allowlist**: `http://localhost:3300`, `http://127.0.0.1:3300`, and the server's own
+3. **Origin allowlist**: `http://localhost:3300` (the dev app: `APP_PORT`), `http://127.0.0.1:3300`, and the server's own
    address (it serves the exported app). More with `HUB_ORIGINS=a,b`. CORS headers name that origin,
    never `*`. A request without `Origin` is accepted only when the browser says it is same-origin
    (`Sec-Fetch-Site`) or when it comes from a local program (scripts).
@@ -84,12 +84,19 @@ page could read; the measures below are what stands in the way.
   AI is parsed strictly and refused when invalid.
 - The dev server listens on `localhost` only.
 
-## The preview engine
+## The slides' preview
 
-PowerPoint decks are drawn by LibreOffice compiled to WebAssembly, in a process of its own beside the
-local server (`scripts/server/office.ts`, `office-engine.mjs`). The deck goes from the page to the
-server on the same computer and nowhere else; nothing is written to disk. The engine reads the fonts
-installed on the computer that the deck names.
+- **Microsoft Office (default)**: to draw a deck exactly as PowerPoint does, a work copy of it is put in
+  the folder "Hub previews" of **the user's own OneDrive** (Graph, through the local server) and converted to
+  PDF by Microsoft 365. The deck stays in the user's Microsoft 365 account (the same tenant, under their own
+  rights); the copy is overwritten at each change and deleted when the deck is removed from the app. An
+  account that cannot (no OneDrive, no right, a sensitivity label that blocks conversion) falls back to the
+  local engine. Off with Settings › Power BI › Presenter (`PRESENTER_OFFICE`): nothing then leaves the computer.
+- **Local engine**: LibreOffice compiled to WebAssembly, in a process of its own beside the local server
+  (`scripts/server/office.ts`, `office-engine.mjs`). The deck goes from the page to the server on the same
+  computer and nowhere else; nothing is written to disk. It reads the fonts installed on the computer that the
+  deck names.
+- The PDF is drawn by pdf.js in the page (worker inlined, `isEvalSupported: false`: no `eval`).
 
 ## TLS
 

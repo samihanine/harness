@@ -19,7 +19,7 @@ import { warmOffice } from "@/services/office";
 import { stopCapture } from "./capture";
 import { download, forgetDeck, keepDeckFile, keepHandle, pickLocalFile, readDeckFile, readSharePoint, readTemplate, saveLocal, saveSharePoint, undoDeckFile, type PresentationEntry } from "./files";
 import { presenter } from "./module";
-import { SlideView, useSlides } from "./preview";
+import { useSlides } from "./use-slides";
 import { useRendered, type Rendered } from "./rendered";
 import { Deck } from "./pptx/deck";
 import { slideTypes, type SlideType } from "./pptx/template";
@@ -51,7 +51,7 @@ export default function Presenter() {
   const [adding, setAdding] = useState(false);
   const template = useTemplate();
   const slides = useSlides(deck, version);
-  const rendered = useRendered(deck, version, index);
+  const rendered = useRendered(deck, version, index, entry?.id);
 
   const load = useCallback(async () => {
     setDeck(undefined);
@@ -202,7 +202,7 @@ export default function Presenter() {
       onTab={(t) => navigate({ search: (s) => ({ ...s, tab: t }), replace: true })}
       notices={[
         ...(template ? [] : [{ id: "template", level: "info" as const, title: "No template deck", body: <span>New slides can be copied from a template deck: set one in <Link to="/settings" search={{ tab: "slides" }} className="underline">Settings › Slides</Link>. Without it, the assistant uses the deck's own layouts.</span> }]),
-        ...(rendered.problem ? [{ id: "engine", level: "warning" as const, title: "Simple preview", body: <span>{rendered.problem.missing ? "The preview engine (LibreOffice) is not installed in the local server: run “bun install”, then start the app again." : rendered.problem.message} The slides are shown in a simplified drawing meanwhile; the deck itself is not affected.</span> }] : []),
+        ...(rendered.problem ? [{ id: "engine", level: "warning" as const, title: "The slides cannot be drawn", body: <span>{rendered.problem.message}{rendered.problem.missing ? " The local preview engine is not installed: run “bun install”, then start the app again." : ""} Your deck itself is not affected: the assistant and the list of shapes keep working. In Settings › Power BI, “Presenter” lets Microsoft Office draw the slides.</span> }] : []),
       ]}
       tabs={[
         {
@@ -260,10 +260,20 @@ export default function Presenter() {
 /* ----------------------------------- Slides ----------------------------------- */
 
 /**
- * The slides as LibreOffice draws them (the deck's real look), the shapes' places laid over the
- * picture: pointing a shape — on the slide or in the list under it — shows which is which, with the
- * id the assistant uses. Without the engine, the app's own simple drawing.
+ * The slides as the real thing draws them (Microsoft Office, else LibreOffice: rendered.ts), never
+ * rebuilt by the app, with the shapes' places laid over the picture: pointing a shape — on the slide or
+ * in the list under it — shows which is which, with the id the assistant uses. While a picture is not
+ * there yet, an empty frame says so.
  */
+function Pending({ deck, label, className }: { deck: Deck; label?: string; className?: string }) {
+  return (
+    <div style={{ aspectRatio: `${deck.size.w} / ${deck.size.h}` }} className={cn("flex items-center justify-center bg-muted/60 px-6 text-center text-[12.5px] text-muted-foreground ring-1 ring-border", !label && "animate-pulse", className)}>
+      {label}
+    </div>
+  );
+}
+
+/** (see above) */
 function Slides({ deck, slides, index, onIndex, rendered }: { deck: Deck; slides: ReturnType<typeof useSlides>; index: number; onIndex: (i: number) => void; rendered: Rendered }) {
   const slide = slides[Math.min(index, slides.length) - 1] ?? slides[0];
   const [shape, setShape] = useState<string>();
@@ -278,7 +288,7 @@ function Slides({ deck, slides, index, onIndex, rendered }: { deck: Deck; slides
           <button key={s.part} data-n={s.number} type="button" onClick={() => onIndex(s.number)} className="flex gap-2 text-left">
             <span className="w-4 pt-0.5 text-right text-[11px] text-muted-foreground tabular-nums">{s.number}</span>
             <span className={cn("block flex-1 rounded-sm", s.number === slide.number && "ring-2 ring-primary ring-offset-2")}>
-              {rendered.small[s.number] ? <img src={rendered.small[s.number]} alt={`Slide ${s.number}`} className="block w-full shadow-sm ring-1 ring-border" /> : <SlideView deck={deck} slide={s} />}
+              {rendered.small[s.number] ? <img src={rendered.small[s.number]} alt={`Slide ${s.number}`} className="block w-full shadow-sm ring-1 ring-border" /> : <Pending deck={deck} />}
             </span>
           </button>
         ))}
@@ -304,7 +314,7 @@ function Slides({ deck, slides, index, onIndex, rendered }: { deck: Deck; slides
               )}
             </div>
           ) : (
-            <SlideView deck={deck} slide={slide} highlight={shape} className="rounded-md" />
+            <Pending deck={deck} className="rounded-md" label={rendered.problem ? rendered.problem.message : "Drawing the slide…"} />
           )}
         </div>
         <div className="mx-auto flex w-full max-w-3xl items-center gap-2 text-[12.5px] text-muted-foreground">
@@ -318,8 +328,8 @@ function Slides({ deck, slides, index, onIndex, rendered }: { deck: Deck; slides
             <ChevronRightIcon />
           </Button>
           <span className="truncate">Layout "{slide.layout}"</span>
-          {rendered.busy && <span className="ml-auto">{picture ? "Drawing…" : "Starting the preview engine (simple preview meanwhile)…"}</span>}
-          {!picture && !rendered.busy && rendered.problem && <span className="ml-auto">Simple preview (the file itself is unchanged)</span>}
+          {rendered.busy && <span className="ml-auto">Drawing…</span>}
+          {rendered.source && !rendered.busy && <span className="ml-auto">Drawn by {rendered.source === "office" ? "Microsoft Office" : "LibreOffice (close to PowerPoint)"}</span>}
         </div>
         <div className="mx-auto flex w-full max-w-3xl flex-wrap gap-1.5">
           {listed.map((s) => (

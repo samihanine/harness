@@ -1,5 +1,5 @@
 /** The Trainer feature: what the app needs to know of it (src/lib/features.ts); its screen loads when opened. */
-import { lazy } from "react";
+import { lazyScreen as lazy } from "@/lib/lazy";
 import { BookOpenIcon } from "lucide-react";
 import { onReportAdded } from "@/lib/library";
 import type { Feature } from "@/lib/features";

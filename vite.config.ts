@@ -40,7 +40,7 @@ function contentSecurityPolicy(): Plugin {
  */
 export default defineConfig(({ mode }) => ({
   // Only this computer reaches the dev server (never the local network).
-  server: { port: 3300, host: "localhost", strictPort: true },
+  server: { port: Number(process.env.APP_PORT ?? 3300), host: "localhost", strictPort: true },
   // One powerbi-client: powerbi-report-authoring adds its methods (getCapabilities…) to the copy it imports.
   resolve: { tsconfigPaths: true, dedupe: ["powerbi-client"] },
   base: mode === "html" ? "./" : "/",

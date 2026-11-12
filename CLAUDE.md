@@ -28,7 +28,7 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   `src/services/ms.ts` (`request`, `server`) is the only way out of the page besides the AI API. Only the Power BI
   token comes to the page, in memory, for the embedding SDKs (`src/services/pbi.ts`). The server answers the app
   only (loopback, Host / Origin allowlist, custom header: `scripts/server/guard.ts`). It also draws PowerPoint
-  decks (LibreOffice WebAssembly, `scripts/server/office.ts`). **The LLM is called from the browser only**
+  decks (LibreOffice WebAssembly, `scripts/server/office.ts`) when Microsoft Office cannot. **The LLM is called from the browser only**
   (`src/agent/llm.ts`), never through the server. No business logic in the server, no other backend. A heavy
   dependency is fine when it is the right tool (the preview engine is 240 MB): keep it out of the page's bundle.
 - **Limited LLM: build around it.** Plain text in, plain text out: no native tool use, no JSON mode,
@@ -139,12 +139,17 @@ library screen: each screen adds and manages its own items (`EntityPicker`, `Ent
   cannot see (a text too long for its box, a shape now over another one). The template deck (Settings › Slides)
   is a .pptx where each slide is a type (named in its notes: "type: Two columns"). Power BI visuals go in as
   pictures cut from a capture of the tab (`capture.ts`, shared once per session; works on Pro). Each change is
-  kept in IndexedDB with the earlier versions (undo). **Preview**: the slides are drawn by LibreOffice itself
-  (WebAssembly, in the local server: `scripts/server/office.ts`, `src/services/office.ts`, `rendered.ts`), with the
-  computer's fonts, the shapes' places laid over the picture; the app's own simple drawing (`preview.tsx`) only
-  while the engine starts or when it is not installed.
+  kept in IndexedDB with the earlier versions (undo). **Preview — never rebuilt by the app**: the slides are drawn by the real thing (`rendered.ts`). First by Microsoft
+  Office itself: a work copy of the deck goes to the user's own OneDrive (folder "Hub previews", one file per deck,
+  overwritten at each change, deleted when the deck leaves the app) and Microsoft 365 converts it to PDF (Graph
+  `…/content?format=pdf`, `src/services/office-preview.ts`), shown with pdf.js (`pdf.ts`, worker inlined, no eval):
+  the PowerPoint rendering, for a local deck as for a SharePoint one. When the account cannot (no OneDrive, no right,
+  Settings › Power BI › Presenter off: `PRESENTER_OFFICE`), LibreOffice in the local server draws them
+  (`scripts/server/office.ts`, `src/services/office.ts`: close, not identical). Never a drawing made from the XML:
+  while a picture is not there yet an empty frame says so. The shapes' places are laid over the picture.
 - **Prompts**: every text sent to the model lives in `src/prompts/<feature>.ts` (constants, or small functions
   when they depend on the screen), imported by the code that sends it. The first line of every conversation (`PROTOCOL`) and the end of every message (`format`) carry the rule `NO_WEB`: the model never searches the internet — keep it there when editing prompts (a test checks it).
+- **Screens load on demand and retry** (`src/lib/lazy.ts`): a screen whose code fails to load (dev server restarted, new version of the export while the tab was open) is tried again, then the page reloads once, then `ScreenHost` says why with a "Reload the page" button. The dev app's port is `APP_PORT` (default 3300): `bun dev` tells the local server that origin is the app.
 - **No server-side rendering**: the page never loads `react-dom/server`; markup that must leave the app as text (Confluence storage, a diagram's SVG) is drawn by the browser's renderer into a detached element (`src/lib/markdown/render.ts`, never call it during a render). What is drawn from text the AI wrote (markdown, diagrams) and each screen sit in an `ErrorBoundary` (`src/components/error-boundary.tsx`): a failure shows the text as it is, or the screen's error with "Try again", never a blank app.
 - **Markdown** (`src/lib/markdown`, one renderer: `src/components/markdown.tsx`, for answers, guides, analyses and
   pages): GitHub markdown plus constructs Confluence can hold (`syntax.ts`): ```mermaid diagrams (a subset of
