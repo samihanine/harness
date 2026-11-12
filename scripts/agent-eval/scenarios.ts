@@ -19,6 +19,12 @@ export type Scenario = {
   answers?: string[];
   setup: () => Promise<Agent>;
   check: () => Promise<string[]>;
+  /**
+   * EVAL_MOCK=1: the model's replies, in order, written the way a weak model slips (prose instead of
+   * JSON, a shape given as a number, a text as a list, quotes breaking the answer's JSON). The real
+   * loop and tools run on them; no model is called.
+   */
+  mock?: string[];
 };
 
 const expect = (ok: unknown, problem: string) => (ok ? [] : [problem]);
@@ -78,6 +84,12 @@ export const SCENARIOS: Scenario[] = [
     name: "excel-update",
     description: "Excel data: set the priority of every open task (by condition)",
     request: "Mets toutes les tâches ouvertes en priorité Haute.",
+    mock: [
+      // An option that does not exist: refused with the real ones, then fixed.
+      '{"tools":[{"name":"proceed","args":{"reason":"clear"}},{"name":"update_rows","args":{"where":{"Status":"open"},"set":{"Priority":"High"}}}]}',
+      '{"tools":[{"name":"update_rows","args":{"where":{"Status":"open"},"set":{"Priority":"Haute"}}}]}',
+      '{"tools":[{"name":"answer","args":{"text":"Les 3 tâches ouvertes sont en priorité **Haute**."}}]}',
+    ],
     setup: async () => excelSetup(),
     check: async () => {
       const wrong = rows.filter((r, i) => (r.Status === "Open" ? r.Priority !== "Haute" : r.Priority !== TASK_ROWS[i].Priority));
@@ -98,6 +110,13 @@ export const SCENARIOS: Scenario[] = [
     name: "slides-figures",
     description: "Presenter: update the quarter and the figures of a real deck",
     request: "Passe la présentation au T3 (Q3) : le CA est de 12,4 M€ et la marge de 38 %.",
+    mock: [
+      '{"tools":[{"name":"read_slide","args":{"slide":2}}]}',
+      '{"tools":[{"name":"proceed","args":{"reason":"clear"}},{"name":"replace_text","args":{"find":"Q2","replace":"Q3"}},{"name":"set_text","args":{"slide":2,"shape":"#3","text":"- Revenue 12.4 M€\n- Margin 38 %"}}]}',
+      // Plain text where the final answer belongs: asked again once, then taken as the answer.
+      "C'est fait : le deck est en Q3, avec un CA de 12,4 M€ et une marge de 38 %.",
+      "C'est fait : le deck est en Q3, avec un CA de 12,4 M€ et une marge de 38 %.",
+    ],
     setup: async () => presenterSetup(),
     check: async () => {
       const text = await deck.outline(true);
@@ -108,6 +127,15 @@ export const SCENARIOS: Scenario[] = [
     name: "slides-textbox",
     description: "Presenter: add content to a slide as a new text box (never over an existing text)",
     request: "Ajoute sur la slide 2 une zone de texte avec les types de sites : Store, Regional Warehouse, Central Warehouse.",
+    mock: [
+      "Je vais ajouter la zone de texte sur la slide 2 tout de suite.",
+      '{"tools":[{"name":"read_slide","args":{"slide":"2"}}]}',
+      // A list for the text, a number for the shape, the call written next to proceed.
+      '{"tools":[{"name":"proceed","args":{"reason":"clear"}},{"name":"add_text","args":{"slide":2,"text":["Types de sites :","- Store","- Regional Warehouse","- Central Warehouse"],"where":{"below":3}}}]}',
+      '{"tools":[{"name":"read_slide","args":{"slide":2}}]}',
+      // Quotes inside the answer break the JSON.
+      '{"tools":[{"name":"answer","args":{"text":"J\'ai ajouté une zone "Types de sites" sous le texte de la slide 2."}}]}',
+    ],
     setup: async () => presenterSetup(false),
     check: async () => {
       const s = await deck.slide(2);

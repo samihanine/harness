@@ -21,7 +21,7 @@ import { LEARN_FROM_MISTAKES } from "@/config";
 import { contextRound } from "@/services/context-pages";
 import { addMistakes, alike, mistakesText, type Mistake } from "@/lib/mistakes";
 import { settings } from "@/lib/store";
-import { AGENT, DIRECT, NOTES, PROTOCOL } from "@/prompts/agent";
+import { AGENT, DIRECT, NOTES, NO_WEB, PROTOCOL } from "@/prompts/agent";
 
 export type Tool = {
   name: string;
@@ -146,6 +146,7 @@ const format = (tools: Tool[], now: string) =>
   tag(
     "reply_format",
     `ONE raw JSON object, nothing else: {"tools": [{"name": "<tool>", "args": {…}}]}. Tools: ${tools.map((t) => t.name).join(", ")}. Final tools (alone in their reply): ${tools.filter((t) => TERMINALS.has(t.name)).map((t) => t.name).join(", ")}.
+${NO_WEB}
 Now: ${now}`,
   );
 const TERMINALS = new Set(["answer", "ask_user"]);

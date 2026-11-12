@@ -7,6 +7,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit && bun scripts/check-imports.ts",
     "eval:agent": "bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/run.ts",
+    "eval:mock": "EVAL_MOCK=1 bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/run.ts --all",
     "eval:live:setup": "EVAL_LIVE=1 bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/sales.ts setup",
     "eval:live:cleanup": "EVAL_LIVE=1 bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/sales.ts cleanup",
     "eval:live": "EVAL_LIVE=1 bun --preload ./scripts/agent-eval/preload.ts ./scripts/agent-eval/run.ts",
@@ -19,7 +20,8 @@
     "export:html": "vite build --mode html && bun scripts/export-html.ts",
     "export:server": "bun build --compile --compile-exec-argv=--use-system-ca scripts/token-server.ts --outfile dist/hub-token-server",
     "test": "bun test",
-    "screens": "bun scripts/screens.ts"
+    "screens": "bun scripts/screens.ts",
+    "smoke": "bun scripts/smoke.ts"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.15.33",

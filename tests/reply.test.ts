@@ -39,3 +39,13 @@ describe("tool arguments read tolerantly", () => {
     expect(() => layoutRows(rows.map((r) => ({ ...r, height: r.height * 2 })), { width: 1280, height: 1080 })).toThrow(/rows take/);
   });
 });
+
+describe("instructions to the model", () => {
+  test("never search the internet: first line of the protocol, and repeated at the end of every message", async () => {
+    const { PROTOCOL, NO_WEB } = await import("@/prompts/agent");
+    expect(PROTOCOL.startsWith("IMPORTANT — NEVER search the internet")).toBe(true);
+    expect(NO_WEB).toMatch(/NEVER search the internet or the web/);
+    const source = await Bun.file("src/agent/loop.ts").text();
+    expect(source).toMatch(/\$\{NO_WEB\}\nNow:/);
+  });
+});

@@ -20,6 +20,7 @@ import { SCENARIOS as OFFLINE } from "./scenarios";
 /** EVAL_LIVE=1 (bun run eval:live): the live scenarios on the real test model. */
 const SCENARIOS = process.env.EVAL_LIVE === "1" ? (await import("./live-scenarios")).LIVE_SCENARIOS : OFFLINE;
 
+const MOCK = process.env.EVAL_MOCK === "1";
 const args = process.argv.slice(2);
 const option = (name: string, fallback: string) => {
   const i = args.indexOf(`--${name}`);
@@ -36,11 +37,12 @@ if (!runAll && !names.length) {
   for (const s of SCENARIOS) console.log(`  ${s.name.padEnd(16)} ${s.description}`);
   process.exit(0);
 }
+if (MOCK) process.env.AI_KEY ||= "mock";
 if (!process.env.AI_KEY) {
   console.error("Missing AI_KEY: put it in .env.local (AI_KEY=…).");
   process.exit(1);
 }
-const chosen = runAll ? SCENARIOS : SCENARIOS.filter((s) => names.includes(s.name));
+const chosen = (runAll ? SCENARIOS : SCENARIOS.filter((s) => names.includes(s.name))).filter((s) => !MOCK || s.mock);
 const unknown = names.filter((n) => !SCENARIOS.some((s) => s.name === n));
 if (unknown.length) {
   console.error(`Unknown scenario(s): ${unknown.join(", ")}`);
@@ -51,9 +53,20 @@ if (unknown.length) {
 
 const usage = { calls: 0, prompt: 0, completion: 0 };
 const realFetch = globalThis.fetch;
+/** EVAL_MOCK=1: the replies a scenario scripts stand in for the model (see Scenario.mock); every prompt sent is kept to be checked. */
+let mock: { script: string[]; next: number; prompts: string[] } | undefined;
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   const url = String(input instanceof Request ? input.url : input);
   if (!url.startsWith(AI_BASE_URL)) return realFetch(input, init);
+  if (MOCK) {
+    if (!mock) throw new Error("No mock script for this scenario.");
+    const body = JSON.parse(String(init?.body ?? "{}")) as { messages?: { role: string; content: unknown }[] };
+    mock.prompts.push(String(body.messages?.at(-1)?.content ?? ""));
+    usage.calls++;
+    const reply = mock.script[mock.next++];
+    if (reply === undefined) throw new Error(`The mock script ended after ${mock.script.length} replies: the loop asked for more.`);
+    return new Response(JSON.stringify({ choices: [{ message: { content: reply } }], usage: { prompt_tokens: 0, completion_tokens: 0 } }), { headers: { "Content-Type": "application/json" } });
+  }
   if (usage.calls >= maxCalls || usage.prompt + usage.completion >= maxTokens) throw new Error(`Eval budget reached (${usage.calls} calls, ${usage.prompt + usage.completion} tokens): stopping.`);
   usage.calls++;
   const response = await realFetch(input, init);
@@ -108,8 +121,16 @@ for (const scenario of chosen) {
   let error: string | undefined;
   try {
     const agent = await scenario.setup();
+    if (MOCK) mock = { script: scenario.mock ?? [], next: 0, prompts: [] };
     turns = await converse(agent, scenario.request, scenario.answers);
     problems = await scenario.check();
+    if (mock) {
+      // What the model must have been told, on every call: never search the internet (and the reply format).
+      const missing = mock.prompts.filter((p) => !/NEVER search the internet or the web/.test(p) || !/ONE raw JSON object/.test(p)).length;
+      if (missing) problems.push(`${missing} prompt(s) sent without the "never search the internet" instruction or the reply format`);
+      if (!/^IMPORTANT — NEVER search the internet/m.test(mock.prompts[0] ?? "")) problems.push("the first prompt does not start with the web rule");
+      if (mock.next < mock.script.length) problems.push(`${mock.script.length - mock.next} scripted reply(ies) never used: the loop ended early`);
+    }
   } catch (e) {
     error = e instanceof Error ? e.message : String(e);
   }

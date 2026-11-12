@@ -8,6 +8,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronRightIcon, CircleAlertIcon, InfoIcon, LightbulbIcon, TriangleAlertIcon } from "lucide-react";
 import { Mermaid } from "./diagram";
+import { ErrorBoundary } from "./error-boundary";
 import { iconOf } from "./icon";
 import { highlight } from "@/lib/markdown/highlight";
 import { panelOf, safeUrl, statusOf, withPanels, type PanelKind } from "@/lib/markdown/syntax";
@@ -52,7 +53,12 @@ function CodeBlock({ lang, code }: { lang?: string; code: string }) {
 
 /** A fenced block: a diagram, a panel or code. */
 function Fence({ lang, code }: { lang: string; code: string }) {
-  if (lang === "mermaid") return <Mermaid code={code} />;
+  if (lang === "mermaid")
+    return (
+      <ErrorBoundary resetKey={code} fallback={(e) => <CodeBlock lang={`mermaid — not drawn: ${e.message.slice(0, 80)}`} code={code} />}>
+        <Mermaid code={code} />
+      </ErrorBoundary>
+    );
   const panel = panelOf(lang, code);
   if (panel) {
     const { icon: Icon, className, bar } = PANELS[panel.kind];
@@ -115,9 +121,12 @@ const components: Components = {
 };
 
 export const Markdown = ({ children, className }: { children: string; className?: string }) => (
+  // A text the renderer cannot draw is shown as it is, never a blank page.
+  <ErrorBoundary resetKey={children} fallback={() => <pre className="overflow-auto rounded-lg bg-muted p-3 text-[12.5px] whitespace-pre-wrap">{children}</pre>}>
   <div className={cn("markdown [&_.contains-task-list]:list-none [&_.contains-task-list]:pl-1 [&_.task-list-item_input]:mr-1.5 [&_.task-list-item_input]:align-middle", className)}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={components} urlTransform={(url, key) => safeUrl(url, key === "src")}>
       {withPanels(cleanMarkdown(children))}
     </ReactMarkdown>
   </div>
+  </ErrorBoundary>
 );

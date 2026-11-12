@@ -5,10 +5,10 @@
  * placeholders while rendering, replaced by their macro afterwards. Read with the browser's DOM parser.
  * The files to attach (diagrams, icons) are listed: the Confluence screen draws and uploads them.
  */
-import { createElement, Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
+import { createElement, isValidElement, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { renderXhtml } from "./render";
 import { PANEL_KINDS, diagramFile, iconFile, panelOf, safeUrl, statusOf, withPanels, type PanelKind } from "./syntax";
 
 export type StorageFile = { name: string; kind: "diagram"; code: string } | { name: string; kind: "icon"; icon: string };
@@ -36,9 +36,10 @@ function fenceOf(children: ReactNode) {
 
 /** Markdown → storage XHTML and the files it refers to. */
 export function toStorage(md: string): { storage: string; files: StorageFile[] } {
-  const held: string[] = [];
+  // What replaces a placeholder is made after the rendering (a panel's content is converted then, never inside a render).
+  const held: (string | (() => string))[] = [];
   const files: StorageFile[] = [];
-  const hold = (xml: string) => createElement("hub-x", { "data-i": held.push(xml) - 1 });
+  const hold = (xml: string | (() => string)) => createElement("hub-x", { "data-i": held.push(xml) - 1 });
   const file = (f: StorageFile) => void (files.some((x) => x.name === f.name) || files.push(f));
   const inner = (text: string) => {
     const r = toStorage(text);
@@ -54,7 +55,7 @@ export function toStorage(md: string): { storage: string; files: StorageFile[] }
         return hold(`<p><ac:image ac:align="center"><ri:attachment ri:filename="${name}" /></ac:image></p>${macro("expand", { title: "Diagram source" }, `<ac:rich-text-body>${codeMacro(code, "text", "hub:mermaid")}</ac:rich-text-body>`)}`);
       }
       const panel = panelOf(lang, code);
-      if (panel) return hold(macro(PANEL_KINDS[panel.kind], { title: panel.title || undefined }, `<ac:rich-text-body>${inner(panel.body)}</ac:rich-text-body>`));
+      if (panel) return hold(() => macro(PANEL_KINDS[panel.kind], { title: panel.title || undefined }, `<ac:rich-text-body>${inner(panel.body)}</ac:rich-text-body>`));
       const custom = CUSTOM[lang];
       return hold(custom ? codeMacro(code, custom.language, custom.title) : codeMacro(code, LANGUAGES[lang] ?? (lang || undefined)));
     },
@@ -72,20 +73,22 @@ export function toStorage(md: string): { storage: string; files: StorageFile[] }
       const attachment = String(src ?? "").match(/^attachment:(.+)$/)?.[1];
       return hold(`<ac:image ac:alt="${escape(alt ?? "")}">${attachment ? `<ri:attachment ri:filename="${escape(attachment)}" />` : `<ri:url ri:value="${escape(String(src ?? ""))}" />`}</ac:image>`);
     },
-    // Task lists: Confluence's own (a checkbox each).
-    ul: ({ children, className }) => (className?.includes("contains-task-list") ? hold(`<ac:task-list>${renderToStaticMarkup(createElement(Fragment, null, children))}</ac:task-list>`) : createElement("ul", null, children)),
+    // Task lists: Confluence's own (a checkbox each), written as marks here and turned into macros below.
+    ul: ({ children, className }) => createElement(className?.includes("contains-task-list") ? "hub-tasks" : "ul", null, children),
     li: ({ children, className, node }) => {
       if (!className?.includes("task-list-item")) return createElement("li", null, children);
       // Its checkbox (maybe inside a paragraph of a loose list), the box itself not written (input: below).
-      const checked = JSON.stringify(node ?? {}).includes('"checked":true');
-      const body = renderToStaticMarkup(createElement(Fragment, null, children)).replace(/^<p>([\s\S]*)<\/p>$/, "$1").trim();
-      return hold(`<ac:task><ac:task-status>${checked ? "complete" : "incomplete"}</ac:task-status><ac:task-body>${body}</ac:task-body></ac:task>`);
+      return createElement("hub-task", { "data-done": JSON.stringify(node ?? {}).includes('"checked":true') ? "1" : "0" }, children);
     },
     input: () => null,
   };
-  let html = renderToStaticMarkup(createElement(ReactMarkdown, { remarkPlugins: [remarkGfm], components, urlTransform: (url: string, key: string) => safeUrl(url, key === "src") }, withPanels(md)));
+  let html = renderXhtml(createElement(ReactMarkdown, { remarkPlugins: [remarkGfm], components, urlTransform: (url: string, key: string) => safeUrl(url, key === "src") }, withPanels(md)));
+  // Tasks: innermost first (a task may hold a list of tasks).
+  for (let i = 0; i < 10 && /<hub-task[ >]/.test(html); i++)
+    html = html.replace(/<hub-task data-done="([01])">((?:(?!<hub-task[ >])[\s\S])*?)<\/hub-task>/g, (_, done: string, body: string) => `<ac:task><ac:task-status>${done === "1" ? "complete" : "incomplete"}</ac:task-status><ac:task-body>${body.replace(/^<p>([\s\S]*)<\/p>$/, "$1").trim()}</ac:task-body></ac:task>`);
+  html = html.replace(/<hub-tasks>/g, "<ac:task-list>").replace(/<\/hub-tasks>/g, "</ac:task-list>");
   // Placeholders may hold others (a panel's content): replaced until none is left.
-  for (let i = 0; i < 20 && html.includes("<hub-x"); i++) html = html.replace(/<hub-x data-i="(\d+)"><\/hub-x>/g, (_, n: string) => held[Number(n)]);
+  for (let i = 0; i < 20 && html.includes("<hub-x"); i++) html = html.replace(/<hub-x data-i="(\d+)"\s*(?:\/>|><\/hub-x>)/g, (_, n: string) => (typeof held[Number(n)] === "function" ? (held[Number(n)] as () => string)() : (held[Number(n)] as string)));
   return { storage: html, files };
 }
 

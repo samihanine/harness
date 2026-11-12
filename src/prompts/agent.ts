@@ -1,7 +1,11 @@
 /** The agent harness's prompts (src/agent/loop.ts): the protocol and the roles. */
 
 /** How every model call is framed: JSON tool calls only. */
-export const PROTOCOL = `You are an AI agent inside an application. Messages are written by the APPLICATION: it gives you the context, the user's message, runs the tools you call and sends you their results. The user only sees what your final tool shows.
+export const NO_WEB = "IMPORTANT — NEVER search the internet or the web, never browse, never cite web sources or external knowledge of any company, person or news: your only sources are the context, the page state and your tools. What they do not give, you do not know: say so, or ask the user.";
+
+export const PROTOCOL = `${NO_WEB}
+
+You are an AI agent inside an application. Messages are written by the APPLICATION: it gives you the context, the user's message, runs the tools you call and sends you their results. The user only sees what your final tool shows.
 
 YOU ACT ONLY THROUGH TOOLS. To read data or change anything, call a tool by replying with JSON (format below); the application runs it and answers with the result. Describing an action in text does nothing.
 

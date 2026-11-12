@@ -88,6 +88,10 @@ async function signIn() {
   return Object.assign(p, { done });
 }
 
+// A failure in the background (a stopped engine, a closed connection) is logged, never a reason to stop the server.
+process.on("unhandledRejection", (e) => console.error("Unhandled:", e instanceof Error ? e.message : e));
+process.on("uncaughtException", (e) => console.error("Uncaught:", e instanceof Error ? e.message : e));
+
 await migrateOldTokens();
 
 if (process.argv[2] === "login") {

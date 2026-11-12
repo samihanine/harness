@@ -105,6 +105,8 @@ async function engineFor(families: string[]) {
   let ready!: () => void;
   let failed!: (e: Error) => void;
   const started = new Promise<void>((resolve, reject) => ((ready = resolve), (failed = reject)));
+  // Nobody may be waiting for it when the engine stops (a warm-up, a deck that left): never an unhandled rejection, which would stop the whole server.
+  started.catch(() => undefined);
   const child = Bun.spawn([runtime(), SCRIPT, ...files], {
     cwd: join(import.meta.dir, "../.."),
     stdio: ["ignore", "ignore", "ignore"],

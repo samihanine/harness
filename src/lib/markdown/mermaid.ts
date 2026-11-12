@@ -26,7 +26,9 @@ export function parseMermaid(text: string): Graph {
     const m = token.trim().match(/^([\w-]+)\s*(\[\(|\(\[|\[|\(|\{)?\s*(.*?)\s*(?:\)\]|\]\)|\]|\)|\})?\s*(?::::(\w+))?$/);
     if (!m) return undefined;
     const [, id, open, inner, cls] = m;
-    let n = g.nodes.find((x) => x.id === id);
+    // An id that names a group is that group (an arrow to it goes to the whole group): never a second box with the same id.
+    const group = g.groups.find((x) => x.id === id);
+    let n = g.nodes.find((x) => x.id === id) ?? group;
     if (!n) g.nodes.push((n = { id, label: id, parent: stack.at(-1) }));
     if (open && inner) Object.assign(n, label(inner), open === "[(" && !label(inner).icon ? { icon: "database" } : {});
     if (cls) n.color = cls;
@@ -42,8 +44,10 @@ export function parseMermaid(text: string): Graph {
     }
     m = line.match(/^subgraph\s+([\w-]+)(?:\s*\[(.+)\])?/);
     if (m) {
-      g.groups.push({ id: m[1], label: m[2] ? label(m[2]).label : m[1], parent: stack.at(-1) });
-      stack.push(m[1]);
+      // A group named like a box already drawn gets its own id (both must stay).
+      const id = g.nodes.some((x) => x.id === m![1]) || g.groups.some((x) => x.id === m![1]) ? `${m[1]}~group${g.groups.length}` : m[1];
+      g.groups.push({ id, label: m[2] ? label(m[2]).label : m[1], parent: stack.at(-1) });
+      stack.push(id);
       continue;
     }
     if (line === "end") {

@@ -56,7 +56,7 @@ src/
   components/             SHARED UI: workspace, chat, markdown (the one renderer), diagram, badge, mascot, pickers, shadcn ui/
   prompts/                every prompt, one file per feature (imported by the code that sends it)
 
-tests/                    bun test: markdown ⇄ Confluence, mermaid, pptx decks, Excel tables and xlsx, replies and tool arguments
+tests/                    bun test: markdown ⇄ Confluence, mermaid, pptx decks, Excel tables and xlsx, replies and tool arguments, diagrams (every shape of mermaid a model writes)
 scripts/
   dev.ts                  bun dev: token server + Vite
   token-server.ts         the local server (docs/security.md): Microsoft sign-in, /ms/<service>/… and /confluence/…
@@ -65,8 +65,9 @@ scripts/
                           (LibreOffice WebAssembly: PowerPoint slides as pictures, the computer's fonts)
   check-imports.ts        the boundaries above
   screens.ts              every screen's accessibility tree saved / compared (bun run screens [--check])
+  smoke.ts                every screen and tab opened, failing on a crash or a page error (bun run smoke)
   export-html.ts          single HTML file
-  agent-eval/             agents run outside the browser (offline and live scenarios)
+  agent-eval/             agents run outside the browser (live model, or a scripted one: bun run eval:mock)
   security/               audit, fixes, library updates
 docs/
   performance.md          semantic model limits

@@ -4,8 +4,8 @@
  * is attached to the Confluence page as a picture (`diagramPng`).
  */
 import { createElement, useId } from "react";
-import { renderToStaticMarkup } from "react-dom/server";
 import { iconOf } from "./icon";
+import { renderHtml } from "@/lib/markdown/render";
 import { elbow, layoutDiagram, type DiagramNode } from "@/lib/markdown/layout";
 import { parseMermaid, type Graph } from "@/lib/markdown/mermaid";
 
@@ -136,7 +136,7 @@ export function Mermaid({ code }: { code: string }) {
 
 /** The SVG of a mermaid block as text (white background), for the picture attached to Confluence. */
 export function diagramSvgText(code: string) {
-  const svg = renderToStaticMarkup(<DiagramSvg graph={parseMermaid(code)} />);
+  const svg = renderHtml(<DiagramSvg graph={parseMermaid(code)} />);
   return svg.replace("<svg ", '<svg xmlns="http://www.w3.org/2000/svg" style="background:#ffffff" ').replace(/ class="[^"]*"/, "");
 }
 
@@ -156,4 +156,4 @@ export async function svgToPng(svg: string): Promise<Blob> {
 
 /** A lucide icon as a PNG (for the icons of a page written to Confluence). */
 export const iconPng = (name: string, color = "#2563eb") =>
-  svgToPng(renderToStaticMarkup(createElement(iconOf(name), { width: 32, height: 32, color, strokeWidth: 2, xmlns: "http://www.w3.org/2000/svg" })));
+  svgToPng(renderHtml(createElement(iconOf(name), { width: 32, height: 32, color, strokeWidth: 2, xmlns: "http://www.w3.org/2000/svg" })));
