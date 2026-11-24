@@ -203,31 +203,42 @@ export class Pptx {
     } else body = kid(shape, NS.p, "txBody");
     if (!body) throw new Error(`Shape ${id} holds no text (a picture or a chart?).`);
     const paragraphs = kids(body, NS.a, "p");
-    const first = paragraphs[0];
-    const pPr = first && kid(first, NS.a, "pPr");
-    const rPr = (first && (all(first, NS.a, "rPr")[0] ?? kid(first, NS.a, "endParaRPr"))) as El | undefined;
+    // Each new line takes the style of the old paragraph at the same place (the last one for extra lines):
+    // a callout's title stays a title, a list keeps its bullets. Its text takes the paragraph's plain run
+    // (the last one: "**East**: 840 M$" is bold, then plain); **bold** parts of the new text are bold.
+    const styleOf = (p: El | undefined) => {
+      const runs = p ? (all(p, NS.a, "rPr") as El[]) : [];
+      return { pPr: p && kid(p, NS.a, "pPr"), plain: runs.filter((r) => r.getAttribute("b") !== "1").at(-1) ?? runs.at(-1) ?? (p && kid(p, NS.a, "endParaRPr")) };
+    };
+    const styles = paragraphs.map(styleOf);
     for (const p of paragraphs) body.removeChild(p);
-    for (const line of text.split("\n")) {
+    const props = (base: El | undefined, bold?: boolean) => {
+      const r = doc.createElementNS(NS.a, "a:rPr");
+      if (base) {
+        for (const at of Array.from(base.attributes)) r.setAttribute(at.name, at.value);
+        for (let n = base.firstChild; n; n = n.nextSibling) r.appendChild(n.cloneNode(true));
+      }
+      if (bold !== undefined) bold ? r.setAttribute("b", "1") : r.removeAttribute("b");
+      return r;
+    };
+    text.split("\n").forEach((line, i) => {
+      const st = styles[Math.min(i, styles.length - 1)] ?? { pPr: undefined, plain: undefined };
       const p = doc.createElementNS(NS.a, "a:p");
-      if (pPr) p.appendChild(pPr.cloneNode(true));
-      if (line) {
+      if (st.pPr) p.appendChild(st.pPr.cloneNode(true));
+      const parts = line.split(/(\*\*[^*]+\*\*)/).filter(Boolean);
+      const marked = parts.some((x) => /^\*\*.+\*\*$/.test(x));
+      for (const part of parts) {
+        const bold = /^\*\*.+\*\*$/.test(part);
         const r = doc.createElementNS(NS.a, "a:r");
-        if (rPr) {
-          const props = rPr.cloneNode(true) as El;
-          if (props.localName === "endParaRPr") {
-            const renamed = doc.createElementNS(NS.a, "a:rPr");
-            for (const at of Array.from(props.attributes)) renamed.setAttribute(at.name, at.value);
-            for (let n = props.firstChild; n; n = n.nextSibling) renamed.appendChild(n.cloneNode(true));
-            r.appendChild(renamed);
-          } else r.appendChild(props);
-        }
+        r.appendChild(props(st.plain, marked ? bold : undefined));
         const t = doc.createElementNS(NS.a, "a:t");
-        t.appendChild(doc.createTextNode(line));
+        t.appendChild(doc.createTextNode(bold ? part.slice(2, -2) : part));
         r.appendChild(t);
         p.appendChild(r);
       }
+      if (!parts.length && st.plain) p.appendChild(props(st.plain));
       body.appendChild(p);
-    }
+    });
   }
 
   private async addMedia(file: string, data: Uint8Array) {

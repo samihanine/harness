@@ -179,11 +179,20 @@ export async function runChat(req: ChatRequest, emit: (e: ChatEvent) => void, si
         }
         break;
       }
-      // Reads run side by side; changes one after the other, in the order given.
+      // In the order given: reads that follow each other run side by side, a change waits for what came before it.
       const outputs = new Map<string, Awaited<ReturnType<typeof runTool>>>();
-      const reads = calls.filter((c) => !tools.find((t) => t.name === c.name)?.changes);
-      await Promise.all(reads.map(async (c) => outputs.set(c.id, await runTool(c.name, c.args, c.id))));
-      for (const c of calls) if (!outputs.has(c.id)) outputs.set(c.id, await runTool(c.name, c.args, c.id));
+      let group: typeof calls = [];
+      const flush = async () => {
+        await Promise.all(group.map(async (c) => outputs.set(c.id, await runTool(c.name, c.args, c.id))));
+        group = [];
+      };
+      for (const c of calls) {
+        if (tools.find((t) => t.name === c.name)?.changes) {
+          await flush();
+          outputs.set(c.id, await runTool(c.name, c.args, c.id));
+        } else group.push(c);
+      }
+      await flush();
       conv.messages.push({
         role: "user",
         content: calls.map((c) => {

@@ -35,5 +35,5 @@ export async function analysisToExcel(a: Analysis): Promise<Buffer> {
   }
   const steps: any[][] = [[header("Name"), header("SQL"), header("Description")], ...a.steps.map((s) => [{ value: s.name }, { value: s.sql }, { value: s.description ?? "" }]), [], [header("Source"), header("Kind"), header("Query / file")], ...a.sources.map((s) => [{ value: s.name }, { value: s.kind }, { value: s.kind === "dax" ? `${s.datasetName}: ${s.query}` : `${s.fileName}${s.sheet ? ` / ${s.sheet}` : ""}` }])];
   sheets.push({ sheet: sheetName("Method", used), data: steps, columns: [{ width: 24 }, { width: 80 }, { width: 40 }] });
-  return (await writeXlsxFile(sheets.map((s) => ({ data: s.data, sheet: s.sheet, columns: s.columns })) as never, {} as never)) as unknown as Buffer;
+  return writeXlsxFile(sheets.map((s) => ({ data: s.data, sheet: s.sheet, columns: s.columns })) as never).toBuffer();
 }

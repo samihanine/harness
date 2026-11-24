@@ -162,7 +162,8 @@ function drawChart(slide: PSlide, spec: Extract<Block, { type: "chart" }>["spec"
     ...box,
     barDir: spec.type === "bar" ? "bar" : "col",
     barGrouping: spec.stacked ? "stacked" : "clustered",
-    chartColors: C.palette,
+    // One series: one color (PowerPoint would color each bar).
+    chartColors: data.length === 1 && spec.type !== "pie" && spec.type !== "doughnut" ? [C.palette[0]] : C.palette,
     showLegend: data.length > 1 || spec.type === "pie" || spec.type === "doughnut",
     legendPos: "b",
     legendFontFace: FONT,
@@ -188,6 +189,8 @@ async function drawBlocks(slide: PSlide, blocks: Block[], box: Box) {
   let k = 1;
   const total = (scale: number) => blocks.reduce((n, b) => n + blockHeight(b, box.w, scale) + 0.12, 0);
   while (k > 0.7 && total(k) > box.h) k -= 0.05;
+  // Little content: bigger text, so the slide does not look empty (pictures and charts take the rest anyway).
+  if (!blocks.some(fixed)) while (k < 1.35 && total(k + 0.05) < box.h * 0.7) k += 0.05;
   // Pictures and charts share the room left by the text.
   const flexible = blocks.filter(fixed).length;
   const textH = blocks.filter((b) => !fixed(b)).reduce((n, b) => n + blockHeight(b, box.w, k) + 0.12, 0);
@@ -300,17 +303,19 @@ async function drawSlide(pptx: Pptx, deck: Deck, s: Slide) {
       const rowsN = Math.ceil(items.length / Math.max(1, perRow));
       const gap = 0.3;
       const cardW = (body.w - gap * (perRow - 1)) / Math.max(1, perRow);
-      const cardH = Math.min(2.2, (body.h - (rest.length ? 1.4 : 0) - gap * (rowsN - 1)) / Math.max(1, rowsN));
+      const cardH = Math.min(rest.length ? 2.2 : 2.8, (body.h - (rest.length ? 1.4 : 0) - gap * (rowsN - 1)) / Math.max(1, rowsN));
+      // Alone on the slide: the cards in the middle of the page.
+      const top = rest.length ? body.y + 0.1 : body.y + Math.max(0.1, (body.h - rowsN * cardH - (rowsN - 1) * gap) / 2.5);
       items.forEach((it, i) => {
         const x = body.x + (i % perRow) * (cardW + gap);
-        const y = body.y + 0.1 + Math.floor(i / perRow) * (cardH + gap);
+        const y = top + Math.floor(i / perRow) * (cardH + gap);
         const value = it.content.find((c) => c.bold)?.text ?? plain(it.content).split(" ")[0];
         const label = plain(it.content.filter((c) => !c.bold)).trim();
         const [main, detail] = label.split(/\s+[—–-]\s+/, 2);
         slide.addShape("rect", { x, y, w: cardW, h: cardH, fill: { color: C.white }, line: { color: C.line, width: 1 } });
         slide.addShape("rect", { x, y, w: cardW, h: 0.06, fill: { color: C.gold }, line: { color: C.gold } });
-        slide.addText(value, { x: x + 0.2, y: y + 0.25, w: cardW - 0.4, h: cardH * 0.42, fontFace: FONT, fontSize: 30, color: C.navy, bold: true, margin: 0, fit: "shrink", valign: "middle" });
-        slide.addText([{ text: main ?? "", options: { fontSize: 13, color: C.text, breakLine: !!detail } }, ...(detail ? [{ text: detail, options: { fontSize: 11, color: C.muted } }] : [])], { x: x + 0.2, y: y + 0.25 + cardH * 0.42, w: cardW - 0.4, h: cardH * 0.45, fontFace: FONT, margin: 0, valign: "top" });
+        slide.addText(value, { x: x + 0.2, y: y + 0.25, w: cardW - 0.4, h: cardH * 0.42, fontFace: FONT, fontSize: cardH > 2.4 ? 36 : 30, color: C.navy, bold: true, margin: 0, fit: "shrink", valign: "middle" });
+        slide.addText([{ text: main ?? "", options: { fontSize: cardH > 2.4 ? 15 : 13, color: C.text, breakLine: !!detail } }, ...(detail ? [{ text: detail, options: { fontSize: cardH > 2.4 ? 12 : 11, color: C.muted } }] : [])], { x: x + 0.2, y: y + 0.25 + cardH * 0.42, w: cardW - 0.4, h: cardH * 0.45, fontFace: FONT, margin: 0, valign: "top" });
       });
       if (rest.length) await drawBlocks(slide, rest, { x: body.x, y: body.y + rowsN * (cardH + gap) + 0.1, w: body.w, h: body.h - rowsN * (cardH + gap) - 0.1 });
       return;

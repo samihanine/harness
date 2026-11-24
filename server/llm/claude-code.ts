@@ -6,7 +6,7 @@
  * The conversation is resumed from its session id.
  */
 import { createSdkMcpServer, query, tool as sdkTool } from "@anthropic-ai/claude-agent-sdk";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ChatEvent } from "@shared/types";
@@ -82,10 +82,14 @@ export async function runClaudeCode(o: {
     yield { type: "user" as const, message: { role: "user" as const, content }, parent_tool_use_id: null, session_id: o.conv.claudeSession ?? "" };
   }
   const helper = keyHelper(o.config.keyHelper);
+  // An empty working folder of its own (nothing to read there); a missing folder fails the launch.
+  const cwd = join(DATA_DIR, "claude-code", "workspace");
+  mkdirSync(cwd, { recursive: true });
   const q = query({
     prompt: prompt() as never,
     options: {
-      cwd: join(DATA_DIR, "claude-code", "workspace"),
+      cwd,
+      ...(process.env.CLAUDE_CODE_PATH ? { pathToClaudeCodeExecutable: process.env.CLAUDE_CODE_PATH } : {}),
       abortController: abort,
       model: o.model,
       effort: o.effort,

@@ -14,7 +14,7 @@ async function sourceBytes(ctx: ToolContext, s: z.infer<typeof source>) {
 
 export const setText = tool({
   name: "set_text",
-  description: "Replace the text of a shape (or of a table cell: row, col from 0), keeping its formatting (font, size, color of its first run). Lines become paragraphs.",
+  description: "Replace the text of a shape (or of a table cell: row, col from 0), keeping its formatting: each line takes the style of the paragraph at the same place (bullets, title of a callout…); **bold** parts are bold.",
   args: z.object({ slide: z.number().int().min(1), shape: z.string(), text: z.string(), row: z.number().int().optional(), col: z.number().int().optional() }),
   changes: true,
   async run(a, ctx) {
