@@ -39,7 +39,7 @@ const defaults = (): Settings => ({
     claudeCode: { baseUrl: env.ANTHROPIC_BASE_URL && !/api\.anthropic\.com/.test(env.ANTHROPIC_BASE_URL) ? env.ANTHROPIC_BASE_URL : "", headers: env.ANTHROPIC_CUSTOM_HEADERS ?? "", keyHelper: env.OKTA_SCRIPT ?? "", key: "" },
   },
   powerbi: { maxRows: 2000, timeoutMs: 20_000, concurrency: 2, cacheMs: 60_000 },
-  confluence: { url: env.CONFLUENCE_API_URL ?? "", email: env.CONFLUENCE_EMAIL ?? "", folderId: /^\d+$/.test(env.CONFLUENCE_FOLDER_ID ?? "") ? env.CONFLUENCE_FOLDER_ID! : "", key: env.CONFLUENCE_API_KEY ?? "" },
+  confluence: { url: env.CONFLUENCE_API_URL ?? "", email: env.CONFLUENCE_EMAIL ?? "", folderId: /^\d+$/.test(folderIdOf(env.CONFLUENCE_FOLDER_ID ?? "")) ? folderIdOf(env.CONFLUENCE_FOLDER_ID!) : "", key: env.CONFLUENCE_API_KEY ?? "" },
 });
 
 let current: Settings | undefined;
@@ -84,6 +84,9 @@ export async function publicSettings(): Promise<PublicSettings> {
   };
 }
 
+/** A folder or page id from what was pasted: the id itself, or a link (…/folder/123…, …/pages/123…). */
+const folderIdOf = (v: string) => v.match(/\/(?:folder|pages)\/(\d+)/)?.[1] ?? v.trim();
+
 /** Applies a change from Settings; an empty secret leaves the saved one as it is. */
 export async function updateSettings(patch: SettingsPatch) {
   const s = await settings();
@@ -93,7 +96,7 @@ export async function updateSettings(patch: SettingsPatch) {
     general: patch.general,
     ai: { ...ai, ...(anthropicKey ? { anthropicKey } : {}), maia: maia && { ...maia, ...keep({ clientId: maia.clientId, clientSecret: maia.clientSecret }) }, claudeCode: claudeCode && { ...claudeCode, ...keep({ key: claudeCode.key }) } },
     powerbi: patch.powerbi,
-    confluence: patch.confluence && { ...patch.confluence, ...keep({ key: patch.confluence.key }) },
+    confluence: patch.confluence && { ...patch.confluence, ...(patch.confluence.folderId !== undefined ? { folderId: folderIdOf(patch.confluence.folderId) } : {}), ...keep({ key: patch.confluence.key }) },
   });
   // Secrets given empty are kept.
   if (maia && !maia.clientId) next.ai.maia.clientId = s.ai.maia.clientId;

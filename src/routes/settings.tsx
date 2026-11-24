@@ -273,7 +273,7 @@ function ConfluenceSettings({ s }: { s: AppSettings }) {
       <Field label="Address" hint="e.g. https://<site>.atlassian.net/wiki"><TextSetting value={c.url} onSave={(v) => void save({ confluence: { url: v.trim() } })} mono /></Field>
       <Field label="Email" hint="Your Atlassian account (Cloud). Empty: the token is a Data Center personal token."><TextSetting value={c.email} onSave={(v) => void save({ confluence: { email: v.trim() } })} /></Field>
       <Field label="API token"><SecretInput set={c.keySet} onSave={(v) => void save({ confluence: { key: v } })} /></Field>
-      <Field label="Folder (root)" hint="Id of the folder or page whose pages the app uses."><TextSetting value={c.folderId} onSave={(v) => void save({ confluence: { folderId: v.trim() } })} mono /></Field>
+      <Field label="Folder (root)" hint="Id (or link) of the folder or page whose pages the app uses."><TextSetting value={c.folderId} onSave={(v) => void save({ confluence: { folderId: v.trim() } })} mono /></Field>
       <Field label="Check">
         <div className="flex items-center gap-3">
           <Button variant="outline" size="sm" onClick={() => get<unknown[]>("/confluence/pages").then((p) => setTest(`✓ ${p.length} pages found`), (e) => setTest(`✗ ${errorText(e)}`))}>Test the connection</Button>
