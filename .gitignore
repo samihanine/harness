@@ -9,3 +9,4 @@ dist
 .env.*
 !.env.example
 dist-server
+ca.crt

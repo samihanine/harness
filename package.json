@@ -3,13 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun scripts/dev.ts",
-    "server": "bun server/main.ts",
+    "dev": "bun scripts/with-ca.ts bun scripts/dev.ts",
+    "server": "bun scripts/with-ca.ts bun server/main.ts",
     "build": "vite build",
-    "start": "bun server/main.ts --prod",
+    "start": "bun scripts/with-ca.ts bun server/main.ts --prod",
     "typecheck": "tsc --noEmit",
-    "check": "bun scripts/checks/agent.ts",
-    "export:server": "bun scripts/build-server.ts",
+    "check": "bun scripts/with-ca.ts bun scripts/checks/agent.ts",
+    "export:server": "bun scripts/with-ca.ts bun scripts/build-server.ts",
     "audit": "bun scripts/security/audit.ts",
     "audit:fix": "bun scripts/security/audit-fix.ts",
     "update:libs": "bun scripts/security/update.ts"
