@@ -16,6 +16,7 @@ import { providerFor } from "../llm";
 import { AuthError, type Block, type Message, type ToolSpec } from "../llm/types";
 import { runClaudeCode } from "../llm/claude-code";
 import { screenAgent } from "./screens";
+import { warmReport } from "../capture/browser";
 import { FIRST_QUESTION_REMINDER, NOT_ASKED_YET, scopeText } from "@/prompts/common";
 
 type Conversation = { state: ConversationState; messages: Message[]; system: string; scopeKey: string; claudeSession?: string; provider: string; tokens: number; lastAt: number };
@@ -109,6 +110,8 @@ export async function runChat(req: ChatRequest, emit: (e: ChatEvent) => void, si
   if (scopeKey !== conv.scopeKey) {
     notes.push(conv.scopeKey ? `The screen changed. Now:\n${scopeKey}` : `On the screen:\n${scopeKey}`);
     conv.scopeKey = scopeKey;
+    // The report on screen opened in the headless browser now: look_at_report is then quick.
+    if (req.scope.report && (req.screen === "trainer" || req.screen === "builder")) warmReport(req.scope.report);
     const brief = await agent.briefing?.(ctx).catch(() => undefined);
     if (brief) notes.push(brief);
   }

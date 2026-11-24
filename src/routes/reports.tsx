@@ -4,7 +4,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { BarChart3Icon, BookOpenTextIcon, FileJsonIcon } from "lucide-react";
 import { Workspace } from "@/components/workspace";
 import { ChatPanel } from "@/components/chat-panel";
-import { ItemPicker, usePicked } from "@/components/pickers";
+import { AddButton, ItemPicker, usePicked } from "@/components/pickers";
 import { ContextLinks } from "@/components/context-links";
 import { Empty } from "@/components/common";
 import { StructureView } from "@/features/views/structure-view";
@@ -28,7 +28,7 @@ function Reports() {
       onTab={setTab}
       chat={<ChatPanel chat={chat} screen="reports" disabled={current ? undefined : "Choose a report first"} suggestions={["Summarise how this report is built", "Which measures does each page use?"]} />}
     >
-      {!current ? <Empty icon={<BarChart3Icon />} title="Choose a report" /> : tab === "structure" ? <StructureView report={current} /> : <ContextLinks itemKey={itemKey} title={current.name} />}
+      {!current ? <Empty icon={<BarChart3Icon />} title="Choose a report"><AddButton kind="report" onAdded={select} /></Empty> : tab === "structure" ? <StructureView report={current} /> : <ContextLinks itemKey={itemKey} title={current.name} />}
     </Workspace>
   );
 }

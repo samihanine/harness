@@ -5,11 +5,10 @@
  * picture. Works on Power BI Pro (no Export To File API). The browser and the last reports stay open, so
  * a picture takes a few seconds. The same page renders PDF pages to pictures (pdf.js) for the Presenter.
  */
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import type { Browser, BrowserContext, Page } from "playwright-core";
 import type { Ref } from "@shared/types";
 import { accessToken } from "../ms/auth";
+import { staticFile } from "../static";
 
 let browser: Promise<Browser> | undefined;
 let context: BrowserContext | undefined;
@@ -40,7 +39,11 @@ async function newPage(): Promise<Page> {
   return context.newPage();
 }
 
-const script = (path: string) => readFile(join(process.cwd(), "node_modules", path), "utf8");
+const script = async (path: string) => {
+  const f = staticFile(`node_modules/${path}`);
+  if (!f) throw new Error(`Missing ${path}`);
+  return f.text();
+};
 
 /* ------------------------------- Power BI ------------------------------- */
 
@@ -107,6 +110,11 @@ async function embedded(ref: Ref, width: number, height: number): Promise<Embedd
     }
   }
   return made;
+}
+
+/** Opens a report in the headless browser ahead of time: the first picture then takes about a second. */
+export function warmReport(ref: Ref) {
+  void embedded(ref, 1280, 720).catch(() => undefined);
 }
 
 export type CaptureOptions = {

@@ -85,7 +85,8 @@ const tag = (n: N) => n.nodeName.toLowerCase();
 
 export function toMarkdown(html: string) {
   const escaped = html.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (_, t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"));
-  const doc = new DOMParser({ onError: () => undefined } as never).parseFromString(`<body>${escaped}</body>`, "text/html") as unknown as { getElementsByTagName: (t: string) => ArrayLike<N> };
+  // Confluence's own tags (ac:, ri:) come without their namespace declarations: added, or the parser refuses them.
+  const doc = new DOMParser({ onError: () => undefined } as never).parseFromString(`<body xmlns:ac="http://atlassian.com/content" xmlns:ri="http://atlassian.com/resource/identifier" xmlns:at="http://atlassian.com/template">${escaped}</body>`, "text/html") as unknown as { getElementsByTagName: (t: string) => ArrayLike<N> };
   const body = doc.getElementsByTagName("body")[0];
   return body ? block(body).replace(/\n{3,}/g, "\n\n").trim() : "";
 }

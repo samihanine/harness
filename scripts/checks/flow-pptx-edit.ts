@@ -1,0 +1,15 @@
+import { answerAsk, ask, lastAnswer, openApp, shot } from "./browser";
+const { ctx, page } = await openApp();
+await page.goto("http://localhost:3300/presenter");
+await page.waitForTimeout(1500);
+await page.getByRole("button", { name: "Edit a PowerPoint" }).click();
+await page.waitForTimeout(800);
+await page.locator('input[type=file][accept=".pptx"]').setInputFiles(".local/check.pptx");
+await page.waitForTimeout(20000);
+await shot(page, "pptx-1");
+await ask(page, "Sur la slide « Two columns », remplace le tableau des régions par les vrais chiffres du modèle Revenue Opportunities, et ajoute à droite une capture du visuel Power BI du revenu par région.");
+await answerAsk(page, 600_000);
+console.log("ANSWER:", (await lastAnswer(page)).slice(-700));
+await page.waitForTimeout(20000);
+await shot(page, "pptx-2");
+await ctx.close();

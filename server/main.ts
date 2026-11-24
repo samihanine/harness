@@ -9,8 +9,6 @@
  * It listens on 127.0.0.1 and refuses requests from another site (CSRF, DNS rebinding). HOST and
  * HUB_ALLOWED_HOSTS open it to a network (no user accounts yet: one Microsoft sign-in for all).
  */
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import type { ChatEvent, ChatRequest, SettingsPatch } from "@shared/types";
 import { deckToPptx } from "./pptx/deck";
 import { slidePictures } from "./pptx/render";
@@ -30,11 +28,12 @@ import { analysisToExcel } from "./excel-export";
 import { engineFor } from "./data/engine";
 import { closeBrowser } from "./capture/browser";
 import type { Analysis } from "@shared/analysis";
+import { hasApp, staticFile } from "./static";
 
-const PROD = process.argv.includes("--prod") || process.env.NODE_ENV === "production";
+/** Production: the built app is served too (always in the executable, which embeds it). */
+const PROD = process.argv.includes("--prod") || process.env.NODE_ENV === "production" || (!process.argv[1]?.endsWith(".ts") && hasApp());
 const PORT = Number(process.env.PORT ?? (PROD ? 3300 : 3301));
 const HOST = process.env.HOST ?? "127.0.0.1";
-const DIST = join(import.meta.dir, "..", "dist");
 
 /** Hosts the API answers (the page's own address); others are refused. */
 const allowed = new Set([`127.0.0.1:${PORT}`, `localhost:${PORT}`, "127.0.0.1:3300", "localhost:3300", ...(process.env.HUB_ALLOWED_HOSTS ?? "").split(",").map((h) => h.trim()).filter(Boolean)]);
@@ -202,9 +201,10 @@ async function api(req: Request, url: URL): Promise<Response> {
 }
 
 async function serveStatic(url: URL) {
-  const path = join(DIST, decodeURIComponent(url.pathname).replace(/\.\.+/g, ""));
-  if (url.pathname !== "/" && existsSync(path) && !path.endsWith("/")) return new Response(Bun.file(path));
-  return new Response(Bun.file(join(DIST, "index.html")), { headers: { "Content-Type": "text/html" } });
+  const path = decodeURIComponent(url.pathname).replace(/\.\.+/g, "").replace(/^\/+/, "");
+  const file = path ? staticFile(`dist/${path}`) : undefined;
+  if (file) return new Response(file, path.startsWith("assets/") ? { headers: { "Cache-Control": "public, max-age=31536000, immutable" } } : undefined);
+  return new Response(staticFile("dist/index.html"), { headers: { "Content-Type": "text/html" } });
 }
 
 const server = Bun.serve({
@@ -222,7 +222,7 @@ const server = Bun.serve({
         return fail(e, e instanceof Error && /Not signed in/.test(e.message) ? 401 : status && status >= 400 && status < 600 ? status : 500);
       }
     }
-    if (PROD && existsSync(DIST)) return serveStatic(url);
+    if (PROD && hasApp()) return serveStatic(url);
     return new Response("Hub API. The app: bun dev → http://localhost:3300", { status: 404 });
   },
 });

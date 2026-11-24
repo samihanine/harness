@@ -1,0 +1,10 @@
+import { chromium } from "playwright-core";
+const b = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+const p = await b.newPage({ acceptDownloads: true });
+p.on("pageerror", (e) => console.log("pageerror", e.message));
+await p.goto("http://localhost:3300/settings");
+await p.waitForTimeout(2500);
+const [dl] = await Promise.all([p.waitForEvent("download", { timeout: 60_000 }), p.getByRole("button", { name: "Download as GIF" }).click()]);
+await dl.saveAs(".local/mascot.gif");
+console.log("gif", (await Bun.file(".local/mascot.gif").arrayBuffer()).byteLength);
+await b.close();

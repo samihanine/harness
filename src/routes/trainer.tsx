@@ -4,7 +4,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { BarChart3Icon, BookOpenTextIcon, DatabaseIcon, ExternalLinkIcon, GraduationCapIcon } from "lucide-react";
 import { Workspace } from "@/components/workspace";
 import { ChatPanel } from "@/components/chat-panel";
-import { ItemPicker, usePicked } from "@/components/pickers";
+import { AddButton, ItemPicker, usePicked } from "@/components/pickers";
 import { ContextLinks } from "@/components/context-links";
 import { Empty } from "@/components/common";
 import { Button } from "@/components/ui/button";
@@ -46,7 +46,7 @@ function Trainer() {
       chat={<ChatPanel chat={chat} screen="trainer" disabled={current ? undefined : "Choose a report first"} placeholder="Ask about the report, or what to show…" suggestions={["Explain this page", "Show me the figures for my biggest region", "What changed most compared to last year?"]} />}
     >
       {!current ? (
-        <Empty icon={<GraduationCapIcon />} title="Choose a report">Add a report you can open in Power BI: the assistant reads it, filters it and explains it with you.</Empty>
+        <Empty icon={<GraduationCapIcon />} title="Choose a report">Add a report you can open in Power BI: the assistant reads it, filters it and explains it with you.<div><AddButton kind="report" onAdded={select} /></div></Empty>
       ) : (
         <>
           {/* The report stays loaded on the other tabs: the assistant keeps acting on it. */}

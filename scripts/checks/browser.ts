@@ -28,3 +28,24 @@ export async function lastAnswer(page: Page) {
 export async function shot(page: Page, name: string) {
   await page.screenshot({ path: `.local/${name}.png` });
 }
+
+/** Answers the last question card: the first option of each question, then "Send answers" when there is one. Returns false without a card. */
+export async function answerAsk(page: Page, timeout = 400_000) {
+  const cards = page.locator("div.rounded-2xl.border.bg-muted\\/30");
+  if (!(await cards.count())) return false;
+  const card = cards.last();
+  const groups = card.locator("div.flex.flex-col.gap-2");
+  const n = await groups.count();
+  for (let i = 0; i < n; i++) {
+    const option = groups.nth(i).locator("button").first();
+    if (await option.isEnabled()) {
+      console.log("  answer:", await option.textContent());
+      await option.click();
+    }
+  }
+  const send = card.getByRole("button", { name: "Send answers" });
+  if (await send.isVisible()) await send.click();
+  await page.waitForTimeout(1500);
+  await page.getByRole("button", { name: "Stop" }).waitFor({ state: "detached", timeout });
+  return true;
+}

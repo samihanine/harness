@@ -4,7 +4,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { BookOpenTextIcon, CodeIcon, DatabaseIcon, Loader2Icon, PlayIcon, TableIcon } from "lucide-react";
 import { Workspace } from "@/components/workspace";
 import { ChatPanel } from "@/components/chat-panel";
-import { ItemPicker, usePicked } from "@/components/pickers";
+import { AddButton, ItemPicker, usePicked } from "@/components/pickers";
 import { ContextLinks } from "@/components/context-links";
 import { Empty, ErrorBox } from "@/components/common";
 import { Button } from "@/components/ui/button";
@@ -68,7 +68,7 @@ function Datasets() {
       onTab={setTab}
       chat={<ChatPanel chat={chat} screen="datasets" disabled={current ? undefined : "Choose a semantic model first"} suggestions={["Explain how the main measures are computed", "Add a year-over-year growth measure", "Which tables are not related to anything?"]} />}
     >
-      {!current ? <Empty icon={<DatabaseIcon />} title="Choose a semantic model" /> : tab === "schema" ? <ModelView key={reload} refOf={current} name={current.name} /> : tab === "dax" ? <DaxConsole id={current.id} groupId={current.groupId} /> : <ContextLinks itemKey={itemKey} title={current.name} />}
+      {!current ? <Empty icon={<DatabaseIcon />} title="Choose a semantic model"><AddButton kind="dataset" onAdded={select} /></Empty> : tab === "schema" ? <ModelView key={reload} refOf={current} name={current.name} /> : tab === "dax" ? <DaxConsole id={current.id} groupId={current.groupId} /> : <ContextLinks itemKey={itemKey} title={current.name} />}
     </Workspace>
   );
 }

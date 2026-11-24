@@ -1,7 +1,6 @@
 /** Pictures for PowerPoint: read from a URL, a server file (`file:<id>`), a data URL or the template's assets, with their size. */
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { readStoredFile } from "../files";
+import { staticFile } from "../static";
 
 export type Picture = { data: string; mime: string; width: number; height: number };
 
@@ -24,7 +23,6 @@ export function imageSize(b: Uint8Array): { width: number; height: number } | un
 
 const mimeOf = (b: Uint8Array, fallback = "image/png") => (b[0] === 0x89 ? "image/png" : b[0] === 0xff ? "image/jpeg" : b[0] === 0x47 ? "image/gif" : fallback);
 
-export const TEMPLATE_DIR = join(process.cwd(), "assets", "template");
 const cache = new Map<string, Promise<Picture>>();
 
 /** A picture by its source. Errors say what failed (the export puts a placeholder instead). */
@@ -43,7 +41,9 @@ export function loadPicture(src: string): Promise<Picture> {
         bytes = f.data;
         mime = f.ref.type;
       } else if (src.startsWith("template:")) {
-        bytes = new Uint8Array(await readFile(join(TEMPLATE_DIR, src.slice(9).replace(/[^\w.-]/g, ""))));
+        const f = staticFile(`assets/template/${src.slice(9).replace(/[^\w.-]/g, "")}`);
+        if (!f) throw new Error(`No template picture ${src}`);
+        bytes = new Uint8Array(await f.arrayBuffer());
       } else if (/^https?:\/\//.test(src)) {
         const r = await fetch(src, { signal: AbortSignal.timeout(15_000), headers: { "User-Agent": "Mozilla/5.0 (Hub presenter)" } });
         if (!r.ok) throw new Error(`HTTP ${r.status} for ${src}`);

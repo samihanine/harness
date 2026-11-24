@@ -146,3 +146,16 @@ export function ItemPicker<T extends { id: string; name: string }>({ kind, items
 }
 
 export { AddDialog };
+
+/** "Add a report / model" as a button (empty states). */
+export function AddButton({ kind, onAdded }: { kind: "report" | "dataset"; onAdded: (id: string) => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button variant="dark" size="sm" className="mt-3" onClick={() => setOpen(true)}>
+        <PlusIcon /> {kind === "report" ? "Add a report" : "Add a semantic model"}
+      </Button>
+      <AddDialog kind={kind} open={open} onOpenChange={setOpen} onAdded={onAdded} />
+    </>
+  );
+}

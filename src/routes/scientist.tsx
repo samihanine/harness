@@ -152,7 +152,7 @@ function Scientist() {
     <Workspace
       screen="scientist"
       title="Data Scientist"
-      item={<DocPicker items={docs} current={doc} name={(d) => d.title} onSelect={setId} onCreate={create} onDelete={(x) => void remove("analysis", x)} createLabel="New analysis" empty="New analysis" />}
+      item={<DocPicker items={docs} current={doc} name={(d) => d.title} onSelect={setId} onCreate={create} onDelete={(x) => void remove("analysis", x)} createLabel="New analysis" empty="No analysis" />}
       actions={doc && (
         <>
           <Button variant="outline" size="sm" disabled={!!busy || !doc.sources.length} onClick={() => run("refresh", async () => update({ ...doc, ...(await post<Analysis>("/analysis/refresh", analysisOf(doc))) }))}>

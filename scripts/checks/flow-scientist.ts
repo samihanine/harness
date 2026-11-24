@@ -1,0 +1,30 @@
+import { answerAsk, ask, lastAnswer, openApp, shot } from "./browser";
+const { ctx, page } = await openApp();
+await page.goto("http://localhost:3300/scientist");
+await page.waitForTimeout(1500);
+const empty = page.getByRole("button", { name: "New analysis" });
+if (await empty.count()) await empty.last().click();
+else {
+  await page.locator("header button").filter({ hasText: /Analysis|analysis/ }).first().click();
+  await page.getByRole("menuitem", { name: "New analysis" }).click();
+}
+await page.waitForTimeout(800);
+await page.getByRole("button", { name: /Sources/ }).click();
+await page.getByRole("button", { name: "Add a model" }).click();
+await page.getByPlaceholder("Search, or paste a Power BI link").fill("Revenue Opportunities");
+await page.getByRole("button", { name: /^Revenue Opportunities\s*My workspace$/ }).first().click();
+await page.waitForTimeout(800);
+await page.locator('input[type=file][accept^=".xlsx"]').setInputFiles(".local/objectifs-2015.xlsx");
+await page.waitForTimeout(2000);
+await shot(page, "scientist-1");
+await ask(page, "Compare le CA par région et trimestre (date de clôture estimée) avec les objectifs du fichier Excel. Où est-on en retard ?");
+console.log("ANSWER1:", (await lastAnswer(page)).slice(0, 500));
+await answerAsk(page);
+console.log("ANSWER2:", (await lastAnswer(page)).slice(0, 600));
+await page.waitForTimeout(1000);
+await shot(page, "scientist-2");
+await page.mouse.wheel(0, 900);
+await page.locator("main .overflow-auto").last().evaluate((el) => (el.scrollTop = 700));
+await page.waitForTimeout(800);
+await shot(page, "scientist-3");
+await ctx.close();

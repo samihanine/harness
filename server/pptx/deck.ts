@@ -5,11 +5,10 @@
  * template's pictures are in assets/template (cover.jpg, section.jpg, agenda.jpg, end.jpg, logo.png when
  * a logo picture is given; else the brand is written).
  */
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import PptxGenJS from "pptxgenjs";
 import { parseDeck, plain, type Block, type Cell, type Deck, type Inline, type Slide } from "@shared/deck";
-import { loadPicture, TEMPLATE_DIR, type Picture } from "./images";
+import { loadPicture, type Picture } from "./images";
+import { staticFile } from "../static";
 
 const W = 13.333;
 const H = 7.5;
@@ -29,7 +28,7 @@ const runs = (content: Inline[], base: Record<string, unknown> = {}) =>
 /** Lines a text takes in a width at a font size (an estimate: average character width ~0.5 em). */
 const linesOf = (text: string, width: number, size: number) => Math.max(1, Math.ceil((text.length * size * 0.0075) / Math.max(0.5, width)));
 
-const template = (name: string) => (existsSync(join(TEMPLATE_DIR, name)) ? `template:${name}` : undefined);
+const template = (name: string) => (staticFile(`assets/template/${name}`) ? `template:${name}` : undefined);
 
 async function picture(src: string | undefined): Promise<Picture | undefined> {
   if (!src) return undefined;
@@ -55,10 +54,13 @@ function missingPicture(slide: PSlide, box: Box, src: string) {
 }
 
 function brand(slide: PSlide, deck: Deck, box: Box, color = C.text, size = 16) {
-  const logo = template("logo.png");
-  if (logo) slide.addImage({ path: join(TEMPLATE_DIR, "logo.png"), ...box, sizing: { type: "contain", w: box.w, h: box.h } as never });
+  const logo = template("logo.png") && logoData;
+  if (logo) slide.addImage({ data: logo, ...box, sizing: { type: "contain", w: box.w, h: box.h } as never });
   else slide.addText(deck.head.brand.split("").join(" "), { ...box, fontFace: "Didot", fontSize: size, color, bold: false, charSpacing: 4, margin: 0, valign: "middle" });
 }
+
+/** The template's logo picture (assets/template/logo.png), read once per export. */
+let logoData: string | undefined;
 
 /* ------------------------------ Content blocks ------------------------------ */
 
@@ -190,7 +192,7 @@ async function drawBlocks(slide: PSlide, blocks: Block[], box: Box) {
   const total = (scale: number) => blocks.reduce((n, b) => n + blockHeight(b, box.w, scale) + 0.12, 0);
   while (k > 0.7 && total(k) > box.h) k -= 0.05;
   // Little content: bigger text, so the slide does not look empty (pictures and charts take the rest anyway).
-  if (!blocks.some(fixed)) while (k < 1.35 && total(k + 0.05) < box.h * 0.7) k += 0.05;
+  if (!blocks.some(fixed)) while (k < 1.6 && total(k + 0.05) < box.h * 0.8) k += 0.05;
   // Pictures and charts share the room left by the text.
   const flexible = blocks.filter(fixed).length;
   const textH = blocks.filter((b) => !fixed(b)).reduce((n, b) => n + blockHeight(b, box.w, k) + 0.12, 0);
@@ -362,6 +364,7 @@ async function drawSlide(pptx: Pptx, deck: Deck, s: Slide) {
 /** The deck as a .pptx file. */
 export async function deckToPptx(source: string): Promise<Buffer> {
   const deck = parseDeck(source);
+  logoData = template("logo.png") ? (await loadPicture("template:logo.png").catch(() => undefined))?.data : undefined;
   const pptx = new PptxGenJS();
   pptx.layout = "LAYOUT_WIDE";
   pptx.title = deck.head.title;

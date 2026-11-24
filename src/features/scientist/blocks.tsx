@@ -8,7 +8,7 @@ const COLORS = ["var(--chart-1)", "var(--chart-2)", "var(--chart-3)", "var(--cha
 export function formatValue(v: unknown, format?: string) {
   if (typeof v !== "number") return v === null || v === undefined ? "—" : String(v);
   if (format === "percent") return `${(v * 100).toLocaleString(undefined, { maximumFractionDigits: 1 })} %`;
-  if (format?.startsWith("currency:")) return v.toLocaleString(undefined, { style: "currency", currency: format.slice(9), maximumFractionDigits: 0 });
+  if (format?.startsWith("currency:")) return v.toLocaleString(undefined, { style: "currency", currency: format.slice(9), maximumFractionDigits: Math.abs(v) >= 1e6 ? 2 : 0, ...(Math.abs(v) >= 1e6 ? { notation: "compact" as const } : {}) });
   if (format === "compact" || Math.abs(v) >= 1e6) return Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 2 }).format(v);
   return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }

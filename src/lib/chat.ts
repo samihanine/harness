@@ -50,6 +50,8 @@ export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatSc
       setStatus("Thinking…");
       const ctrl = new AbortController();
       abort.current = ctrl;
+      // A note written after tool steps starts a new paragraph.
+      let afterTool = false;
       // Saved as it streams (a few times a second at most).
       let last = 0;
       const update = async (force = false) => {
@@ -68,7 +70,10 @@ export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatSc
         const dec = new TextDecoder();
         let buf = "";
         for (;;) {
-          const { done, value } = await reader.read();
+          // The server sends a ping every 15 s: nothing for 45 s means the connection was lost (server restarted…).
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const silent = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("The connection to the server was lost: send the message again.")), 45_000)));
+          const { done, value } = await Promise.race([reader.read(), silent]).finally(() => clearTimeout(timer));
           if (done) break;
           buf += dec.decode(value, { stream: true });
           let at: number;
@@ -83,6 +88,7 @@ export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatSc
         }
       } catch (e) {
         if (!ctrl.signal.aborted) answer.error = errorText(e);
+        ctrl.abort();
       } finally {
         answer.running = false;
         for (const t of answer.tools) if (t.status === "running") t.status = "error";
@@ -94,6 +100,8 @@ export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatSc
       async function handle(e: ChatEvent) {
         switch (e.type) {
           case "text":
+            if (afterTool && answer.text && !answer.text.endsWith("\n")) answer.text += "\n\n";
+            afterTool = false;
             answer.text += e.text;
             setStatus(undefined);
             return update();
@@ -104,6 +112,7 @@ export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatSc
             const i = answer.tools.findIndex((t) => t.id === e.id);
             const step = { id: e.id, name: e.name, args: e.args, status: e.status, result: e.result, images: e.images, ms: e.ms };
             i >= 0 ? (answer.tools[i] = step) : answer.tools.push(step);
+            afterTool = true;
             setStatus(e.status === "running" ? toolLabel(e.name) : "Thinking…");
             return update();
           }

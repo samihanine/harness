@@ -181,10 +181,19 @@ const TOOL_NAMES: Record<string, string> = {
 
 function Steps({ tools }: { tools: Assistant["tools"] }) {
   const [open, setOpen] = useState<string>();
-  const shown = tools.filter((t) => t.name !== "ask_user");
-  if (!shown.length) return null;
+  const [all, setAll] = useState(false);
+  const steps = tools.filter((t) => t.name !== "ask_user");
+  if (!steps.length) return null;
+  // Long runs: the last steps only, the others behind a line.
+  const hidden = all ? 0 : Math.max(0, steps.length - 4);
+  const shown = steps.slice(hidden);
   return (
     <div className="flex flex-col gap-0.5">
+      {hidden > 0 && (
+        <button onClick={() => setAll(true)} className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-left text-[12.5px] text-muted-foreground hover:bg-muted">
+          <ChevronRightIcon className="size-3.5" /> {hidden} earlier steps ({steps.filter((t) => t.status === "error").length ? `${steps.filter((t) => t.status === "error").length} failed, retried` : "all done"})
+        </button>
+      )}
       {shown.map((t) => (
         <div key={t.id} className="text-[12.5px]">
           <button onClick={() => setOpen(open === t.id ? undefined : t.id)} className="flex w-full items-center gap-2 rounded-lg px-1.5 py-1 text-left text-muted-foreground hover:bg-muted">

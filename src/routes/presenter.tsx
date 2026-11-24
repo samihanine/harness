@@ -75,10 +75,9 @@ function CreateMode({ setMode }: { setMode: (m: "create" | "edit") => void }) {
     <Workspace
       screen="presenter"
       title="Presenter"
-      item={<DocPicker items={decks} current={deck} name={(d) => d.title} onSelect={setId} onCreate={create} onDelete={(x) => void remove("deck", x)} createLabel="New deck (template)" empty="New deck" />}
+      item={<DocPicker items={decks} current={deck} name={(d) => d.title} onSelect={setId} onCreate={create} onDelete={(x) => void remove("deck", x)} createLabel="New deck (template)" empty="No deck" />}
       actions={
         <>
-          <ModeSwitch mode="create" setMode={setMode} />
           {deck && (
             <Button variant="dark" size="sm" onClick={exportPptx} disabled={busy}>
               {busy ? <Loader2Icon className="animate-spin" /> : <DownloadIcon />} PowerPoint
@@ -89,6 +88,7 @@ function CreateMode({ setMode }: { setMode: (m: "create" | "edit") => void }) {
       tabs={[{ id: "preview", label: "Preview", icon: <ImagesIcon /> }, { id: "edit", label: "Edit", icon: <PencilLineIcon /> }, { id: "context", label: "Context", icon: <BookOpenTextIcon /> }]}
       tab={tab}
       onTab={setTab}
+      aside={<ModeSwitch mode="create" setMode={setMode} />}
       scroll={tab !== "edit"}
       chat={<ChatPanel chat={chat} screen="presenter" disabled={deck ? undefined : "Create a deck first"} placeholder="Describe the deck, or the change to make…" suggestions={["Make a 6-slide review of the revenue with the key figures and Power BI visuals", "Add a slide comparing the regions in a table", "Shorten every slide to one key message"]} />}
     >
@@ -155,7 +155,6 @@ function EditMode({ setMode }: { setMode: (m: "create" | "edit") => void }) {
       item={<DocPicker items={files} current={doc} name={(d) => d.name} onSelect={setId} onCreate={() => input.current?.click()} onDelete={(x) => void remove("pptx", x)} createLabel="Upload a PowerPoint…" empty="Upload a PowerPoint" />}
       actions={
         <>
-          <ModeSwitch mode="edit" setMode={setMode} />
           <input ref={input} type="file" accept=".pptx" hidden onChange={(e) => e.target.files?.[0] && void upload(e.target.files[0])} />
           {doc && (
             <>
@@ -170,6 +169,7 @@ function EditMode({ setMode }: { setMode: (m: "create" | "edit") => void }) {
       tabs={[{ id: "slides", label: "Slides", icon: <ImagesIcon /> }, { id: "context", label: "Context", icon: <BookOpenTextIcon /> }]}
       tab={tab}
       onTab={setTab}
+      aside={<ModeSwitch mode="edit" setMode={setMode} />}
       chat={<ChatPanel chat={chat} screen="presenter" disabled={doc ? undefined : "Upload a PowerPoint first"} placeholder="What should change in the deck?" suggestions={["Refresh every Power BI screenshot with the current data", "Update the figures of slide 3 for this year", "Fix the typos and shorten the long texts"]} />}
     >
       {!doc ? (
