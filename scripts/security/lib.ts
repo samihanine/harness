@@ -10,7 +10,7 @@ const FILES = ["package.json", "bun.lock"];
 /** Runs a command in the project; `quiet`: its output is kept and shown only when it fails. */
 export function run(cmd: string[], quiet = true) {
   const p = Bun.spawnSync(cmd, { cwd: ROOT, stdout: quiet ? "pipe" : "inherit", stderr: quiet ? "pipe" : "inherit", env: { ...process.env, FORCE_COLOR: "0" } });
-  const output = quiet ? `${p.stdout.toString()}${p.stderr.toString()}` : "";
+  const output = quiet ? `${p.stdout?.toString() ?? ""}${p.stderr?.toString() ?? ""}` : "";
   return { ok: p.exitCode === 0, output };
 }
 

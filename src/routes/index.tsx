@@ -1,48 +1,55 @@
 import { Link, createFileRoute } from "@tanstack/react-router";
-import { ScreenLogo } from "@/components/screen-logo";
-import { APP_TITLE, SCREENS, SCREEN_DESCRIPTIONS, SCREEN_GROUPS, SCREEN_LABELS, SCREEN_PATHS, type Screen } from "@/config";
+import { ArrowRightIcon } from "lucide-react";
+import { SCREENS } from "@shared/types";
+import { SCREEN_INFO } from "@/components/screens";
+import { Mascot, outfitOf } from "@/features/mascot";
+import { useSettings } from "@/lib/settings";
 
-/** "/": the home page — a card per screen shown (the root layout opens the first screen when it is off). */
 export const Route = createFileRoute("/")({ component: Home });
 
-const GROUP_TITLES = ["Assistants", "Library"];
-
 function Home() {
+  const settings = useSettings();
+  const shown = SCREENS.filter((s) => settings?.general.screens[s] !== false);
+  const main = shown.filter((s) => ["trainer", "builder", "scientist", "presenter"].includes(s));
+  const other = shown.filter((s) => !main.includes(s));
   return (
-    <div className="h-full overflow-y-auto bg-muted/30">
-      <div className="mx-auto flex max-w-6xl flex-col gap-8 p-8">
-        <h1 className="text-[22px] font-semibold">{APP_TITLE}</h1>
-        {SCREEN_GROUPS.map((group, i) => {
-          const shown = group.filter((k) => SCREENS[k]);
-          if (!shown.length) return null;
-          return (
-            <section key={i} className="flex flex-col gap-3">
-              <h2 className="text-[12.5px] font-medium tracking-wide text-muted-foreground uppercase">{GROUP_TITLES[i]}</h2>
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {shown.map((k) => (
-                  <Card key={k} screen={k} />
-                ))}
-              </div>
-            </section>
-          );
-        })}
+    <div className="h-full overflow-auto rounded-3xl border bg-card">
+      <div className="mx-auto flex max-w-6xl flex-col gap-8 px-8 py-10">
+        <div>
+          <h1 className="text-[34px] font-light tracking-tight">Hub</h1>
+          <p className="mt-1 text-[15px] text-muted-foreground">Power BI, Excel analyses and PowerPoint, with assistants that explore, ask, then act.</p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {main.map((s) => {
+            const info = SCREEN_INFO[s];
+            return (
+              <Link key={s} to={info.path} className="group flex items-center gap-5 rounded-3xl border bg-background/60 p-5 transition-all hover:-translate-y-0.5 hover:bg-card hover:shadow-[0_6px_24px_rgba(0,0,0,0.06)]">
+                {settings?.general.mascot !== false ? <Mascot outfit={outfitOf(s)} state="idle" size={92} /> : <info.icon className="size-10" />}
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] font-medium tracking-wide text-primary uppercase">{info.role}</div>
+                  <div className="text-[20px] font-semibold">{info.label}</div>
+                  <div className="mt-1 text-[13.5px] text-muted-foreground">{info.description}</div>
+                </div>
+                <ArrowRightIcon className="size-5 text-muted-foreground transition-transform group-hover:translate-x-1" />
+              </Link>
+            );
+          })}
+        </div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          {other.map((s) => {
+            const info = SCREEN_INFO[s];
+            return (
+              <Link key={s} to={info.path} className="flex items-start gap-3 rounded-2xl border p-4 hover:bg-muted/50">
+                <info.icon className="mt-0.5 size-5 text-muted-foreground" />
+                <div>
+                  <div className="font-semibold">{info.label}</div>
+                  <div className="text-[12.5px] text-muted-foreground">{info.description}</div>
+                </div>
+              </Link>
+            );
+          })}
+        </div>
       </div>
     </div>
-  );
-}
-
-/** A screen: its picture (the mascot always awake here), name and purpose. */
-function Card({ screen }: { screen: Screen }) {
-  return (
-    <Link
-      to={SCREEN_PATHS[screen]}
-      className="flex flex-col items-center gap-3 rounded-2xl border bg-card p-6 text-center shadow-xs transition-all outline-none hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md focus-visible:ring-[3px] focus-visible:ring-ring/30"
-    >
-      <span className="flex h-36 items-center justify-center">
-        <ScreenLogo screen={screen} size={screen in { viewer: 1, editor: 1, research: 1, slides: 1 } ? 128 : 80} live awake />
-      </span>
-      <span className="text-[16px] font-semibold">{SCREEN_LABELS[screen]}</span>
-      <span className="text-[13px] leading-relaxed text-muted-foreground">{SCREEN_DESCRIPTIONS[screen]}</span>
-    </Link>
   );
 }

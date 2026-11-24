@@ -1,9 +1,8 @@
-import { createHashHistory, createRouter } from "@tanstack/react-router";
+import { createRouter } from "@tanstack/react-router";
 import { routeTree } from "./routeTree.gen";
 
-/** The standalone HTML file (export:html) is opened from the disk: its routes live in the URL hash. */
 export function getRouter() {
-  return createRouter({ routeTree, scrollRestoration: true, defaultPreload: "intent", ...(import.meta.env.MODE === "html" && { history: createHashHistory() }) });
+  return createRouter({ routeTree, scrollRestoration: true, defaultPreload: "intent" });
 }
 
 declare module "@tanstack/react-router" {

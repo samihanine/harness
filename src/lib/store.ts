@@ -1,206 +1,146 @@
 /**
- * Local storage (IndexedDB through idb-keyval): one array per collection, with a React hook. This is
- * the library (only in this browser: each entry can be downloaded as JSON and imported again).
+ * What the browser keeps (IndexedDB): the items of each screen (reports, models, analyses, decks,
+ * PowerPoints), the conversations, and the files sent to the server (sent again when the server no
+ * longer has them). Everything can be exported and imported from Settings. Context links (Confluence
+ * pages linked to an item) and small choices live in localStorage.
  */
-import { useEffect, useState } from "react";
-import { get, set } from "idb-keyval";
-import type { ModelInfo } from "@/services/model";
-import type { Field, FormSection } from "@/features/excel/schema";
-import { upgradeSlide } from "@/features/presenter/slides/upgrade";
+import { createStore, del, entries, get, set } from "idb-keyval";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import type { Analysis } from "@shared/analysis";
+import type { ChatItem, ContextLink, DatasetRef, FileRef, ReportRef, ScreenId } from "@shared/types";
+import { upload } from "./api";
 
-/** What the signed-in user may do: edit (definition readable and writable), build (DAX queries), view. */
-export type Access = "edit" | "build" | "view";
+const db = createStore("hub-v2", "items");
 
-/** A markdown file given to the AI with the entries it is linked to. */
-
-export type ReportEntry = {
-  id: string;
-  groupId?: string;
-  /** Report of a Power BI app (view only). */
-  appId?: string;
-  name: string;
-  url: string;
-  datasetId: string;
-  datasetGroupId?: string;
-  access?: Access;
-  /** Why the definition is not readable (e.g. PBIR-Legacy format, no edit right). */
-  accessNote?: string;
-  contextIds: string[];
-  /** The name was changed in the app: reading the report again keeps it. */
-  renamed?: boolean;
-  /** Its descriptive schema (pages, visuals, fields), kept: made again with "Regenerate the schema". */
-  schema?: import("@/services/report-schema").ReportSchema;
-  /** Builder: reports given to the AI as examples (their schemas). */
-  exampleIds?: string[];
-  /** Viewer: other semantic models the AI may query (DAX) besides the report's own. */
-  datasetIds?: string[];
+export type Stored = {
+  report: ReportRef & { addedAt: number };
+  dataset: DatasetRef & { addedAt: number };
+  analysis: Analysis & { id: string; datasetIds: string[]; files: FileRef[] };
+  deck: { id: string; title: string; markdown: string; updatedAt: string };
+  pptx: { id: string; name: string; fileId: string; history: string[]; updatedAt: string };
+  conversation: { id: string; screen: ScreenId; item: string; title: string; items: ChatItem[]; updatedAt: string };
 };
+export type Kind = keyof Stored;
 
-export type DatasetEntry = {
-  id: string;
-  groupId?: string;
-  name: string;
-  /** Model structure (tables, columns, measures, relationships, sample values). */
-  info?: ModelInfo;
-  access?: Access;
-  /** Why its structure could not be read. */
-  error?: string;
-  contextIds: string[];
-  /** The name was changed in the app: reading the model again keeps it. */
-  renamed?: boolean;
-};
+const listeners = new Map<Kind, Set<() => void>>();
+const cache = new Map<Kind, Stored[Kind][]>();
+const notify = (k: Kind) => listeners.get(k)?.forEach((l) => l());
 
-/** An Excel table on SharePoint / OneDrive, as found from its link. */
-export type ExcelRef = { link: string; driveId: string; itemId: string; name: string; table: string; fileUrl: string; webUrl?: string };
-/** A Microsoft Form (its id holds the tenant and the owner). */
-export type FormRef = { url: string; id: string; title: string };
-
-/**
- * A schema: an Excel table (required), the Microsoft Form filling it (optional) and the definition of
- * its columns. `builtIn` schemas (the report viewer's guides) have fixed fields: only their
- * Excel file can be set.
- */
-export type SchemaEntry = {
-  id: string;
-  title: string;
-  builtIn?: "guides";
-  excel?: ExcelRef;
-  form?: FormRef;
-  fields: Field[];
-  /** Sections of the form (and where each goes when done); none: one page. */
-  sections?: FormSection[];
-  /** Folder receiving uploaded files (chosen by the user; required to upload). */
-  filesFolder?: { link: string; driveId: string; itemId: string; name: string };
-  /** Named views of the Excel editor. */
-  views?: { name: string; view: Record<string, unknown> }[];
-  contextIds: string[];
-};
-
-/** A research (kept in this browser): see research.ts. */
-export type ResearchEntry = import("@/features/data-scientist/research").ResearchEntry;
-
-/** The user's opinion of an answer or of a whole conversation (optional), with an optional note. */
-export type Rating = { score: "good" | "bad"; note?: string; at: number };
-
-/**
- * `viewState`: the report as the user left it in this conversation (filters, slicers, page: a bookmark
- * state). `rating`: of the whole conversation; `ratings`: of answers, by message id.
- */
-export type Conversation = { id: string; scope: string; title: string; messages: unknown[]; updatedAt: number; viewState?: string; rating?: Rating; ratings?: Record<string, Rating> };
-/** `model`: the assistants' (and of the one-call features). `maxSteps`: tool turns per message. `configLink`: the SharePoint JSON file holding the app's options (read at start). */
-export type Settings = { aiKey?: string; model?: string; maxSteps?: number; configLink?: string; confluence?: { url: string; email?: string; key: string; folderId: string } };
-
-/** A slide deck (its JSON: see src/features/presenter/slides) and the models and reports it is written from. */
-export type DeckEntry = { id: string; name: string; deck: import("@/features/presenter/slides").Deck; updatedAt: number; sources?: { datasetIds: string[]; reportIds: string[]; schemaIds?: string[] } };
-
-/** The guide of a visual of a report (Trainer › guide of the clicked visual), in markdown. */
-export type GuideEntry = { id: string; reportId: string; page: string; visual: string; title: string; content: string; updatedAt: number };
-
-type Collections = { reports: ReportEntry; datasets: DatasetEntry; schemas: SchemaEntry; researches: ResearchEntry; decks: DeckEntry; conversations: Conversation; guides: GuideEntry };
-export type Name = keyof Collections;
-
-const cache = new Map<Name, unknown[]>();
-const loading = new Map<Name, Promise<void>>();
-const listeners = new Map<Name, Set<() => void>>();
-
-const list = (v: unknown) => (Array.isArray(v) ? v : []);
-
-/**
- * An entry as this version reads it: the lists an older version may have left out are there (empty),
- * so no screen breaks on an old library (e.g. a report without contextIds, a model without relationships).
- */
-function normalize(name: Name, item: any) {
-  if (!item || typeof item !== "object") return item;
-  // Contexts are Confluence pages (numeric ids): links to the former contexts are dropped.
-  const withContexts = { ...item, contextIds: list(item.contextIds).filter((id: unknown) => /^\d+$/.test(String(id))) };
-  switch (name) {
-    case "reports":
-      return { ...withContexts, ...(item.schema && { schema: { ...item.schema, pages: list(item.schema.pages), visuals: list(item.schema.visuals).map((v: any) => ({ ...v, fields: v?.fields ?? {} })), filters: list(item.schema.filters), measures: list(item.schema.measures), settings: item.schema.settings ?? {} } }) };
-    case "datasets":
-      return {
-        ...withContexts,
-        ...(item.info && {
-          info: { ...item.info, tables: list(item.info.tables).map((t: any) => ({ ...t, columns: list(t?.columns), measures: list(t?.measures), hierarchies: list(t?.hierarchies) })), relationships: list(item.info.relationships), roles: list(item.info.roles), warnings: list(item.info.warnings) },
-        }),
-      };
-    case "schemas":
-      return { ...withContexts, fields: list(item.fields) };
-    case "conversations":
-      return { ...item, messages: list(item.messages) };
-    case "decks":
-      return item.deck ? { ...item, deck: { ...item.deck, slides: list(item.deck.slides).map(upgradeSlide) } } : item;
-    default:
-      return item;
+async function load<K extends Kind>(kind: K): Promise<Stored[K][]> {
+  if (!cache.has(kind)) {
+    const all = await entries(db);
+    cache.set(kind, all.filter(([k]) => String(k).startsWith(`${kind}:`)).map(([, v]) => v as Stored[K]));
   }
+  return cache.get(kind) as Stored[K][];
 }
 
-export async function all<N extends Name>(name: N): Promise<Collections[N][]> {
-  // One read of IndexedDB per collection: concurrent first reads used to overwrite a newer write
-  // with the stale stored list (an added entry then vanished from the screen and from later writes).
-  if (!loading.has(name)) loading.set(name, get(name).then((items) => void (cache.has(name) || cache.set(name, list(items).map((i) => normalize(name, i))))));
-  await loading.get(name);
-  return cache.get(name) as Collections[N][];
+export async function list<K extends Kind>(kind: K) {
+  return load(kind);
 }
 
-/** Writes one at a time per collection (each starts from the result of the previous one). */
-const queues = new Map<Name, Promise<unknown>>();
-function queued<T>(name: Name, task: () => Promise<T>) {
-  const run = (queues.get(name) ?? Promise.resolve()).then(task);
-  queues.set(name, run.catch(() => undefined));
-  return run;
+export async function save<K extends Kind>(kind: K, value: Stored[K]) {
+  const items = (await load(kind)).filter((x) => (x as { id: string }).id !== (value as { id: string }).id);
+  cache.set(kind, [...items, value]);
+  await set(`${kind}:${(value as { id: string }).id}`, value, db);
+  notify(kind);
 }
 
-async function write<N extends Name>(name: N, items: Collections[N][]) {
-  cache.set(name, items);
-  listeners.get(name)?.forEach((l) => l());
-  await set(name, items);
+export async function remove(kind: Kind, id: string) {
+  cache.set(kind, (await load(kind)).filter((x) => (x as { id: string }).id !== id));
+  await del(`${kind}:${id}`, db);
+  notify(kind);
 }
 
-export const put = <N extends Name>(name: N, given: Collections[N]) =>
-  queued(name, async () => {
-    // An imported entry may come from an older version.
-    const item = normalize(name, given) as Collections[N];
-    const items = await all(name);
-    const index = items.findIndex((i) => i.id === item.id);
-    // Kept in place (lists keep their order when an entry is updated).
-    await write(name, index >= 0 ? items.map((i) => (i.id === item.id ? item : i)) : [...items, item]);
-    return item;
-  });
+export async function item<K extends Kind>(kind: K, id: string) {
+  return (await load(kind)).find((x) => (x as { id: string }).id === id) as Stored[K] | undefined;
+}
 
-export const patch = <N extends Name>(name: N, id: string, values: Partial<Collections[N]>) =>
-  queued(name, async () => write(name, (await all(name)).map((i) => (i.id === id ? { ...i, ...values } : i))));
-
-export const remove = (name: Name, id: string) => queued(name, async () => write(name, (await all(name)).filter((i) => i.id !== id) as never));
-
-export const find = async <N extends Name>(name: N, id?: string) => (id ? (await all(name)).find((i) => i.id === id) : undefined);
-
-export function useCollection<N extends Name>(name: N) {
-  const [items, setItems] = useState<Collections[N][]>((cache.get(name) as Collections[N][]) ?? []);
+/** The items of a kind, kept up to date. */
+export function useItems<K extends Kind>(kind: K): Stored[K][] | undefined {
+  const [items, setItems] = useState<Stored[K][]>();
   useEffect(() => {
-    const update = () => void all(name).then((list) => setItems([...list]));
-    if (!listeners.has(name)) listeners.set(name, new Set());
-    listeners.get(name)!.add(update);
+    const update = () => void load(kind).then((x) => setItems([...x]));
+    if (!listeners.has(kind)) listeners.set(kind, new Set());
+    listeners.get(kind)!.add(update);
     update();
-    return () => void listeners.get(name)!.delete(update);
-  }, [name]);
+    return () => void listeners.get(kind)!.delete(update);
+  }, [kind]);
   return items;
 }
 
-/** Whether a collection has been read from IndexedDB (before that, useCollection gives an empty list). */
-export function useLoaded(name: Name) {
-  const [loaded, setLoaded] = useState(() => cache.has(name));
-  useEffect(() => {
-    let live = true;
-    if (!loaded) void all(name).then(() => live && setLoaded(true));
-    return () => void (live = false);
-  }, [name, loaded]);
-  return loaded;
+/* ---------------------------------- Files ---------------------------------- */
+
+const blobs = createStore("hub-v2-files", "files");
+
+/** Sends a file to the server and keeps it here (to send it again later). */
+export async function keepFile(file: File | Blob, name: string): Promise<FileRef> {
+  const ref = await upload(file, name);
+  await set(ref.id, { ref, blob: file }, blobs);
+  return ref;
 }
 
-/** Asks the browser not to evict this site's data when the disk is full (the library vanished twice). */
-export const persist = () => void navigator.storage?.persist?.().catch(() => undefined);
+/** Makes sure the server has these files (sent again from this browser when it lost them). */
+export async function ensureFiles(files: FileRef[]) {
+  await Promise.all(
+    files.map(async (f) => {
+      const r = await fetch(`/api/files/${f.id}`, { method: "HEAD" });
+      if (r.ok) return;
+      const kept = (await get(f.id, blobs)) as { blob: Blob } | undefined;
+      if (kept) await upload(kept.blob, f.name, f.id);
+    }),
+  );
+}
 
-export const settings = {
-  get: async (): Promise<Settings> => (await get("settings")) ?? {},
-  set: async (values: Settings) => set("settings", { ...(await settings.get()), ...values }),
-};
+/** Keeps a server file in this browser too (e.g. a PowerPoint the AI changed). */
+export async function keepServerFile(ref: FileRef) {
+  if (await get(ref.id, blobs)) return;
+  const blob = await (await fetch(`/api/files/${ref.id}`)).blob();
+  await set(ref.id, { ref, blob }, blobs);
+}
+
+/* ------------------------------ Local choices ------------------------------ */
+
+const local = new Set<() => void>();
+export function readLocal<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(`hub:${key}`);
+    return v === null ? fallback : (JSON.parse(v) as T);
+  } catch {
+    return fallback;
+  }
+}
+export function writeLocal(key: string, value: unknown) {
+  try {
+    localStorage.setItem(`hub:${key}`, JSON.stringify(value));
+  } catch {}
+  local.forEach((l) => l());
+}
+export function useLocal<T>(key: string, fallback: T): [T, (v: T) => void] {
+  const value = useSyncExternalStore(
+    (l) => (local.add(l), () => void local.delete(l)),
+    () => localStorage.getItem(`hub:${key}`),
+  );
+  let parsed = fallback;
+  try {
+    if (value !== null) parsed = JSON.parse(value);
+  } catch {}
+  return [parsed, (v: T) => writeLocal(key, v)];
+}
+
+/** Confluence pages linked to an item as its context (as in v1: kept in this browser). */
+export const useContexts = (itemKey: string) => useLocal<ContextLink[]>(`contexts:${itemKey}`, []);
+export const contextsOf = (itemKey: string) => readLocal<ContextLink[]>(`contexts:${itemKey}`, []);
+
+/** Everything of this browser as one JSON file (Settings › General), and back. */
+export async function exportAll() {
+  const all = await entries(db);
+  const ls = Object.fromEntries(Object.keys(localStorage).filter((k) => k.startsWith("hub:")).map((k) => [k, localStorage.getItem(k)]));
+  return new Blob([JSON.stringify({ version: 2, items: all, local: ls }, null, 1)], { type: "application/json" });
+}
+export async function importAll(file: File) {
+  const data = JSON.parse(await file.text());
+  for (const [k, v] of data.items ?? []) await set(k, v, db);
+  for (const [k, v] of Object.entries(data.local ?? {})) if (k.startsWith("hub:") && typeof v === "string") localStorage.setItem(k, v);
+  cache.clear();
+  for (const k of listeners.keys()) notify(k);
+}

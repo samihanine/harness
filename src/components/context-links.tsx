@@ -1,83 +1,66 @@
-/**
- * The "Context" tab of a report, a dataset or an Excel file: which Confluence pages (of the folder set
- * in Settings › Confluence) are given to the AI with it. Links are kept in this browser; each linked
- * page's content too (src/features/confluence/context-pages.ts), read again at each conversation.
- */
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "@tanstack/react-router";
-import { ExternalLinkIcon, FileTextIcon, RefreshCwIcon } from "lucide-react";
+/** The Confluence pages linked to an item as its context (as in v1: the links kept in this browser). */
+import { useEffect, useState } from "react";
+import { BookOpenTextIcon, Loader2Icon, PlusIcon, XIcon } from "lucide-react";
+import { Empty, ErrorBox } from "./common";
 import { Button } from "./ui/button";
-import { Switch } from "./ui/switch";
-import { Empty, Section } from "./workspace";
-import { withToast } from "./entity";
-import { refreshPages, useContextPages } from "@/features/confluence/context-pages";
-import { listPages } from "@/services/confluence";
-import { errorText } from "@/services/ms";
+import { errorText, get } from "@/lib/api";
+import { useContexts } from "@/lib/store";
 
-const ago = (at: number) => (at ? new Date(at).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" }) : "never");
-
-export function ContextLinks({ ids, onChange, what }: { ids: string[]; onChange: (ids: string[]) => void; what: string }) {
-  const kept = useContextPages();
+export function ContextLinks({ itemKey, title }: { itemKey: string; title?: string }) {
+  const [links, setLinks] = useContexts(itemKey);
   const [pages, setPages] = useState<{ id: string; title: string }[]>();
   const [error, setError] = useState<string>();
-  const load = useCallback(() => listPages().then((p) => (setPages(p), setError(undefined)), (e) => setError(errorText(e))), []);
-  useEffect(() => void load(), [load]);
-  // The folder's pages, and the linked pages no longer in it (moved, or Confluence unreachable): still shown.
-  const listed = [...(pages ?? []), ...ids.filter((id) => !pages?.some((p) => p.id === id)).map((id) => ({ id, title: kept[id]?.title ?? `Page ${id}` }))];
-  const toggle = (id: string, on: boolean) => {
-    onChange(on ? [...ids, id] : ids.filter((x) => x !== id));
-    if (on) void refreshPages([id], true);
-  };
+  const [picking, setPicking] = useState(false);
+  const [query, setQuery] = useState("");
+  useEffect(() => {
+    if (picking && !pages) get("/confluence/pages").then(setPages, (e) => setError(errorText(e)));
+  }, [picking, pages]);
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto p-6">
-      <div className="mx-auto flex max-w-3xl flex-col gap-5">
-        <Section
-          title="Linked Confluence pages"
-          description={`Pages given to the AI whenever it works on this ${what}: vocabulary, rules, how the data is used. Read again from Confluence at each new conversation; the copy kept in this browser is used when Confluence cannot be reached.`}
-          actions={
-            <>
-              <Button variant="ghost" size="icon" className="size-8" aria-label="Read the pages again" title="Read the pages again" onClick={() => void withToast("Reading the pages…", Promise.all([load(), refreshPages(ids, true)]), "Pages read again.")}>
-                <RefreshCwIcon />
-              </Button>
-              <Button variant="outline" size="sm" asChild>
-                <Link to="/confluence" search={{}}>
-                  <ExternalLinkIcon /> Confluence
-                </Link>
-              </Button>
-            </>
-          }
-        >
-          {error && (
-            <Empty icon={FileTextIcon} action={<Button variant="outline" size="sm" asChild><Link to="/settings" search={{ tab: "confluence" }}>Settings › Confluence</Link></Button>}>
-              {error}
-            </Empty>
-          )}
-          {!error && !pages && <Empty>Reading the pages of the folder…</Empty>}
-          {pages?.length === 0 && !ids.length && <Empty icon={FileTextIcon}>No page in the Confluence folder yet.</Empty>}
-          {listed.length > 0 && (
-            <ul className="flex flex-col divide-y">
-              {listed.map((p) => {
-                const on = ids.includes(p.id);
-                const copy = kept[p.id];
-                return (
-                  <li key={p.id} className="flex items-center gap-3 py-2.5">
-                    <FileTextIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium">{p.title}</div>
-                      {on && (
-                        <div className={`truncate text-[12.5px] ${copy?.error ? "text-destructive" : "text-muted-foreground"}`}>
-                          {copy?.error ? `Not read (${copy.error}); copy of ${ago(copy.at)} used` : copy ? `Read ${ago(copy.at)} · ${copy.text.replace(/\s+/g, " ").slice(0, 120) || "empty"}` : "Not read yet"}
-                        </div>
-                      )}
-                    </div>
-                    <Switch checked={on} onCheckedChange={(v) => toggle(p.id, v)} aria-label={`Link "${p.title}"`} />
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </Section>
+    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <div className="text-[15px] font-semibold">Context</div>
+          <div className="text-[13px] text-muted-foreground">Confluence pages the assistant reads about {title ?? "this item"}: business rules, definitions, how it is used.</div>
+        </div>
+        <Button variant="dark" size="sm" onClick={() => setPicking(!picking)}>
+          <PlusIcon /> Link a page
+        </Button>
       </div>
+      {picking && (
+        <div className="rounded-2xl border p-3">
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search the folder's pages" className="input mb-2" />
+          {error && <ErrorBox>{error}</ErrorBox>}
+          {!pages && !error && (
+            <div className="flex items-center gap-2 p-2 text-[13px] text-muted-foreground">
+              <Loader2Icon className="size-4 animate-spin" /> Loading Confluence pages…
+            </div>
+          )}
+          <div className="max-h-64 overflow-y-auto">
+            {(pages ?? [])
+              .filter((p) => p.title.toLowerCase().includes(query.toLowerCase()) && !links.some((l) => l.id === p.id))
+              .map((p) => (
+                <button key={p.id} onClick={() => setLinks([...links, p])} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13.5px] hover:bg-muted">
+                  <BookOpenTextIcon className="size-4 text-muted-foreground" /> {p.title}
+                </button>
+              ))}
+          </div>
+        </div>
+      )}
+      {links.length === 0 ? (
+        <Empty icon={<BookOpenTextIcon />} title="No context page">Link Confluence pages so the assistant knows the rules and vocabulary of this item.</Empty>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {links.map((l) => (
+            <div key={l.id} className="flex items-center gap-3 rounded-2xl border px-4 py-3">
+              <BookOpenTextIcon className="size-4 text-muted-foreground" />
+              <span className="flex-1 text-[14px]">{l.title}</span>
+              <Button variant="ghost" size="icon-sm" onClick={() => setLinks(links.filter((x) => x.id !== l.id))} aria-label="Unlink">
+                <XIcon />
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

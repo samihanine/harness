@@ -1,43 +1,28 @@
 # Code structure
 
 ```
+server/                 the Bun server (API, AI, Microsoft, Confluence)
+  main.ts               routes (/api/…), static app in production, same-origin check
+  settings.ts           settings in .local/settings.json (secrets never sent to the browser)
+  files.ts              files in .local/files (uploads, captures, PowerPoint versions)
+  ms/                   device-code sign-in (auth.ts), Power BI / Fabric / Graph REST (api.ts)
+  pbi/                  DAX with limits, model reading, definitions (TMDL, PBIR), report structure,
+                        Builder draft, visual specs, layout, measures, catalog of reports
+  llm/                  provider-neutral messages; Anthropic, Maia (TrustLayer), Claude Code
+  agent/                the agent loop (run.ts), each screen's prompt and tools (screens.ts)
+  capture/browser.ts    headless browser: report pictures, embedded structures, PDF pages
+  pptx/                 markdown deck → PowerPoint (deck.ts), existing .pptx edits (ooxml.ts), pictures (render.ts)
+  data/engine.ts        the Data Scientist's SQL database (SQLite in memory)
+  confluence.ts         Confluence REST, markdown ⇄ storage format
+  excel-export.ts       an analysis as an Excel workbook
+shared/                 types and formats used by both sides (chat events, deck markdown, analyses)
 src/
-  main.tsx, router.tsx    SPA entry (hash history in the single-file export)
-  config.ts               every option and flag (Settings › General writes them at runtime)
-  styles.css              Tailwind v4 tokens, light / dark
-  routes/                 one file per screen (TanStack Router, file-based)
-  features/               the code of each feature
-    trainer/              report viewer: Explain, Why-changed, guides, visual images
-    builder/              report editing: PBIR tools, editor mode, layout, visual specs, drafts
-    data-scientist/       canvas, pivot and chart cards
-    presenter/            slides-tools.ts (agent) + slides/ (templates, PowerPoint, Power BI embeds)
-    datasets/             model editing: TMDL, Power Query steps, data samples
-    excel/                Excel data tools, table views
-    confluence/           page agent, markdown ⇄ Confluence storage, pages as contexts (localStorage copy)
-    mascot/               the hedgehog (SVG layers, outfits, states)
-  services/               everything that talks to a backend
-    ms.ts                 Power BI / Fabric / Graph REST, tokens from the local token server
-    pbi.ts                embedding SDKs, DAX (limits, queue, cache)
-    excel.ts              Graph workbook API
-    report-def.ts, tmdl.ts, model.ts, report-schema.ts   definitions and structures (Fabric)
-    hub-config.ts         options file on SharePoint
-    health.ts             sign-in and AI key checks
-    confluence.ts         Confluence REST API
-  prompts/                every prompt, one file per feature (imported by the code that sends it)
-  agent/                  the agent harness shared by every screen
-    loop.ts               one conversation per chat, confirmation before changes, JSON tool calls, retries, steps
-    reply.ts              tolerant parsing of the model's replies
-    llm.ts                the LLM API (never modified)
-    context.ts, model-tools.ts, pbi-tools.ts, sandbox.ts   shared context and tools
-  lib/                    local state and helpers (store.ts: IndexedDB; library, mistakes, query-spec…)
-  components/             shared UI (workspace, chat, pickers, shadcn ui/)
-scripts/
-  dev.ts                  bun dev: token server + Vite
-  token-server.ts         local Microsoft sign-in, GET /get-token; /confluence/<host>/… pass-through
-  export-html.ts          single HTML file
-  agent-eval/             agents run outside the browser (offline and live scenarios)
-  security/               audit, fixes, library updates
-docs/
-  performance.md          semantic model limits
-  structure.md            this file
+  routes/               one file per screen
+  components/           Workspace, ChatPanel, pickers, context links, shadcn ui/
+  features/             screen parts: powerbi (embed), views (model, report structure), scientist, presenter, mascot
+  tools/                every tool of the AI, one file per tool (run on the server); browser/ = actions on the embed
+  prompts/              every prompt
+  lib/                  api, store (IndexedDB), chat (SSE), settings, theme
+assets/template/        the deck template's pictures (placeholders until the real ones)
+scripts/                dev.ts (bun dev), checks/ (headless checks), security/ (audit), make-template-assets.ts
 ```

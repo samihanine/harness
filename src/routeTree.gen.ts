@@ -10,19 +10,23 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as BuilderRouteImport } from './routes/builder'
 import { Route as ConfluenceRouteImport } from './routes/confluence'
 import { Route as DatasetsRouteImport } from './routes/datasets'
-import { Route as EditorRouteImport } from './routes/editor'
-import { Route as ExcelRouteImport } from './routes/excel'
+import { Route as PresenterRouteImport } from './routes/presenter'
 import { Route as ReportsRouteImport } from './routes/reports'
-import { Route as ResearchRouteImport } from './routes/research'
+import { Route as ScientistRouteImport } from './routes/scientist'
 import { Route as SettingsRouteImport } from './routes/settings'
-import { Route as SlidesRouteImport } from './routes/slides'
-import { Route as ViewerRouteImport } from './routes/viewer'
+import { Route as TrainerRouteImport } from './routes/trainer'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BuilderRoute = BuilderRouteImport.update({
+  id: '/builder',
+  path: '/builder',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ConfluenceRoute = ConfluenceRouteImport.update({
@@ -35,14 +39,9 @@ const DatasetsRoute = DatasetsRouteImport.update({
   path: '/datasets',
   getParentRoute: () => rootRouteImport,
 } as any)
-const EditorRoute = EditorRouteImport.update({
-  id: '/editor',
-  path: '/editor',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ExcelRoute = ExcelRouteImport.update({
-  id: '/excel',
-  path: '/excel',
+const PresenterRoute = PresenterRouteImport.update({
+  id: '/presenter',
+  path: '/presenter',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReportsRoute = ReportsRouteImport.update({
@@ -50,9 +49,9 @@ const ReportsRoute = ReportsRouteImport.update({
   path: '/reports',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ResearchRoute = ResearchRouteImport.update({
-  id: '/research',
-  path: '/research',
+const ScientistRoute = ScientistRouteImport.update({
+  id: '/scientist',
+  path: '/scientist',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SettingsRoute = SettingsRouteImport.update({
@@ -60,104 +59,92 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SlidesRoute = SlidesRouteImport.update({
-  id: '/slides',
-  path: '/slides',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ViewerRoute = ViewerRouteImport.update({
-  id: '/viewer',
-  path: '/viewer',
+const TrainerRoute = TrainerRouteImport.update({
+  id: '/trainer',
+  path: '/trainer',
   getParentRoute: () => rootRouteImport,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/builder': typeof BuilderRoute
   '/confluence': typeof ConfluenceRoute
   '/datasets': typeof DatasetsRoute
-  '/editor': typeof EditorRoute
-  '/excel': typeof ExcelRoute
+  '/presenter': typeof PresenterRoute
   '/reports': typeof ReportsRoute
-  '/research': typeof ResearchRoute
+  '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
-  '/slides': typeof SlidesRoute
-  '/viewer': typeof ViewerRoute
+  '/trainer': typeof TrainerRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/builder': typeof BuilderRoute
   '/confluence': typeof ConfluenceRoute
   '/datasets': typeof DatasetsRoute
-  '/editor': typeof EditorRoute
-  '/excel': typeof ExcelRoute
+  '/presenter': typeof PresenterRoute
   '/reports': typeof ReportsRoute
-  '/research': typeof ResearchRoute
+  '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
-  '/slides': typeof SlidesRoute
-  '/viewer': typeof ViewerRoute
+  '/trainer': typeof TrainerRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/builder': typeof BuilderRoute
   '/confluence': typeof ConfluenceRoute
   '/datasets': typeof DatasetsRoute
-  '/editor': typeof EditorRoute
-  '/excel': typeof ExcelRoute
+  '/presenter': typeof PresenterRoute
   '/reports': typeof ReportsRoute
-  '/research': typeof ResearchRoute
+  '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
-  '/slides': typeof SlidesRoute
-  '/viewer': typeof ViewerRoute
+  '/trainer': typeof TrainerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/builder'
     | '/confluence'
     | '/datasets'
-    | '/editor'
-    | '/excel'
+    | '/presenter'
     | '/reports'
-    | '/research'
+    | '/scientist'
     | '/settings'
-    | '/slides'
-    | '/viewer'
+    | '/trainer'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/builder'
     | '/confluence'
     | '/datasets'
-    | '/editor'
-    | '/excel'
+    | '/presenter'
     | '/reports'
-    | '/research'
+    | '/scientist'
     | '/settings'
-    | '/slides'
-    | '/viewer'
+    | '/trainer'
   id:
     | '__root__'
     | '/'
+    | '/builder'
     | '/confluence'
     | '/datasets'
-    | '/editor'
-    | '/excel'
+    | '/presenter'
     | '/reports'
-    | '/research'
+    | '/scientist'
     | '/settings'
-    | '/slides'
-    | '/viewer'
+    | '/trainer'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  BuilderRoute: typeof BuilderRoute
   ConfluenceRoute: typeof ConfluenceRoute
   DatasetsRoute: typeof DatasetsRoute
-  EditorRoute: typeof EditorRoute
-  ExcelRoute: typeof ExcelRoute
+  PresenterRoute: typeof PresenterRoute
   ReportsRoute: typeof ReportsRoute
-  ResearchRoute: typeof ResearchRoute
+  ScientistRoute: typeof ScientistRoute
   SettingsRoute: typeof SettingsRoute
-  SlidesRoute: typeof SlidesRoute
-  ViewerRoute: typeof ViewerRoute
+  TrainerRoute: typeof TrainerRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -167,6 +154,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/builder': {
+      id: '/builder'
+      path: '/builder'
+      fullPath: '/builder'
+      preLoaderRoute: typeof BuilderRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/confluence': {
@@ -183,18 +177,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof DatasetsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/editor': {
-      id: '/editor'
-      path: '/editor'
-      fullPath: '/editor'
-      preLoaderRoute: typeof EditorRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/excel': {
-      id: '/excel'
-      path: '/excel'
-      fullPath: '/excel'
-      preLoaderRoute: typeof ExcelRouteImport
+    '/presenter': {
+      id: '/presenter'
+      path: '/presenter'
+      fullPath: '/presenter'
+      preLoaderRoute: typeof PresenterRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/reports': {
@@ -204,11 +191,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ReportsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/research': {
-      id: '/research'
-      path: '/research'
-      fullPath: '/research'
-      preLoaderRoute: typeof ResearchRouteImport
+    '/scientist': {
+      id: '/scientist'
+      path: '/scientist'
+      fullPath: '/scientist'
+      preLoaderRoute: typeof ScientistRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/settings': {
@@ -218,18 +205,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/slides': {
-      id: '/slides'
-      path: '/slides'
-      fullPath: '/slides'
-      preLoaderRoute: typeof SlidesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/viewer': {
-      id: '/viewer'
-      path: '/viewer'
-      fullPath: '/viewer'
-      preLoaderRoute: typeof ViewerRouteImport
+    '/trainer': {
+      id: '/trainer'
+      path: '/trainer'
+      fullPath: '/trainer'
+      preLoaderRoute: typeof TrainerRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -237,15 +217,14 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  BuilderRoute: BuilderRoute,
   ConfluenceRoute: ConfluenceRoute,
   DatasetsRoute: DatasetsRoute,
-  EditorRoute: EditorRoute,
-  ExcelRoute: ExcelRoute,
+  PresenterRoute: PresenterRoute,
   ReportsRoute: ReportsRoute,
-  ResearchRoute: ResearchRoute,
+  ScientistRoute: ScientistRoute,
   SettingsRoute: SettingsRoute,
-  SlidesRoute: SlidesRoute,
-  ViewerRoute: ViewerRoute,
+  TrainerRoute: TrainerRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

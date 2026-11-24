@@ -2,17 +2,13 @@ import { defineConfig } from "vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { viteSingleFile } from "vite-plugin-singlefile";
 
 /**
- * The app is a single page (no server of its own): `bun dev` serves it with the local token server
- * beside it. `--mode html` builds it into one standalone HTML file (dist/hub.html, routes in the URL hash).
+ * The app (React). `bun dev`: Vite on 3300, the Hub server (API) on 3301, /api forwarded to it.
+ * `bun run build`: dist/, served by the server itself (`bun run start`).
  */
-export default defineConfig(({ mode }) => ({
-  server: { port: 3300 },
-  // One powerbi-client: powerbi-report-authoring adds its methods (getCapabilities…) to the copy it imports.
+export default defineConfig({
+  server: { port: 3300, proxy: { "/api": { target: "http://127.0.0.1:3301", changeOrigin: false } } },
   resolve: { tsconfigPaths: true, dedupe: ["powerbi-client"] },
-  base: mode === "html" ? "./" : "/",
-  build: mode === "html" ? { outDir: "dist/html", emptyOutDir: true, assetsInlineLimit: 100_000_000, cssCodeSplit: false } : undefined,
-  plugins: [tanstackRouter({ target: "react", autoCodeSplitting: false }), react(), tailwindcss(), ...(mode === "html" ? [viteSingleFile()] : [])],
-}));
+  plugins: [tanstackRouter({ target: "react", autoCodeSplitting: true }), react(), tailwindcss()],
+});

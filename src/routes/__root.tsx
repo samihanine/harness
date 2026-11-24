@@ -1,116 +1,80 @@
 /// <reference types="vite/client" />
-import { useEffect, useState, type ReactNode } from "react";
-import { Link, Navigate, Outlet, createRootRoute, useLocation } from "@tanstack/react-router";
-import { SettingsIcon } from "lucide-react";
-import { ScreenLogo } from "@/components/screen-logo";
-import { HealthBanner } from "@/components/health-banner";
+import { useEffect, useState } from "react";
+import { Link, Outlet, createRootRoute, useLocation } from "@tanstack/react-router";
+import { AsteriskIcon, SettingsIcon } from "lucide-react";
 import { Toaster } from "@/components/ui/sonner";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { ensureBuiltIns } from "@/lib/library";
-import { persist } from "@/lib/store";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { SCREEN_INFO } from "@/components/screens";
+import { SCREENS } from "@shared/types";
+import { useSettings } from "@/lib/settings";
 import { applyTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { tokenStatus } from "@/services/ms";
-import { loadHubConfig } from "@/services/hub-config";
-import { APP_TITLE, HOME, PRIMARY_COLOR, SCREENS, SCREEN_GROUPS, SCREEN_LABELS, SCREEN_PATHS, firstScreen, onConfigChange, type Screen } from "@/config";
+import { get } from "@/lib/api";
 import "@/styles.css";
 
-/** The app is a single page: index.html loads src/main.tsx, which mounts the router (no server). */
 export const Route = createRootRoute({ component: Layout });
 
-/** Black or white text, whichever reads best on a color (#rrggbb; anything else: white). */
+/** Black or white text on a color. */
 export function readableOn(color: string) {
   const m = color.match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i);
   if (!m) return "#ffffff";
   const [r, g, b] = m.slice(1).map((h) => parseInt(h, 16) / 255);
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 ? "#0f172a" : "#ffffff";
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6 ? "#111111" : "#ffffff";
 }
 
-/**
- * The colors made from the app's primary color (Settings): buttons, focus rings, selected items. The
- * theme's --color-* are set too: on <html> they were resolved with the default blue.
- */
-const colorVars = () => {
-  // A see-through tint (no other variable in it: it changes at once, in light and dark themes).
-  const accent = `color-mix(in srgb, ${PRIMARY_COLOR} 12%, transparent)`;
-  const accentText = PRIMARY_COLOR;
-  return {
-    "--primary": PRIMARY_COLOR,
-    "--color-primary": PRIMARY_COLOR,
-    "--ring": PRIMARY_COLOR,
-    "--color-ring": PRIMARY_COLOR,
-    "--primary-foreground": readableOn(PRIMARY_COLOR),
-    "--color-primary-foreground": readableOn(PRIMARY_COLOR),
-    "--accent": accent,
-    "--color-accent": accent,
-    "--accent-foreground": accentText,
-    "--color-accent-foreground": accentText,
-  };
-};
-
-
-const hiddenPaths = () => (Object.keys(SCREENS) as Screen[]).filter((k) => !SCREENS[k]).map((k) => SCREEN_PATHS[k]);
-
-type Status = Awaited<ReturnType<typeof tokenStatus>>;
+function RailLink({ to, label, children, active }: { to: string; label: string; children: React.ReactNode; active: boolean }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Link to={to} aria-label={label} className={cn("flex size-12 items-center justify-center rounded-2xl text-muted-foreground transition-all [&_svg]:size-[22px]", active ? "border bg-card text-foreground shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "hover:bg-muted hover:text-foreground")}>
+          {children}
+        </Link>
+      </TooltipTrigger>
+      <TooltipContent side="right">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 function Layout() {
-  const [status, setStatus] = useState<Status>();
+  const settings = useSettings();
   const path = useLocation({ select: (l) => l.pathname });
-  // Read again on each screen change (e.g. after signing in from Settings).
-  useEffect(() => void tokenStatus().then(setStatus, () => setStatus(undefined)), [path]);
-  // Options: the SharePoint file is read at start; any change draws the screens again.
-  const [version, setVersion] = useState(0);
-  useEffect(() => onConfigChange(() => setVersion((v) => v + 1)), []);
-  useEffect(() => {
-    applyTheme();
-    void loadHubConfig().catch((e) => console.warn("Config file not read", e));
-    void ensureBuiltIns();
-    persist();
-  }, []);
-  useEffect(() => {
-    // The tints made from the primary follow it too (the selected item of the sidebar and the lists).
-    for (const [k, v] of Object.entries(colorVars())) document.body.style.setProperty(k, v);
-  }, [version]);
-  // A hidden screen is closed to direct links too; "/" opens the first screen when there is no home page.
-  if ((path === "/" && !HOME) || hiddenPaths().includes(path)) return <Navigate to={firstScreen()} search={{} as never} replace />;
-  /** A screen in the sidebar: its picture, its name under it. */
-  const item = (to: string, label: string, picture: ReactNode) => (
-    <Link
-      key={to}
-      to={to}
-      className="flex w-full flex-col items-center gap-1 rounded-lg px-1 pt-2 pb-1.5 text-[11.5px] font-medium text-muted-foreground transition-colors outline-none hover:bg-accent hover:text-accent-foreground focus-visible:ring-[3px] focus-visible:ring-ring/30"
-      activeProps={{ className: "bg-accent !text-accent-foreground" }}
-    >
-      <span className="flex h-10 items-center justify-center">{picture}</span>
-      <span className="line-clamp-2 max-w-full text-center leading-tight">{label}</span>
-    </Link>
-  );
-  const groups = SCREEN_GROUPS.map((g) => g.filter((k) => SCREENS[k])).filter((g) => g.length);
-
+  const [signedIn, setSignedIn] = useState<boolean>();
+  useEffect(() => applyTheme(), []);
+  useEffect(() => void get("/auth").then((s) => setSignedIn(s.signedIn), () => setSignedIn(false)), [path]);
+  const primary = settings?.general.primaryColor ?? "#d97757";
+  const style = { "--primary": primary, "--color-primary": primary, "--ring": primary, "--color-ring": primary, "--primary-foreground": readableOn(primary), "--color-primary-foreground": readableOn(primary) } as React.CSSProperties;
+  const shown = SCREENS.filter((s) => settings?.general.screens[s] !== false);
   return (
-    <TooltipProvider delayDuration={400}>
-      <div className="flex h-full overflow-hidden">
-        <aside className="flex w-[92px] shrink-0 flex-col border-r bg-sidebar px-1.5 py-3">
-          <Link to={HOME ? "/" : firstScreen()} aria-label={APP_TITLE} className="mx-auto mb-2 flex size-9 items-center justify-center rounded-lg bg-primary text-[15px] font-bold text-primary-foreground shadow-sm outline-none focus-visible:ring-[3px] focus-visible:ring-ring/30">
-            {APP_TITLE.slice(0, 1).toUpperCase()}
-          </Link>
-          <nav className="flex min-h-0 flex-1 flex-col overflow-y-auto" aria-label="Screens">
-            {groups.map((g, i) => (
-              <div key={i} className={cn("flex flex-col gap-0.5 py-2", i > 0 && "border-t")}>
-                {g.map((k) => item(SCREEN_PATHS[k], SCREEN_LABELS[k], <ScreenLogo screen={k} size={k in { reports: 1, datasets: 1, excel: 1, confluence: 1 } ? 30 : 38} />))}
-              </div>
-            ))}
+    <TooltipProvider delayDuration={300}>
+      <div style={style} className="h-screen bg-app p-2.5 sm:p-3">
+        <div className="flex h-full overflow-hidden rounded-[26px] border bg-sidebar shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
+          <nav className="flex w-[76px] shrink-0 flex-col items-center gap-2 py-5">
+            <Link to="/" aria-label="Home" className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-foreground text-background shadow-sm">
+              <AsteriskIcon className="size-7" strokeWidth={2.4} />
+            </Link>
+            {shown.map((s) => {
+              const info = SCREEN_INFO[s];
+              const Icon = info.icon;
+              return (
+                <RailLink key={s} to={info.path} label={info.label} active={path.startsWith(info.path)}>
+                  <Icon />
+                </RailLink>
+              );
+            })}
+            <div className="flex-1" />
+            <RailLink to="/settings" label={signedIn === false ? "Settings — sign in to Microsoft" : "Settings"} active={path.startsWith("/settings")}>
+              <span className="relative">
+                <SettingsIcon />
+                {signedIn === false && <span className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-primary ring-2 ring-sidebar" />}
+              </span>
+            </RailLink>
           </nav>
-          <div className="flex flex-col border-t pt-2">{item("/settings", "Settings", <SettingsIcon className="size-6" strokeWidth={1.7} aria-hidden />)}</div>
-        </aside>
-        <main key={version} className="flex min-w-0 flex-1 flex-col">
-          <HealthBanner signedIn={status?.signedIn} />
-          <div className="min-h-0 flex-1">
+          <main className="min-w-0 flex-1 bg-background p-2.5 sm:p-3">
             <Outlet />
-          </div>
-        </main>
+          </main>
+        </div>
+        <Toaster position="bottom-right" />
       </div>
-      <Toaster position="bottom-right" richColors closeButton />
     </TooltipProvider>
   );
 }
