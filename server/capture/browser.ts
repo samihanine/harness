@@ -47,7 +47,7 @@ const script = async (path: string) => {
 
 /* ------------------------------- Power BI ------------------------------- */
 
-type Embedded = { page: Page; ref: Ref; usedAt: number; size: string };
+type Embedded = { page: Page; ref: Ref; usedAt: number; size: string; state?: string };
 const reports = new Map<string, Promise<Embedded>>();
 const MAX_OPEN = 3;
 
@@ -136,17 +136,20 @@ export async function captureReport(ref: Ref, o: CaptureOptions = {}): Promise<{
   const height = o.height ?? 720;
   const e = await embedded(ref, width, height);
   const info = await e.page.evaluate(
-    async ({ state, page, filters, visual }) => {
+    async ({ state, keep, page, filters, visual }) => {
       const report = (window as any).report;
       const rendered = () =>
         new Promise<void>((resolve) => {
           const done = () => (report.off("rendered"), resolve());
           report.on("rendered", done);
-          setTimeout(done, 15_000);
+          // A change that draws nothing new sends no "rendered": not waited for long.
+          setTimeout(done, 6_000);
         });
       const pages = await report.getPages();
       let changed = false;
-      if (state) {
+      if (keep) {
+        // The view already shown: nothing to apply.
+      } else if (state) {
         const wait = rendered();
         await report.bookmarksManager.applyState(state);
         await wait;
@@ -191,8 +194,10 @@ export async function captureReport(ref: Ref, o: CaptureOptions = {}): Promise<{
         clip,
       };
     },
-    { state: o.state, page: o.page, filters: o.filters, visual: o.visual },
+    { state: o.state, keep: !!o.state && o.state === e.state, page: o.page, filters: o.filters, visual: o.visual },
   );
+  // The same view again (state already applied): nothing to redraw.
+  e.state = o.state && !o.filters?.length ? o.state : undefined;
   // Visuals draw a little after "rendered" (animations).
   await e.page.waitForTimeout(800);
   const png = await e.page.screenshot({ type: "png", clip: info.clip ?? { x: 0, y: 0, width, height } });
@@ -262,6 +267,30 @@ export async function renderPdf(pdf: Uint8Array, pages?: number[], width = 1280)
       { lib, worker, data: Buffer.from(pdf).toString("base64"), pages, width },
     );
     return images.map((b) => Buffer.from(b, "base64"));
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
+/** A picture PowerPoint cannot take (SVG, WebP, AVIF…) drawn as a PNG (`width` px wide at most). */
+export async function rasterize(bytes: Uint8Array, mime: string, width = 1200): Promise<Buffer> {
+  const page = await newPage();
+  try {
+    await page.setContent("<!doctype html><html><body></body></html>");
+    const png: string = await page.evaluate(
+      async ({ data, mime, width }) => {
+        const img = new Image();
+        img.src = `data:${mime};base64,${data}`;
+        await img.decode();
+        const w0 = img.naturalWidth || 600, h0 = img.naturalHeight || 600;
+        const k = Math.min(1, width / w0) * (w0 < 300 ? 300 / w0 : 1);
+        const c = Object.assign(document.createElement("canvas"), { width: Math.round(w0 * k), height: Math.round(h0 * k) });
+        c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
+        return c.toDataURL("image/png").split(",")[1];
+      },
+      { data: Buffer.from(bytes).toString("base64"), mime, width },
+    );
+    return Buffer.from(png, "base64");
   } finally {
     await page.close().catch(() => undefined);
   }

@@ -33,6 +33,8 @@ export function useEmbed(ref: Ref | undefined, reloadKey = 0) {
     setReport(undefined);
     setError(undefined);
     setLoading(true);
+    // The server opens the same report in its headless browser: the assistant's first look is then quick.
+    void fetch("/api/powerbi/warm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: ref.id, groupId: ref.groupId, appId: ref.appId }) }).catch(() => undefined);
     let refresh: ReturnType<typeof setInterval> | undefined;
     void (async () => {
       try {

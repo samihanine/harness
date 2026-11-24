@@ -26,6 +26,8 @@ export const updateVisual = tool({
     // Formatting kept: objects and container objects of the old visual, the new title over them.
     built.visual = { ...built.visual, objects: { ...(old.visual?.objects ?? {}), ...((built.visual as any).objects ?? {}) }, visualContainerObjects: { ...(old.visual?.visualContainerObjects ?? {}), ...((built.visual as any).visualContainerObjects ?? {}) } };
     built.position = { ...old.position };
+    // The sort is kept when not given again (a new sort replaces it).
+    if (!a.sort && old.visual?.query?.sortDefinition && (built.visual as any).query) (built.visual as any).query.sortDefinition = old.visual.query.sortDefinition;
     if (!a.top && old.filterConfig) (built as any).filterConfig = old.filterConfig;
     writeJson(d, path, built);
     return `Visual ${old.name} updated (${type}).`;

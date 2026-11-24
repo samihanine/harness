@@ -26,7 +26,7 @@ import { createBlankReport } from "./pbi/new-report";
 import { createPage, listPages, readPageMarkdown, writePage } from "./confluence";
 import { analysisToExcel } from "./excel-export";
 import { engineFor } from "./data/engine";
-import { closeBrowser } from "./capture/browser";
+import { closeBrowser, warmReport } from "./capture/browser";
 import type { Analysis } from "@shared/analysis";
 import { hasApp, staticFile } from "./static";
 
@@ -136,6 +136,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     const meta = r.appId ? await pbi(`/apps/${r.appId}/reports/${r.id}`) : await pbi(`${scope(r.groupId)}/reports/${r.id}`);
     const ds = meta.datasetId ? await pbi(`/datasets/${meta.datasetId}`).catch(() => undefined) : undefined;
     return json({ id: r.id, groupId: r.groupId, appId: r.appId, name: meta.name, datasetId: meta.datasetId, datasetGroupId: ds?.workspaceId ?? undefined, webUrl: meta.webUrl, access: await accessOf(r) });
+  }
+  if (p === "/api/powerbi/warm" && m === "POST") {
+    // The report on screen opened in the headless browser ahead of time (the first picture is then quick).
+    const b = (await req.json()) as { id: string; groupId?: string; appId?: string };
+    if (GUID.test(b.id)) warmReport(b);
+    return json({ ok: true });
   }
   if (p === "/api/powerbi/report-structure") return json(await reportStructure(ref(url), url.searchParams.get("detail") === "full" ? "full" : "summary"));
   if (p === "/api/powerbi/model") {

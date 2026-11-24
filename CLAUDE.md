@@ -9,7 +9,8 @@ Presenter (create from the template: Preview / Edit / Context — or edit an upl
 Context), Reports (Structure / Context), Semantic models (Structure / DAX / Context), Confluence (Edit /
 Preview / Linked to), Settings (General / AI / Power BI / Confluence). Code layout: `docs/structure.md`.
 Run with `bun dev` (app on :3300, API on :3301), check with `bun run typecheck`; `bun run build && bun run start`
-serves the built app and the API on one port; `bun run export:server` makes one executable.
+serves the built app and the API on one port; `bun run export:server` makes one executable (the app, the
+headless browser's scripts and the template's pictures embedded: `scripts/build-server.ts`, `server/static.ts`).
 
 ## Architecture
 
@@ -57,5 +58,8 @@ serves the built app and the API on one port; `bun run export:server` makes one 
 - **Commits**: Sami is the only author. No `Co-Authored-By` line (nor any other mention of Claude) in
   commit messages or pull requests, whatever the default attribution says.
 - Write code like the surrounding code: short doc comments saying why, same naming and idioms.
-- Verify UI changes in the browser (`scripts/checks/`: `ui.ts`, `flow-*.ts`, `agent.ts` for an agent turn
-  from the command line) before saying they work.
+- Verify changes before saying they work: `scripts/checks/agent.ts <screen> '<scope>' '<message>' ['<answer>'…]`
+  runs agent turns from the command line (`HUB_PROVIDER` / `HUB_MODEL` to try another provider), `maia-mock.ts`
+  checks the TrustLayer format, `flow-*.ts` drive the UI in a headless browser (screenshots in `.local/`),
+  `deck.ts` / `deck-render.ts` / `montage.ts` render slides. `bun --watch` restarts the server when a server
+  file changes: do not edit server files while a check runs.

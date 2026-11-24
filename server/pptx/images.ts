@@ -1,6 +1,7 @@
 /** Pictures for PowerPoint: read from a URL, a server file (`file:<id>`), a data URL or the template's assets, with their size. */
 import { readStoredFile } from "../files";
 import { staticFile } from "../static";
+import { rasterize } from "../capture/browser";
 
 export type Picture = { data: string; mime: string; width: number; height: number };
 
@@ -50,7 +51,15 @@ export function loadPicture(src: string): Promise<Picture> {
         bytes = new Uint8Array(await r.arrayBuffer());
         mime = r.headers.get("content-type") ?? undefined;
       } else throw new Error(`Unknown picture source "${src}" (use https://…, file:<id> or data:)`);
-      const size = imageSize(bytes);
+      let size = imageSize(bytes);
+      // SVG, WebP, AVIF: drawn as PNG first (PowerPoint pictures here are PNG, JPEG or GIF).
+      if (!size) {
+        const text = new TextDecoder().decode(bytes.slice(0, 200)).trimStart();
+        const kind = /^(<\?xml|<svg)/i.test(text) ? "image/svg+xml" : mime && /^image\//.test(mime) ? mime.split(";")[0] : "image/webp";
+        bytes = new Uint8Array(await rasterize(bytes, kind).catch(() => new Uint8Array()));
+        mime = "image/png";
+        size = imageSize(bytes);
+      }
       if (!size) throw new Error(`Unsupported picture format for "${src.slice(0, 80)}" (PNG, JPEG or GIF)`);
       const type = mimeOf(bytes, mime);
       return { data: `${type};base64,${Buffer.from(bytes).toString("base64")}`, mime: type, ...size };
