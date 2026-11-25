@@ -1,7 +1,7 @@
 /** Settings in four tabs: General, AI, Power BI, Confluence. Secrets are written to the server, never read back. */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { BookOpenTextIcon, BotIcon, CheckIcon, DownloadIcon, ExternalLinkIcon, FolderOpenIcon, Loader2Icon, LogOutIcon, PaletteIcon, PlugZapIcon, PlusIcon, RotateCcwIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { BookOpenTextIcon, BotIcon, CheckIcon, DownloadIcon, ExternalLinkIcon, FolderOpenIcon, Loader2Icon, LogOutIcon, PaletteIcon, PlugZapIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
 import { DEFAULT_PROJECT, SCREENS, type Project, type Provider, type SettingsPatch } from "@shared/types";
 import { Workspace } from "@/components/workspace";
@@ -12,6 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Mascot, OUTFITS, OUTFIT_LABELS, STATES, STATE_LABELS, type MascotState, type Outfit } from "@/features/mascot";
 import { recordGif } from "@/features/mascot/gif";
 import { download, errorText, get, post } from "@/lib/api";
+import { refreshProject, useProjectsStatus } from "@/lib/projects";
 import { resetSettings, saveSettings, useSettings, type AppSettings } from "@/lib/settings";
 import { exportAll, importAll, list } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
@@ -291,6 +292,19 @@ function PowerBi({ s }: { s: AppSettings }) {
   );
 }
 
+/** A project's kept pages: how many, when they were read, "Refresh" and the folder in Confluence. */
+function ProjectPages({ id }: { id: string }) {
+  const status = useProjectsStatus()?.find((x) => x.id === id);
+  const [busy, setBusy] = useState(false);
+  return (
+    <div className="flex w-full items-center gap-2 pl-7 text-[12.5px] text-muted-foreground">
+      <span className="flex-1">{!status ? "Reading the pages…" : status.error ? <span className="text-destructive">{status.error}</span> : `${status.pages} pages kept${status.at ? ` · read ${new Date(status.at).toLocaleString()}` : ""}`}</span>
+      <Button variant="ghost" size="sm" disabled={busy} onClick={() => (setBusy(true), refreshProject(id).catch((e) => toast.error(errorText(e))).finally(() => setBusy(false)))}>{busy ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Refresh the pages</Button>
+      {status?.url && <Button variant="ghost" size="sm" asChild><a href={status.url} target="_blank" rel="noreferrer"><ExternalLinkIcon /> Open in Confluence</a></Button>}
+    </div>
+  );
+}
+
 function ConfluenceSettings({ s }: { s: AppSettings }) {
   const save = useSave();
   const c = s.confluence;
@@ -306,7 +320,7 @@ function ConfluenceSettings({ s }: { s: AppSettings }) {
         <Field label="Check"><TestButton path="/projects/test" body={{ folderId: c.folderId }} /></Field>
       </Card>
       <Card title="Projects" aside={<Button variant="outline" size="sm" onClick={() => saveProjects([...others, { id: crypto.randomUUID().slice(0, 8), name: `Project ${others.length + 2}`, folderId: "" }])}><PlusIcon /> Add a project</Button>}>
-        <div className="text-[12.5px] text-muted-foreground">A project is a Confluence folder: the pages of the projects chosen in the chat (top of the assistant) are given to it at the start of each conversation — rules, definitions, vocabulary.</div>
+        <div className="text-[12.5px] text-muted-foreground">A project is a Confluence folder: the pages of the projects chosen in the chat (top of the assistant) are given to it at the start of each conversation — rules, definitions, vocabulary. The pages are read once and kept: "Refresh the pages" after they change.</div>
         {c.projects.map((p) => (
           <div key={p.id} className="flex flex-wrap items-center gap-3 rounded-2xl border p-3">
             <FolderOpenIcon className="size-4 text-muted-foreground" />
@@ -322,6 +336,7 @@ function ConfluenceSettings({ s }: { s: AppSettings }) {
             )}
             <TestButton path="/projects/test" body={{ folderId: p.folderId }} />
             {p.id !== DEFAULT_PROJECT && <Button variant="ghost" size="icon-sm" onClick={() => saveProjects(others.filter((x) => x.id !== p.id))} aria-label="Remove"><Trash2Icon /></Button>}
+            <ProjectPages id={p.id} />
           </div>
         ))}
         {!c.projects.length && <div className="text-[13px] text-muted-foreground">No project: set the default project's folder above, or add one.</div>}

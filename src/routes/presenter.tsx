@@ -20,12 +20,13 @@ import { Present } from "@/features/presenter/present";
 import { EditDeck, EditPptx } from "@/features/presenter/edit";
 import { TemplateGallery } from "@/features/presenter/template-gallery";
 import { useChat } from "@/lib/chat";
+import { screenSearch, useItemParam } from "@/lib/params";
 import { api, download, errorText, fileUrl, post } from "@/lib/api";
 import { withStructure } from "@/lib/items";
-import { keepFile, keepServerFile, remove, save, useItems, useLocal, type Stored } from "@/lib/store";
+import { keepFile, keepServerFile, remove, save, useItems, type Stored } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/presenter")({ component: Presenter });
+export const Route = createFileRoute("/presenter")({ component: Presenter, validateSearch: screenSearch });
 
 type Deck = Stored["deck"];
 type Pptx = Stored["pptx"];
@@ -119,7 +120,7 @@ function Presenter() {
   const reports = useItems("report") ?? [];
   const datasets = useItems("dataset") ?? [];
   const docs: Doc[] = [...decks.map((d) => ({ ...d, kind: "deck" as const })), ...files.map((d) => ({ ...d, kind: "pptx" as const }))].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const [key, setKey] = useLocal("presenter:current", "");
+  const [key, setKey] = useItemParam("presenter:current");
   const doc = docs.find((d) => `${d.kind}:${d.id}` === key) ?? docs[0];
   const [tab, setTab] = useState<TabId>("edit");
   const [creating, setCreating] = useState(false);
@@ -217,7 +218,7 @@ function Presenter() {
       tab={tab}
       onTab={setTab}
       scroll={tab !== "edit"}
-      chat={<ChatPanel chat={chat} screen="presenter" disabled={doc ? undefined : "Create or import a presentation first"} placeholder={isDeck ? "Describe the deck, or the change to make…" : "What should change in the PowerPoint?"} suggestions={isDeck ? ["Make a 6-slide review with the key figures and Power BI visuals", "Add a slide comparing two regions with the same visual", "Shorten every slide to one key message"] : ["Refresh every Power BI screenshot with the current data", "Add a key figures slide from the template after slide 2", "Fix the typos and shorten the long texts"]} />}
+      chat={<ChatPanel chat={chat} screen="presenter" itemLabel={(id) => { const d = docs.find((x) => `${x.kind}:${x.id}` === id); return d && name(d); }} disabled={doc ? undefined : "Create or import a presentation first"} placeholder={isDeck ? "Describe the deck, or the change to make…" : "What should change in the PowerPoint?"} suggestions={isDeck ? ["Make a 6-slide review with the key figures and Power BI visuals", "Add a slide comparing two regions with the same visual", "Shorten every slide to one key message"] : ["Refresh every Power BI screenshot with the current data", "Add a key figures slide from the template after slide 2", "Fix the typos and shorten the long texts"]} />}
     >
       {!doc ? (
         <Empty icon={<PresentationIcon />} title="No presentation yet">

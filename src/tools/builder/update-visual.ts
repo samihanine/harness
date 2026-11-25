@@ -5,7 +5,7 @@ import { buildVisual } from "@server/pbi/visual-spec";
 import { reportOf } from "../helpers";
 import { tool } from "../tool";
 import { draft } from "./shared";
-import { visualArgs } from "./add-visual";
+import { extraSpec, visualArgs } from "./add-visual";
 
 const fieldsBack = (q: any) => Object.fromEntries(Object.entries<any>(q?.queryState ?? {}).map(([role, s]) => [role === "Rows" ? "Rows" : role, (s.projections ?? []).map((p: any) => p.queryRef)]));
 
@@ -22,8 +22,10 @@ export const updateVisual = tool({
     const type = a.type ?? old.visual?.visualType;
     const fields = a.fields ?? Object.fromEntries(Object.entries(fieldsBack(old.visual?.query)).map(([r, f]) => [r, (f as string[]).map((x) => x.replace(/^(\w+)\((.+)\.(.+)\)$/, "$1('$2'[$3])").replace(/^([^(]+)\.([^.]+)$/, "'$1'[$2]"))]));
     const title = a.title ?? (String(old.visual?.visualContainerObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value ?? "").replace(/^'(.*)'$/s, "$1") || undefined);
-    const built = buildVisual({ type, x: old.position.x, y: old.position.y, width: old.position.width, height: old.position.height, fields, title, sort: a.sort, top: a.top, text: a.text }, old.name, old.position.z ?? 0, info, reportMeasures(d), old.$schema ?? visualSchema(d));
+    const built = buildVisual({ type, x: old.position.x, y: old.position.y, width: old.position.width, height: old.position.height, fields, title, sort: a.sort, top: a.top, ...extraSpec(a) }, old.name, old.position.z ?? 0, info, reportMeasures(d), old.$schema ?? visualSchema(d));
     // Formatting kept: objects and container objects of the old visual, the new title over them.
+    // (a textbox keeps its text when no new one is given)
+    if (type === "textbox" && !a.text && old.visual?.objects?.general) (built.visual as any).objects = { ...((built.visual as any).objects ?? {}), general: old.visual.objects.general };
     built.visual = { ...built.visual, objects: { ...(old.visual?.objects ?? {}), ...((built.visual as any).objects ?? {}) }, visualContainerObjects: { ...(old.visual?.visualContainerObjects ?? {}), ...((built.visual as any).visualContainerObjects ?? {}) } };
     built.position = { ...old.position };
     // The sort is kept when not given again (a new sort replaces it).

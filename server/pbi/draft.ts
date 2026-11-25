@@ -4,16 +4,31 @@
  * conversation; discard_changes reads the report again.
  */
 import type { Ref } from "@shared/types";
-import { partText, reportDefinition, textPart, writeReportDefinition, type Part } from "./definitions";
+import { anyReportDefinition, partText, reportDefinition, textPart, writeReportDefinition, type Part } from "./definitions";
+import { isLegacy, legacyToPbir, pbirToLegacy, type Legacy } from "./legacy";
 import { modelInfo } from "./models";
 import type { ModelInfo } from "./model";
 
-export type Draft = { ref: Ref; parts: Part[]; changed: Set<string>; readAt: number };
+/** `legacy`: the report is saved in the old format (shown as PBIR files, written back into its report.json). */
+export type Draft = { ref: Ref; parts: Part[]; changed: Set<string>; readAt: number; legacy?: Legacy };
+
+/** The definition as PBIR files, whatever format the report is saved in. */
+export async function definitionFiles(ref: Ref): Promise<{ parts: Part[]; legacy?: Legacy }> {
+  try {
+    return { parts: await reportDefinition(ref) };
+  } catch (e) {
+    const any = await anyReportDefinition(ref).catch(() => {
+      throw e;
+    });
+    if (!isLegacy(any)) throw e;
+    return legacyToPbir(any);
+  }
+}
 
 export async function draftOf(scratch: Record<string, any>, ref: Ref): Promise<Draft> {
   const d = scratch.draft as Draft | undefined;
   if (d && d.ref.id === ref.id) return d;
-  const draft: Draft = { ref, parts: await reportDefinition(ref), changed: new Set(), readAt: Date.now() };
+  const draft: Draft = { ref, ...(await definitionFiles(ref)), changed: new Set(), readAt: Date.now() };
   scratch.draft = draft;
   return draft;
 }
@@ -87,7 +102,9 @@ export const visualSchema = (d: Draft) => {
 };
 
 export async function saveDraft(d: Draft) {
-  await writeReportDefinition(d.ref, d.parts);
+  await writeReportDefinition(d.ref, d.legacy ? pbirToLegacy(d.parts, d.legacy, d.changed) : d.parts);
+  // The next changes compare with what is saved now.
+  if (d.legacy) Object.assign(d, await definitionFiles(d.ref));
   const n = d.changed.size;
   d.changed.clear();
   return n;

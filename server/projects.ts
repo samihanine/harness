@@ -1,29 +1,64 @@
 /**
  * Projects: a name and a Confluence folder. The pages of the folders of the projects chosen in the chat
  * are the context of a conversation: given whole at its start up to a size, the others by their title
- * (the AI reads them with read_project_page). Pages are read again after a few minutes.
+ * (the AI reads them with read_project_page). Pages are read once and kept on disk (.local/projects):
+ * "Refresh" (Settings › Confluence, the chat's projects menu) reads them again.
  */
-import { listPages, readPageMarkdown } from "./confluence";
-import { projects } from "./settings";
+import { mkdir } from "node:fs/promises";
+import { join } from "node:path";
+import { folderUrl, listPages, readPageMarkdown } from "./confluence";
+import { DATA_DIR, projects } from "./settings";
 
 export type ProjectPage = { project: string; id: string; title: string; markdown: string };
 
 const MAX_CHARS = 80_000;
 const MAX_PAGES = 60;
-const cache = new Map<string, { at: number; pages: Promise<ProjectPage[]> }>();
+type Kept = { at: string; folderId: string; url?: string; pages: Omit<ProjectPage, "project">[] };
+const DIR = join(DATA_DIR, "projects");
+const memory = new Map<string, Promise<Kept>>();
+const fileOf = (folderId: string) => join(DIR, `${folderId.replace(/[^\w-]/g, "_")}.json`);
 
-async function folderPages(projectName: string, folderId: string): Promise<ProjectPage[]> {
-  const key = folderId;
-  const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.pages;
-  const pages = (async () => {
-    const list = (await listPages(folderId)).slice(0, MAX_PAGES);
-    const read = await Promise.all(list.map((p) => readPageMarkdown(p.id).then((x) => ({ project: projectName, id: p.id, title: x.title, markdown: x.markdown }), () => undefined)));
-    return read.filter((x): x is ProjectPage => !!x);
+/** Reads a folder's pages from Confluence and keeps them. */
+async function fetchFolder(folderId: string): Promise<Kept> {
+  const list = (await listPages(folderId)).slice(0, MAX_PAGES);
+  const read = await Promise.all(list.map((p) => readPageMarkdown(p.id).then((x) => ({ id: p.id, title: x.title, markdown: x.markdown }), () => undefined)));
+  const kept: Kept = { at: new Date().toISOString(), folderId, url: await folderUrl(folderId).catch(() => undefined), pages: read.filter((x) => !!x) };
+  await mkdir(DIR, { recursive: true });
+  await Bun.write(fileOf(folderId), JSON.stringify(kept));
+  return kept;
+}
+
+/** A folder's pages: kept (memory, then disk), else read once from Confluence; `fresh` reads them again. */
+function folder(folderId: string, fresh = false): Promise<Kept> {
+  if (!fresh && memory.has(folderId)) return memory.get(folderId)!;
+  const p = (async () => {
+    if (!fresh) {
+      const f = Bun.file(fileOf(folderId));
+      if (await f.exists()) return (await f.json()) as Kept;
+    }
+    return fetchFolder(folderId);
   })();
-  cache.set(key, { at: Date.now(), pages });
-  pages.catch(() => cache.delete(key));
-  return pages;
+  memory.set(folderId, p);
+  p.catch(() => memory.delete(folderId));
+  return p;
+}
+
+const folderPages = async (projectName: string, folderId: string): Promise<ProjectPage[]> => (await folder(folderId)).pages.map((p) => ({ ...p, project: projectName }));
+
+/** What is kept of each project: pages, when they were read, the folder's address in Confluence. */
+export async function projectsStatus(refresh?: string) {
+  const all = await projects();
+  return Promise.all(
+    all.map(async (p) => {
+      if (!p.folderId) return { id: p.id, pages: 0 };
+      try {
+        const k = await folder(p.folderId, p.id === refresh);
+        return { id: p.id, pages: k.pages.length, at: k.at, url: k.url };
+      } catch (e) {
+        return { id: p.id, pages: 0, error: e instanceof Error ? e.message : String(e) };
+      }
+    }),
+  );
 }
 
 /** The pages of the chosen projects (errors said, not thrown: a conversation starts anyway). */

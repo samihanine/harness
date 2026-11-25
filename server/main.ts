@@ -21,6 +21,7 @@ import { browserResult, forgetConversation, runChat } from "./agent/run";
 import { cleanFiles, fileInfo, readStoredFile, saveFile } from "./files";
 import { folderIdOf, publicSettings, resetSettings, settings, updateSettings } from "./settings";
 import { modelsOf, providerFor } from "./llm";
+import { projectsStatus } from "./projects";
 import { datasetCatalog, discoverDataset, discoverReport, reportCatalog } from "./pbi/catalog";
 import { reportsAccess, reportAccess } from "./pbi/access";
 import { reportStructure } from "./pbi/report-structure";
@@ -145,18 +146,32 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (p === "/api/powerbi/report") {
     const r = ref(url);
     if (!GUID.test(r.id)) return fail("Bad report id", 400);
-    const meta = r.appId ? await pbi(`/apps/${r.appId}/reports/${r.id}`) : await pbi(`${scope(r.groupId)}/reports/${r.id}`);
+    // From a link the workspace may be missing or wrong (a report shared with the user, an app): each place tried.
+    const known = (await reportCatalog().catch(() => [])).find((x) => x.id === r.id);
+    const tries = [
+      r.appId && (() => pbi(`/apps/${r.appId}/reports/${r.id}`)),
+      r.groupId && (() => pbi(`/groups/${r.groupId}/reports/${r.id}`)),
+      known?.appId && (() => pbi(`/apps/${known.appId}/reports/${r.id}`)),
+      known?.groupId && (() => pbi(`/groups/${known.groupId}/reports/${r.id}`)),
+      () => pbi(`/reports/${r.id}`),
+    ].filter(Boolean) as (() => Promise<any>)[];
+    let meta: any;
+    for (const t of tries) if ((meta = await t().catch(() => undefined))) break;
+    const at = { id: r.id, groupId: r.groupId ?? known?.groupId, appId: r.appId ?? known?.appId };
+    // Not readable by the API (shared to the user only): it can still be embedded by its id.
+    if (!meta) return json({ ...at, name: known?.name ?? `Report ${r.id.slice(0, 8)}`, datasetId: known?.datasetId, access: "view" });
     const ds = meta.datasetId ? await pbi(`/datasets/${meta.datasetId}`).catch(() => undefined) : undefined;
-    if (r.appId) discoverReport({ id: r.id, name: meta.name, appId: r.appId, workspace: "App", datasetId: meta.datasetId, webUrl: meta.webUrl });
-    return json({ id: r.id, groupId: r.groupId, appId: r.appId, name: meta.name, datasetId: meta.datasetId, datasetGroupId: ds?.workspaceId ?? undefined, webUrl: meta.webUrl, access: await reportAccess(r) });
+    if (at.appId) discoverReport({ id: r.id, name: meta.name, appId: at.appId, workspace: "App", datasetId: meta.datasetId, webUrl: meta.webUrl });
+    return json({ ...at, name: meta.name, datasetId: meta.datasetId, datasetGroupId: ds?.workspaceId ?? undefined, webUrl: meta.webUrl, access: await reportAccess(at) });
   }
   if (p === "/api/powerbi/dataset") {
     // A model from a pasted link (also an app's): its name, and it joins the list of models.
     const r = ref(url);
     if (!GUID.test(r.id)) return fail("Bad model id", 400);
     const meta = await pbi(`${scope(r.groupId)}/datasets/${r.id}`).catch(() => pbi(`/datasets/${r.id}`));
-    discoverDataset({ id: r.id, name: meta.name, groupId: r.groupId, workspace: r.groupId ? "Workspace" : "Shared" });
-    return json({ id: r.id, groupId: r.groupId, name: meta.name });
+    const groupId = r.groupId ?? meta.workspaceId ?? undefined;
+    discoverDataset({ id: r.id, name: meta.name, groupId, workspace: groupId ? "Workspace" : "Shared" });
+    return json({ id: r.id, groupId, name: meta.name });
   }
   if (p === "/api/powerbi/access" && m === "POST") return json(await reportsAccess((await req.json()) as { id: string; groupId?: string; appId?: string }[]));
   if (p === "/api/powerbi/test") {
@@ -186,6 +201,8 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   // Confluence (projects)
   if (p === "/api/confluence/pages" && m === "GET") return json(await listPages(url.searchParams.get("folder") || undefined));
+  if (p === "/api/projects/status" && m === "GET") return json(await projectsStatus());
+  if (p === "/api/projects/refresh" && m === "POST") return json(await projectsStatus(((await req.json()) as { id: string }).id));
   if (p === "/api/projects/test" && m === "POST") {
     const { folderId } = (await req.json()) as { folderId: string };
     const pages = await listPages(folderIdOf(folderId));

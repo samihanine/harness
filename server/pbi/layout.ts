@@ -1,8 +1,8 @@
 /**
  * The layout engine of the Builder: the AI gives rows of visuals (heights in px or shared, widths as
  * relative weights) and this code computes every position on the page — margins, even gaps, inside
- * the page, no overlap. Free positions stay possible (create_visual / move_visual) for the rare
- * layouts rows cannot say.
+ * the page, no overlap. Free positions (place_visuals) for what rows cannot say: layers (cards over a frame
+ * shape), headers, exact spots — snapped to a grid and checked the same way.
  */
 
 export type LayoutRow = { height?: number; items: { visual: string; width?: number }[] };
@@ -43,8 +43,27 @@ export function layoutRows(rows: LayoutRow[], page: { width: number; height: num
   return boxes;
 }
 
-/** Visuals overlapping or out of the page (positions as the definition holds them). */
-export function layoutProblems(visuals: { name: string; x: number; y: number; width: number; height: number; hidden?: boolean }[], page: { width: number; height: number }) {
+/** Rows laid out inside an area of the page (e.g. cards inside a frame): positions offset to it. */
+export function layoutRowsIn(rows: LayoutRow[], area: { x: number; y: number; width: number; height: number }, o: { margin?: number; gap?: number }) {
+  return layoutRows(rows, area, o).map((b) => ({ ...b, x: b.x + area.x, y: b.y + area.y }));
+}
+
+/** Decorations: what may lie under other visuals (a frame, a band, a logo, a title zone). */
+const LAYER = ["shape", "image", "basicShape", "textbox"];
+
+/** A free position snapped to the grid and kept inside the page. */
+export function snapBox<T extends { x: number; y: number; width: number; height: number }>(b: T, page: { width: number; height: number }, grid = 4): T {
+  const r = (n: number) => Math.round(n / grid) * grid;
+  const width = Math.min(page.width, Math.max(grid, r(b.width)));
+  const height = Math.min(page.height, Math.max(grid, r(b.height)));
+  return { ...b, width, height, x: Math.min(page.width - width, Math.max(0, r(b.x))), y: Math.min(page.height - height, Math.max(0, r(b.y))) };
+}
+
+/**
+ * Visuals overlapping or out of the page (positions as the definition holds them). Layers are allowed: a
+ * visual over a decoration (shape, image, text box) drawn under it (lower z).
+ */
+export function layoutProblems(visuals: { name: string; x: number; y: number; width: number; height: number; hidden?: boolean; type?: string; z?: number }[], page: { width: number; height: number }) {
   const shown = visuals.filter((v) => !v.hidden);
   const problems: string[] = [];
   for (const v of shown) if (v.x < 0 || v.y < 0 || v.x + v.width > page.width + 1 || v.y + v.height > page.height + 1) problems.push(`${v.name} goes out of the page (${page.width}×${page.height})`);
@@ -53,7 +72,8 @@ export function layoutProblems(visuals: { name: string; x: number; y: number; wi
       const [a, b] = [shown[i], shown[j]];
       const w = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
       const h = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
-      if (w > 4 && h > 4) problems.push(`${a.name} and ${b.name} overlap`);
+      const [under] = [a, b].sort((x, y) => (x.z ?? 0) - (y.z ?? 0));
+      if (w > 4 && h > 4 && !LAYER.includes(under.type ?? "")) problems.push(`${a.name} and ${b.name} overlap`);
     }
   return problems;
 }

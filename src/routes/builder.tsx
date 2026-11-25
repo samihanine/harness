@@ -1,5 +1,6 @@
 /** Builder: the assistant builds and changes a Power BI report (its PBIR definition), shown live on the right. */
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReportAccess } from "@shared/types";
 import { createFileRoute } from "@tanstack/react-router";
 import { BarChart3Icon, BlocksIcon, CheckIcon, DatabaseIcon, ExternalLinkIcon, FileJsonIcon, LibraryIcon, Loader2Icon, PencilRulerIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
@@ -13,15 +14,16 @@ import { ReportFrame } from "@/features/views/report-view";
 import { ModelView } from "@/features/views/model-view";
 import { StructureView } from "@/features/views/structure-view";
 import { editorActions } from "@/tools/browser/editor-actions";
-import { useEmbed, type Report } from "@/features/powerbi/embed";
+import { captureView, showView, useEmbed, type Report } from "@/features/powerbi/embed";
 import { reportActions } from "@/tools/browser/report-actions";
 import { useChat } from "@/lib/chat";
+import { screenSearch } from "@/lib/params";
 import { errorText, get, post } from "@/lib/api";
 import { save, useItems, useLocal } from "@/lib/store";
 import { withStructure } from "@/lib/items";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/builder")({ component: Builder });
+export const Route = createFileRoute("/builder")({ component: Builder, validateSearch: screenSearch });
 
 type TabId = "report" | "structure" | "model" | "references";
 
@@ -122,8 +124,17 @@ function Builder() {
     scope: async () => ({ report: await withStructure(current), references: await Promise.all(references.map(async (r) => (await withStructure(r))!)) }),
     actions: () => ({ ...reportActions(() => reportRef.current, embed.ready), ...editorActions(() => reportRef.current, embed.ready) }),
     onEffect: (name) => name === "reload" && setReload((n) => n + 1),
+    view: () => captureView(reportRef.current),
+    restoreView: (state) => showView(() => reportRef.current, current!.id, embed.ready, state),
   });
   const model = useMemo(() => (current?.datasetId ? { id: current.datasetId, groupId: current.datasetGroupId } : undefined), [current?.datasetId, current?.datasetGroupId]);
+  // A report kept as not editable is checked again (its rights, or what the Builder can write, may have changed).
+  useEffect(() => {
+    if (!current || current.access === "edit") return;
+    void post<Record<string, ReportAccess>>("/powerbi/access", [{ id: current.id, groupId: current.groupId, appId: current.appId }]).then((a) => {
+      if (a[current.id] === "edit") void save("report", { ...current, access: "edit" });
+    }, () => undefined);
+  }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <Workspace
       screen="builder"
@@ -143,7 +154,7 @@ function Builder() {
       tab={tab}
       onTab={setTab}
       scroll={false}
-      chat={<ChatPanel chat={chat} screen="builder" disabled={!current ? "Choose or create a report first" : current.access === "view" ? "This report is view only: choose one you can edit, or try the editor mode" : undefined} placeholder="Describe the page to build, or drop a screenshot to redo…" suggestions={["Build an overview page with the key figures", "Redo the page of this screenshot (attach it)", "Make this page look like my reference report"]} />}
+      chat={<ChatPanel chat={chat} screen="builder" itemLabel={(id) => all.find((r) => r.id === id)?.name} disabled={!current ? "Choose or create a report first" : current.access === "view" ? "This report is view only: choose one you can edit, or try the editor mode" : undefined} placeholder="Describe the page to build, or drop a screenshot to redo…" suggestions={["Build an overview page with the key figures", "Redo the page of this screenshot (attach it)", "Make this page look like my reference report"]} />}
     >
       {!current ? (
         <Empty icon={<BlocksIcon />} title="Choose or create a report">Pick a report you can edit, or create one on a semantic model: the assistant builds its pages.<div><AddButton kind="report" onAdded={select} editable /></div></Empty>

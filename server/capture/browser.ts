@@ -35,7 +35,8 @@ async function newPage(): Promise<Page> {
     throw e;
   });
   const b = await browser;
-  context ??= await b.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 });
+  // Drawn at twice the resolution: a visual alone is pictured sharp (pages are taken at 1x).
+  context ??= await b.newContext({ viewport: { width: 1280, height: 720 }, deviceScaleFactor: 2 });
   return context.newPage();
 }
 
@@ -72,6 +73,8 @@ async function embedded(ref: Ref, width: number, height: number): Promise<Embedd
     await page.setViewportSize({ width, height });
     await page.setContent(`<!doctype html><html><body style="margin:0;background:#fff"><div id="r" style="width:${width}px;height:${height}px"></div></body></html>`);
     await page.addScriptTag({ content: await script("powerbi-client/dist/powerbi.min.js") });
+    // The authoring SDK reads the fields of each visual (also in view mode): the structure of view-only reports.
+    await page.addScriptTag({ content: await script("powerbi-report-authoring/dist/powerbi-report-authoring.min.js") }).catch(() => undefined);
     const token = await accessToken("powerbi");
     await page.evaluate(
       ({ id, url, token }) =>
@@ -92,7 +95,13 @@ async function embedded(ref: Ref, width: number, height: number): Promise<Embedd
           const timer = setTimeout(() => reject(new Error("The report did not load in 60 s")), 60_000);
           // Ready when the first page has drawn, not just loaded.
           report.on("rendered", () => (clearTimeout(timer), resolve()));
-          report.on("error", (e: any) => (clearTimeout(timer), reject(new Error(e.detail?.detailedMessage ?? e.detail?.message ?? "Could not load the report"))));
+          // A visual that cannot draw (a wrong field, no data) does not stop the report: only a failed load does.
+          report.on("error", (e: any) => {
+            const text = `${e.detail?.message ?? ""} ${e.detail?.detailedMessage ?? ""}`;
+            if (/visual/i.test(text) && !/LoadReport/i.test(text)) return;
+            clearTimeout(timer);
+            reject(new Error(e.detail?.detailedMessage ?? e.detail?.message ?? "Could not load the report"));
+          });
         }),
       { id: ref.id, url: embedUrl(ref), token },
     );
@@ -208,7 +217,7 @@ export async function captureReport(ref: Ref, o: CaptureOptions = {}): Promise<{
   e.state = o.state && !o.filters?.length ? o.state : undefined;
   // Visuals draw a little after "rendered" (animations).
   await e.page.waitForTimeout(800);
-  const png = await e.page.screenshot({ type: "png", clip: info.clip ?? { x: 0, y: 0, width, height } });
+  const png = await e.page.screenshot({ type: "png", clip: info.clip ?? { x: 0, y: 0, width, height }, scale: info.clip ? "device" : "css" });
   return { png, ...info };
 }
 
@@ -217,7 +226,12 @@ export async function embeddedStructure(ref: Ref) {
   const e = await embedded(ref, 1280, 720);
   return e.page.evaluate(async () => {
     const report = (window as any).report;
-    const field = (t: any) => (!t ? "?" : t.measure ? `${t.table}[${t.measure}]` : `${t.table}[${t.column ?? t.hierarchyLevel ?? t.hierarchy}]`);
+    const field = (t: any) => (!t ? "?" : t.measure ? `${t.table}[${t.measure}]` : `${t.aggregationFunction ? `${t.aggregationFunction}(` : ""}${t.table}[${t.column ?? t.hierarchyLevel ?? t.hierarchy}]${t.aggregationFunction ? ")" : ""}`);
+    const filterOf = (f: any) => {
+      const targets = Array.isArray(f.target) ? f.target : [f.target];
+      const what = f.values?.length ? `${f.operator ?? "In"} ${JSON.stringify(f.values).slice(0, 300)}` : f.conditions?.length ? f.conditions.map((c: any) => `${c.operator} ${JSON.stringify(c.value ?? "")}`).join(` ${f.logicalOperator ?? "And"} `) : f.hierarchyData ? "hierarchy selection" : f.operator === "All" || !f.values ? "all" : "";
+      return { field: targets.map(field).join(" > "), type: f.filterType === 1 ? "basic" : f.filterType === 0 ? "advanced" : f.filterType === 9 ? "hierarchy" : f.filterType === 5 ? "topN" : String(f.filterType ?? ""), ...(what ? { selection: what } : {}) };
+    };
     const pages = await report.getPages();
     const out: any[] = [];
     for (const p of pages) {
@@ -228,18 +242,34 @@ export async function embeddedStructure(ref: Ref) {
         displayName: p.displayName,
         hidden: p.visibility === 1,
         size: p.defaultSize,
-        filters: filters.map((f: any) => ({ field: field(f.target), values: f.values, operator: f.operator })),
+        filters: filters.map(filterOf),
         visuals: await Promise.all(
           visuals.map(async (v: any) => {
-            const slicer = v.type === "slicer" ? await v.getSlicerState().catch(() => null) : null;
+            const slicer = v.type === "slicer" || v.type === "advancedSlicerVisual" ? await v.getSlicerState().catch(() => null) : null;
             const vf = await v.getFilters().catch(() => []);
-            return { name: v.name, type: v.type, title: v.title, x: Math.round(v.layout.x), y: Math.round(v.layout.y), width: Math.round(v.layout.width), height: Math.round(v.layout.height), hidden: v.layout.displayState?.mode === 1, ...(slicer ? { slicerOn: (slicer.targets ?? []).map(field) } : {}), ...(vf.length ? { filters: vf.map((f: any) => field(f.target)) } : {}) };
+            // Fields by role (the authoring SDK; absent on custom visuals).
+            const fields: Record<string, string[]> = {};
+            const caps = typeof v.getCapabilities === "function" ? await v.getCapabilities().catch(() => null) : null;
+            for (const role of caps?.dataRoles ?? []) {
+              const f = await v.getDataFields(role.name).catch(() => []);
+              if (f.length) fields[role.name] = f.map(field);
+            }
+            return {
+              name: v.name,
+              type: v.type,
+              title: v.title,
+              position: { x: Math.round(v.layout.x), y: Math.round(v.layout.y), width: Math.round(v.layout.width), height: Math.round(v.layout.height) },
+              ...(v.layout.displayState?.mode === 1 ? { hidden: true } : {}),
+              ...(Object.keys(fields).length ? { fields } : {}),
+              ...(slicer ? { slicerOn: (slicer.targets ?? []).map(field), ...(slicer.filters?.length ? { selected: slicer.filters.map(filterOf) } : {}) } : {}),
+              ...(vf.length ? { filters: vf.map(filterOf) } : {}),
+            };
           }),
         ),
       });
     }
     const filters = await report.getFilters().catch(() => []);
-    return { pages: out, reportFilters: filters.map((f: any) => ({ field: field(f.target), values: f.values, operator: f.operator })) };
+    return { pages: out, reportFilters: filters.map(filterOf) };
   });
 }
 

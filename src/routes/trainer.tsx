@@ -10,13 +10,14 @@ import { Button } from "@/components/ui/button";
 import { ReportFrame } from "@/features/views/report-view";
 import { ModelView } from "@/features/views/model-view";
 import { StructureView } from "@/features/views/structure-view";
-import { useEmbed, type Report } from "@/features/powerbi/embed";
+import { captureView, showView, useEmbed, type Report } from "@/features/powerbi/embed";
 import { reportActions } from "@/tools/browser/report-actions";
 import { useChat } from "@/lib/chat";
+import { screenSearch } from "@/lib/params";
 import { withStructure } from "@/lib/items";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/trainer")({ component: Trainer });
+export const Route = createFileRoute("/trainer")({ component: Trainer, validateSearch: screenSearch });
 
 type TabId = "report" | "structure" | "model";
 
@@ -26,7 +27,14 @@ function Trainer() {
   const embed = useEmbed(current);
   const reportRef = useRef<Report | undefined>(undefined);
   reportRef.current = embed.report;
-  const chat = useChat({ screen: "trainer", item: current?.id ?? "none", scope: async () => ({ report: await withStructure(current) }), actions: () => reportActions(() => reportRef.current, embed.ready) });
+  const chat = useChat({
+    screen: "trainer",
+    item: current?.id ?? "none",
+    scope: async () => ({ report: await withStructure(current) }),
+    actions: () => reportActions(() => reportRef.current, embed.ready),
+    view: () => captureView(reportRef.current),
+    restoreView: (state) => showView(() => reportRef.current, current!.id, embed.ready, state),
+  });
   const model = useMemo(() => (current?.datasetId ? { id: current.datasetId, groupId: current.datasetGroupId } : undefined), [current?.datasetId, current?.datasetGroupId]);
   return (
     <Workspace
@@ -42,7 +50,7 @@ function Trainer() {
       tab={tab}
       onTab={setTab}
       scroll={false}
-      chat={<ChatPanel chat={chat} screen="trainer" disabled={current ? undefined : "Choose a report first"} placeholder="Ask about the report, or what to show…" suggestions={["Explain this page", "Show me the figures for my biggest region", "What changed most compared to last year?"]} />}
+      chat={<ChatPanel chat={chat} screen="trainer" itemLabel={(id) => items.find((r) => r.id === id)?.name} disabled={current ? undefined : "Choose a report first"} placeholder="Ask about the report, or what to show…" suggestions={["Explain this page", "Show me the figures for my biggest region", "What changed most compared to last year?"]} />}
     >
       {!current ? (
         <Empty icon={<GraduationCapIcon />} title="Choose a report">Add a report you can open in Power BI (a workspace or an app): the assistant reads it, filters it and explains it with you.<div><AddButton kind="report" onAdded={select} /></div></Empty>

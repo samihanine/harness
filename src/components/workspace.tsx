@@ -1,8 +1,8 @@
 /**
- * Every screen: the assistant on the left (foldable), and a card on the right with the screen's title
- * and chosen item, its tabs as pills, its actions, and the tab's content.
+ * Every screen: the assistant on the left (foldable, its width dragged by its edge), and a card on the right
+ * with the screen's title and chosen item, its tabs as pills, its actions, and the tab's content.
  */
-import { cloneElement, isValidElement, type ReactNode } from "react";
+import { cloneElement, isValidElement, useRef, type ReactNode } from "react";
 import { PanelLeftOpenIcon } from "lucide-react";
 import { Pills } from "./common";
 import { useLocal } from "@/lib/store";
@@ -28,16 +28,42 @@ export function Workspace<T extends string>(o: {
   scroll?: boolean;
 }) {
   const [folded, setFolded] = useLocal(`chat-folded:${o.screen}`, false);
+  // The assistant's width (px, every screen), dragged by the handle between the two cards.
+  const [width, setWidth] = useLocal<number | null>("chat-width", null);
+  const panel = useRef<HTMLDivElement>(null);
+  const drag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const start = e.clientX;
+    const from = panel.current?.getBoundingClientRect().width ?? 400;
+    const move = (ev: PointerEvent) => {
+      const next = Math.round(Math.min(window.innerWidth * 0.6, Math.max(300, from + ev.clientX - start)));
+      if (panel.current) panel.current.style.width = `${next}px`;
+    };
+    const up = (ev: PointerEvent) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.style.cursor = "";
+      setWidth(Math.round(Math.min(window.innerWidth * 0.6, Math.max(300, from + ev.clientX - start))));
+    };
+    document.body.style.cursor = "col-resize";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   return (
-    <div className="flex h-full gap-3">
+    <div className="flex h-full gap-1">
       {o.chat &&
         (folded ? (
-          <button onClick={() => setFolded(false)} className="flex w-12 shrink-0 flex-col items-center gap-3 rounded-3xl border bg-card py-4 text-muted-foreground hover:text-foreground" aria-label="Open the assistant">
+          <button onClick={() => setFolded(false)} className="mr-2 flex w-12 shrink-0 flex-col items-center gap-3 rounded-3xl border bg-card py-4 text-muted-foreground hover:text-foreground" aria-label="Open the assistant">
             <PanelLeftOpenIcon className="size-5" />
             <span className="text-[12px] font-medium [writing-mode:vertical-rl]">Assistant</span>
           </button>
         ) : (
-          <div className="flex w-[min(420px,38vw)] min-w-[320px] shrink-0 flex-col overflow-hidden rounded-3xl border bg-card">{withFold(o.chat, () => setFolded(true))}</div>
+          <>
+            <div ref={panel} style={width ? { width } : undefined} className={cn("flex min-w-[300px] max-w-[60vw] shrink-0 flex-col overflow-hidden rounded-3xl border bg-card", !width && "w-[min(420px,38vw)]")}>{withFold(o.chat, () => setFolded(true))}</div>
+            <div onPointerDown={drag} onDoubleClick={() => setWidth(null)} title="Drag to resize the assistant (double-click: default width)" className="group flex w-2 shrink-0 cursor-col-resize items-center justify-center">
+              <span className="h-10 w-1 rounded-full bg-border transition-colors group-hover:bg-foreground/30" />
+            </div>
+          </>
         ))}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border bg-card">
         {/* As tall as the chat's header: the two lines meet. */}

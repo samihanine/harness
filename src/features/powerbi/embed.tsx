@@ -2,7 +2,7 @@
  * A Power BI report embedded in the page (powerbi-client), with the Power BI token from the server
  * (refreshed before it expires): in view mode, or in the editor (`edit`: the Builder's editor mode, with
  * powerbi-report-authoring). `ready()` resolves once the report has drawn: the assistant's actions wait
- * for it. The report fits the space it has when it opens.
+ * for it. The report takes the width of its space when it opens and at each page change.
  */
 import { useEffect, useRef, useState } from "react";
 import type * as PbiClient from "powerbi-client";
@@ -26,15 +26,11 @@ export async function embedToken() {
 
 export const embedUrl = (ref: Ref) => `https://app.powerbi.com/reportEmbed?reportId=${ref.id}${ref.appId ? `&appId=${ref.appId}` : ref.groupId ? `&groupId=${ref.groupId}` : ""}`;
 
-/** The page fitted to the frame: whole when the frame is wider than the page, else as wide as the frame (scrolls). */
-export async function fitReport(report: Report, el: HTMLElement | null) {
+/** The page as wide as the frame (a tall page scrolls): the "100 %" of the zoom, on load and at each page change. */
+export async function fitReport(report: Report) {
   const { pbi } = await powerbi();
-  const page = (await report.getPages().catch(() => [])).find((p) => p.isActive);
-  const size = page?.defaultSize ?? { width: 1280, height: 720 };
-  const box = el?.getBoundingClientRect();
-  const wide = !box || box.width / Math.max(1, box.height) >= (size.width ?? 16) / (size.height ?? 9);
+  await report.updateSettings({ layoutType: pbi.models.LayoutType.Custom, customLayout: { displayOption: pbi.models.DisplayOption.FitToWidth } }).catch(() => undefined);
   await report.setZoom(1).catch(() => undefined);
-  await report.updateSettings({ layoutType: pbi.models.LayoutType.Custom, customLayout: { displayOption: wide ? pbi.models.DisplayOption.FitToPage : pbi.models.DisplayOption.FitToWidth } }).catch(() => undefined);
 }
 
 export function useEmbed(ref: Ref | undefined, reloadKey = 0, mode: "view" | "edit" = "view") {
@@ -75,7 +71,7 @@ export function useEmbed(ref: Ref | undefined, reloadKey = 0, mode: "view" | "ed
           tokenType: pbi.models.TokenType.Aad,
           permissions: edit ? pbi.models.Permissions.All : pbi.models.Permissions.Read,
           viewMode: edit ? pbi.models.ViewMode.Edit : pbi.models.ViewMode.View,
-          settings: { panes: { filters: { visible: true, expanded: false }, pageNavigation: { visible: true } }, background: pbi.models.BackgroundType.Transparent, layoutType: pbi.models.LayoutType.Custom, customLayout: { displayOption: pbi.models.DisplayOption.FitToPage } },
+          settings: { panes: { filters: { visible: true, expanded: false }, pageNavigation: { visible: true } }, background: pbi.models.BackgroundType.Transparent, layoutType: pbi.models.LayoutType.Custom, customLayout: { displayOption: pbi.models.DisplayOption.FitToWidth } },
         }) as Report;
         let first = true;
         r.on("loaded", async () => {
@@ -83,8 +79,9 @@ export function useEmbed(ref: Ref | undefined, reloadKey = 0, mode: "view" | "ed
           // The first view, to come back to (reset_view).
           (r as Report & { initialState?: string }).initialState = (await r.bookmarksManager.capture().catch(() => undefined))?.state;
           setReport(r);
-          void fitReport(r, el);
+          void fitReport(r);
         });
+        r.on("pageChanged", () => !cancelled && void fitReport(r));
         r.on("rendered", () => {
           if (cancelled || !first) return;
           first = false;
@@ -114,3 +111,14 @@ export function useEmbed(ref: Ref | undefined, reloadKey = 0, mode: "view" | "ed
     Promise.race([readyRef.current!.promise, new Promise<void>((_, reject) => setTimeout(() => reject(new Error("The report on screen did not finish loading in 60 s.")), 60_000))]);
   return { element, report, error, loading, ready };
 }
+
+/** A conversation's kept view (bookmark state) shown again, once the report it is about is the one on screen. */
+export async function showView(report: () => Report | undefined, id: string, ready: () => Promise<void>, state: string) {
+  const until = Date.now() + 60_000;
+  while (Date.now() < until && report()?.getId() !== id) await new Promise((r) => setTimeout(r, 300));
+  await ready();
+  await report()?.bookmarksManager.applyState(state);
+}
+
+/** The report's view now (page, filters, slicers) as a bookmark state. */
+export const captureView = async (report: Report | undefined) => (report ? (await report.bookmarksManager.capture()).state : undefined);

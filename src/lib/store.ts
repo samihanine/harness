@@ -1,8 +1,8 @@
 /**
  * What the browser keeps (IndexedDB): the items of each screen (reports, models, analyses, decks,
  * PowerPoints), the conversations, and the files sent to the server (sent again when the server no
- * longer has them). Everything can be exported and imported from Settings. Context links (Confluence
- * pages linked to an item) and small choices live in localStorage.
+ * longer has them). Everything can be exported and imported from Settings. Small choices (the projects
+ * chosen, the last item of each screen, the assistant's width) live in localStorage.
  */
 import { createStore, del, entries, get, set } from "idb-keyval";
 import { useEffect, useState, useSyncExternalStore } from "react";
@@ -20,7 +20,12 @@ export type Stored = {
   deck: { id: string; title: string; markdown: string; updatedAt: string; reportIds?: string[]; datasetIds?: string[] };
   /** An imported PowerPoint (each change a new file: `history` to go back). */
   pptx: { id: string; name: string; fileId: string; history: string[]; updatedAt: string; reportIds?: string[]; datasetIds?: string[] };
-  conversation: { id: string; screen: ScreenId; item: string; title: string; items: ChatItem[]; updatedAt: string };
+  /**
+   * A conversation with a screen's assistant, about one item. `view`: the report's state when it last
+   * answered (page, filters, slicers: a bookmark), shown again when the conversation is opened; `rating` and
+   * `comment`: the user's feedback.
+   */
+  conversation: { id: string; screen: ScreenId; item: string; title: string; items: ChatItem[]; updatedAt: string; createdAt?: string; view?: string; rating?: "up" | "down"; comment?: string };
   /** A semantic model's structure (tables, columns with value examples, measures, relationships), read once. */
   model: { id: string; info: unknown; at: string };
 };

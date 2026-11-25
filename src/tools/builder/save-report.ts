@@ -14,7 +14,9 @@ export const saveReport = tool({
   async run(a, ctx) {
     const d = await draft(ctx);
     if (!d.changed.size) return "Nothing to save.";
-    const problems = pagesOf(d).flatMap((p) => layoutProblems(visualsOf(d, p.name).filter((v) => v.json.position && !v.json.parentGroupName).map((v) => ({ name: v.json.name, ...v.json.position, hidden: v.json.isHidden })), { width: p.width ?? 1280, height: p.height ?? 720 }).map((x) => `"${p.displayName}": ${x}`));
+    // Only the pages changed in this draft are checked (what was already on the others is the user's).
+    const touched = (name: string) => [...d.changed].some((c) => c === `definition/pages/${name}` || c.startsWith(`definition/pages/${name}/`));
+    const problems = pagesOf(d).filter((p) => touched(p.name)).flatMap((p) => layoutProblems(visualsOf(d, p.name).filter((v) => v.json.position && !v.json.parentGroupName).map((v) => ({ name: v.json.name, ...v.json.position, hidden: v.json.isHidden, type: v.json.visual?.visualType })), { width: p.width ?? 1280, height: p.height ?? 720 }).map((x) => `"${p.displayName}": ${x}`));
     if (problems.length && !a.force) throw new Error(`Not saved, the layout has problems (fix them with layout_page, or save with force when intended):\n${problems.join("\n")}`);
     ctx.status("Saving the report…");
     const n = await saveDraft(d);

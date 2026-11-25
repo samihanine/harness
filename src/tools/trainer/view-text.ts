@@ -3,7 +3,7 @@ export type ViewState = {
   pages: { name: string; displayName: string; active: boolean; hidden?: boolean }[];
   reportFilters: string[];
   pageFilters: string[];
-  slicers: { name: string; title?: string; fields: { table: string; column: string }[]; selected: string; hidden?: boolean }[];
+  slicers: { name: string; title?: string; fields: { table: string; column: string }[]; targets?: Record<string, string>[]; selected: string; hidden?: boolean }[];
   visuals: { name: string; type: string; title?: string }[];
 };
 

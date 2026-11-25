@@ -9,8 +9,10 @@ import { reportStructure } from "../pbi/report-structure";
 
 const cache = new Map<string, { at: number; png: Promise<Buffer> }>();
 
-export async function zoneReport(report: string) {
+export async function zoneReport(given: string) {
   const list = await reportCatalog();
+  // A report's address from the browser works too.
+  const report = given.match(/(?:reports\/|reportId=)([0-9a-f-]{36})/i)?.[1].toLowerCase() ?? given.trim();
   const r = list.find((x) => x.id === report) ?? list.find((x) => x.name.toLowerCase() === report.toLowerCase()) ?? list.find((x) => x.name.toLowerCase().includes(report.toLowerCase()));
   if (!r) throw new Error(`no report "${report}"`);
   return r;

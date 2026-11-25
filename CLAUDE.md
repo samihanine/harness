@@ -2,10 +2,10 @@
 
 Hub v2: a Bun server (`server/`) and a React app (`src/`, TanStack Router + Vite) to work on Power BI
 reports, Excel-style analyses linked to Power BI, and PowerPoint decks, with AI assistants that use tools.
-Every screen is a `Workspace` (`src/components/workspace.tsx`): the assistant on the left (foldable; its header
-chooses the projects), the screen's title and item (renamable), its tabs as pills, its content. Screens: Trainer
-(Report / Structure / Semantic model), Builder (Report / Structure / Semantic model / References), Data Scientist
-(Analysis / Sources / DAX), Presenter (a deck from the template or an imported PowerPoint: Edit / Present /
+Every screen is a `Workspace` (`src/components/workspace.tsx`): the assistant on the left (foldable, resizable; its
+header chooses the projects, the conversation, its feedback), the screen's title and item (renamable), its tabs as
+pills, its content. Screens: Trainer (Report / Structure / Semantic model), Builder (Report / Structure / Semantic
+model / References), Data Scientist (Analysis / Semantic models / Excel / DAX), Presenter (a deck from the template or an imported PowerPoint: Edit / Present /
 Template / Reports / Models), Settings (General / AI / Power BI / Confluence with the projects). Code layout:
 `docs/structure.md`.
 Run with `bun dev` (app on :3300, API on :3301), check with `bun run typecheck`; `bun run build && bun run start`
@@ -43,8 +43,15 @@ headless browser's scripts and the template's pictures embedded: `scripts/build-
 
 - Deterministic code over free generation: the AI fills specs and code writes the result (visuals:
   `server/pbi/visual-spec.ts`, layout: `server/pbi/layout.ts`, decks: markdown → `server/pptx/deck.ts`).
-- Builder: the report's PBIR definition is a draft per conversation (`server/pbi/draft.ts`), saved by
-  `save_report` (layout checked), then the embed reloads.
+- Builder: the report's definition is a draft per conversation (`server/pbi/draft.ts`), saved by `save_report`
+  (layout of the changed pages checked), then the embed reloads. Reports in the old format (PBIR-Legacy) are shown
+  to the tools as PBIR and written back into their report.json, only what changed (`server/pbi/legacy.ts`,
+  `scripts/checks/legacy.ts`). Designed pages: text boxes, pictures by link, shapes, buttons with icons and actions,
+  free positions with layers (`place_visuals`), one visual's look and series colors and colors from a measure
+  (`format_visual`).
+- Trainer: a hierarchy slicer takes a tree (a date range becomes its years, months, days); a page filter is set only
+  once the refusing slicer is cleared. `visual_data` falls back to DAX from the visual's fields and filters when
+  Power BI refuses the export.
 - Data Scientist: sources (DAX results, Excel / CSV sheets) become tables of an in-memory SQLite database
   (`server/data/engine.ts`); steps are SQL views; the analysis (`shared/analysis.ts`) is blocks computed from SQL,
   exported to Excel (`server/excel-export.ts`).
@@ -53,19 +60,27 @@ headless browser's scripts and the template's pictures embedded: `scripts/build-
   Presenter edit: the uploaded .pptx changed in place (`server/pptx/ooxml.ts`), each change a new version.
 - Context: projects (Settings › Confluence › Projects: a name and a Confluence folder; the default one is
   CONFLUENCE_FOLDER_ID). The projects chosen in the chat header (global, several) give their pages at the start
-  of a conversation (`server/projects.ts`, up to a size; the others by title, `read_project_page`).
+  of a conversation (`server/projects.ts`, up to a size; the others by title, `read_project_page`). Pages are read
+  once and kept in `.local/projects` ("Refresh the pages" reads them again); the folder opens in Confluence.
+- Conversations: the item and the conversation are in the address (`?item=…&c=…`, `src/lib/params.ts`), so each
+  browser tab has its own; each conversation runs on its own (several at once). The history lists every
+  conversation of the assistant: opening one shows its item and the report's view kept with it (a bookmark).
+  Conversations can be rated, commented and downloaded as JSON.
 - Reports and models: their structure is read when they are added and kept in the browser (`src/lib/items.ts`,
   "Refresh" reads it again), sent with the conversation: the tools use it without reading it again. The catalog
-  lists workspaces and apps (`server/pbi/catalog.ts`); a pasted link adds an app's report or model.
-- Report access (`server/pbi/access.ts`): "edit" (PBIR definition: the Builder's draft tools), "editor" (other
-  formats: the Builder works live in the embedded Power BI editor, `src/tools/editor/`, browser side
-  `src/tools/browser/editor-actions.ts`), "view". The Builder's "Add" lists editable reports, checked page by page.
+  lists workspaces and apps (`server/pbi/catalog.ts`); any pasted link (the browser's address of a report or a
+  model, an app's, an embed link) adds it, and a report's link adds its model in the Data Scientist.
+- Report access (`server/pbi/access.ts`): "edit" (a readable definition, PBIR or PBIR-Legacy: the Builder's draft
+  tools), "editor" (no definition but editable in Power BI: the Builder works live in the embedded editor, whose API
+  only formats visuals' frames, `src/tools/editor/`, browser side `src/tools/browser/editor-actions.ts`,
+  `scripts/checks/authoring-probe.ts`), "view". The Builder's "Add" lists editable reports, checked page by page.
 - Presenter: Power BI layouts (report, visual, compare, tutorial: `report:`, `page:`, `visual:`, `filters:`) are
   live in full screen (`src/features/presenter/present.tsx`) and pictures in the PowerPoint; an imported
   PowerPoint takes new slides drawn from the template (`Pptx.importSlide`). Template pictures and the vector logo:
   `assets/template/` (cover.jpg, agenda.jpg, section.jpg, end.jpg, logo.svg).
 - Settings: the .env file gives the defaults (`.env.example`), changes in Settings are saved over them, "Reset to
   .env" forgets them. Settings › AI and Power BI have "Test the connection".
+- Report viewer: the report takes the width of its area (its "100 %"), on load and at each page change.
 - UI: shadcn components (`src/components/ui`), tokens in `src/styles.css` (light / dark, primary color from
   Settings), `Workspace`, `Pills`, `Empty`, `Section`. English UI; the AI answers in the user's language.
 - Every text sent to the model lives in `src/prompts/` or in a tool's description.

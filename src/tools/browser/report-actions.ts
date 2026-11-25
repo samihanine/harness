@@ -40,7 +40,7 @@ async function currentPage(report: Report) {
 async function slicerInfo(v: Visual) {
   const s = await v.getSlicerState().catch(() => null);
   const selected = active(s?.filters ?? []);
-  return { name: v.name, title: v.title || undefined, fields: (s?.targets ?? []).map((t) => fieldOf(t as Target)), selected: selected.length ? selected.map(filterText).join("; ") : "nothing selected (all)", hidden: v.layout.displayState?.mode === 1 || undefined };
+  return { name: v.name, title: v.title || undefined, fields: (s?.targets ?? []).map((t) => fieldOf(t as Target)), targets: s?.targets, selected: selected.length ? selected.map(filterText).join("; ") : "nothing selected (all)", hidden: v.layout.displayState?.mode === 1 || undefined };
 }
 
 const findVisual = (visuals: Visual[], key: string) => visuals.find((v) => v.name === key) ?? visuals.find((v) => (v.title ?? "").toLowerCase() === key.toLowerCase());
@@ -80,7 +80,7 @@ export function reportActions(report: () => Report | undefined, ready: () => Pro
       return out;
     },
     "report.bookmark": async () => (await (await need()).bookmarksManager.capture()).state,
-    "report.setSlicer": async ({ name, values, range, clear }: { name: string; values?: unknown[]; range?: { from?: unknown; to?: unknown }; clear?: boolean }) => {
+    "report.setSlicer": async ({ name, values, range, clear, hierarchy, fallback }: { name: string; values?: unknown[]; range?: { from?: unknown; to?: unknown }; clear?: boolean; hierarchy?: unknown[]; fallback?: { table: string; column: string; range?: { from?: unknown; to?: unknown }; values?: unknown[] } }) => {
       const r = await need();
       const { pbi } = await powerbi();
       const { page } = await currentPage(r);
@@ -90,32 +90,38 @@ export function reportActions(report: () => Report | undefined, ready: () => Pro
       const targets = (state.targets ?? []) as Target[];
       const target = targets[0];
       if (!target) throw new Error("This slicer has no field.");
-      const basic = { $schema: "http://powerbi.com/product/schema#basic", target, operator: "In", values: values ?? [], filterType: pbi.models.FilterType.Basic };
+      const advanced = (t: unknown, rg: { from?: unknown; to?: unknown }) => ({ $schema: "http://powerbi.com/product/schema#advanced", target: t, logicalOperator: "And", conditions: [rg.from !== undefined && { operator: "GreaterThanOrEqual", value: rg.from }, rg.to !== undefined && { operator: "LessThanOrEqual", value: rg.to }].filter(Boolean), filterType: pbi.models.FilterType.Advanced });
+      const basic = (t: unknown, vals: unknown[]) => ({ $schema: "http://powerbi.com/product/schema#basic", target: t, operator: "In", values: vals, filterType: pbi.models.FilterType.Basic });
+      const hierarchical = targets.length > 1 || !!target.hierarchyLevel;
       const filter = clear
         ? undefined
-        : range
-          ? { $schema: "http://powerbi.com/product/schema#advanced", target, logicalOperator: "And", conditions: [range.from !== undefined && { operator: "GreaterThanOrEqual", value: range.from }, range.to !== undefined && { operator: "LessThanOrEqual", value: range.to }].filter(Boolean), filterType: pbi.models.FilterType.Advanced }
-          : targets.length > 1
-            ? // A hierarchy slicer: its top level's values selected whole.
-              { $schema: "http://powerbi.com/product/schema#hierarchy", target: targets, hierarchyData: (values ?? []).map((value) => ({ operator: "Selected", value })), filterType: pbi.models.FilterType.Hierarchy }
-            : basic;
+        : hierarchical
+          ? // A hierarchy slicer takes only a tree of selected values (built by the server from values, paths or a date range).
+            { $schema: "http://powerbi.com/product/schema#hierarchy", target: targets, hierarchyData: hierarchy ?? (values ?? []).map((value) => ({ operator: "Selected", value })), filterType: pbi.models.FilterType.Hierarchy }
+          : range
+            ? advanced(target, range)
+            : basic(target, values ?? []);
       try {
         await v.setSlicerState({ filters: filter ? [filter as never] : [] });
         return { ok: true };
       } catch (e) {
         const why = describeError(e);
-        // Some slicers (new slicer types, hierarchies, sync groups) refuse a state set by the API:
-        // the same selection is applied as a page filter on the slicer's column, the slicer itself unchanged.
         if (clear) throw new Error(`The slicer refused to be cleared: ${why}`);
-        const fallback = targets.length > 1 ? { ...basic, target: { table: target.table, column: target.column ?? target.hierarchyLevel } } : (filter as typeof basic);
+        // The same selection as a page filter — only once the slicer itself is cleared: a page filter
+        // against the slicer's old selection would leave the visuals empty.
+        const column = fallback ?? (target.column ? { table: target.table, column: target.column, range, values } : undefined);
+        if (!column) throw new Error(`Power BI refused this selection on the slicer (${why}). Slicer on ${targets.map((t) => `'${t.table}'[${t.column ?? t.hierarchyLevel ?? t.measure}]`).join(" > ")}: give paths of its levels, or use set_filter on a column.`);
         try {
-          const current = (await page.getFilters()) as any[];
-          const others = current.filter((f) => !(f.target?.table === fallback.target.table && (f.target?.column ?? f.target?.hierarchyLevel) === (fallback.target as Target).column));
-          await page.updateFilters(pbi.models.FiltersOperations.ReplaceAll, [...others, fallback] as never);
+          await v.setSlicerState({ filters: [] });
         } catch (e2) {
-          throw new Error(`Power BI refused to change this slicer (${why}) and the same filter on the page (${describeError(e2)}). Slicer on ${targets.map((t) => `'${t.table}'[${t.column ?? t.hierarchyLevel ?? t.measure}]`).join(" > ")}; values given: ${JSON.stringify(values ?? range)}.`);
+          throw new Error(`Power BI refused this selection on the slicer (${why}), and refused to clear it (${describeError(e2)}): nothing was changed, so the page stays consistent. Use set_filter on another column, or tell the user to pick it in the slicer.`);
         }
-        return { ok: true, note: `The slicer itself refused the selection (${why}): the same selection is applied as a page filter on its column (the slicer still shows its old selection).` };
+        const t = { table: column.table, column: column.column };
+        const next = column.range ? advanced(t, column.range) : basic(t, column.values ?? []);
+        const current = (await page.getFilters()) as any[];
+        const others = current.filter((f) => !(f.target?.table === t.table && f.target?.column === t.column));
+        await page.updateFilters(pbi.models.FiltersOperations.ReplaceAll, [...others, next] as never);
+        return { ok: true, note: `The slicer refused the selection (${why}): it was cleared and the same selection applied as a page filter on '${t.table}'[${t.column}] (the slicer shows everything; the page filter does the filtering).` };
       }
     },
     "report.setFilter": async ({ table, column, values, clear, level }: { table: string; column: string; values: unknown[]; clear?: boolean; level: "page" | "report" }) => {
@@ -137,6 +143,23 @@ export function reportActions(report: () => Report | undefined, ready: () => Pro
       const r = (await need()) as Report & { initialState?: string };
       if (r.initialState) await r.bookmarksManager.applyState(r.initialState);
       else await r.reload();
+    },
+    /** What a visual is made of (fields by role) and every filter acting on it now: to query its data with DAX. */
+    "report.visualQuery": async ({ visual }: { visual: string }) => {
+      const r = await need();
+      const { page } = await currentPage(r);
+      const visuals = await page.getVisuals();
+      const v = findVisual(visuals, visual);
+      if (!v) throw new Error(`No visual "${visual}" on the current page.`);
+      const caps = await v.getCapabilities().catch(() => null);
+      const fields: Record<string, unknown[]> = {};
+      for (const role of caps?.dataRoles ?? []) {
+        const f = await v.getDataFields(role.name).catch(() => []);
+        if (f.length) fields[role.name] = f;
+      }
+      const slicers = await Promise.all(visuals.filter((x) => x.type === "slicer" || x.type === "advancedSlicerVisual").map((x) => x.getSlicerState().then((st) => st.filters ?? [], () => [])));
+      const filters = [...(await r.getFilters().catch(() => [])), ...(await page.getFilters().catch(() => [])), ...(await v.getFilters().catch(() => [])), ...slicers.flat()];
+      return { title: v.title, type: v.type, fields, filters: active(filters as any[]) };
     },
     "report.visualData": async ({ visual, rows }: { visual: string; rows: number }) => {
       const { pbi } = await powerbi();

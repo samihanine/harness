@@ -13,7 +13,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { errorText, get, post } from "@/lib/api";
 import { prepareDataset, prepareReport } from "@/lib/items";
-import { item, remove, save, useItems, useLocal } from "@/lib/store";
+import { item, remove, save, useItems } from "@/lib/store";
+import { useItemParam } from "@/lib/params";
 import { cn } from "@/lib/utils";
 
 type CatalogItem = { id: string; name: string; groupId?: string; appId?: string; workspace: string; datasetId?: string };
@@ -21,13 +22,33 @@ type CatalogItem = { id: string; name: string; groupId?: string; appId?: string;
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const PAGE = 20;
 
-/** app.powerbi.com links → ids (also an app's: …/apps/<app>/reports/<id>). */
-export function parseLink(url: string, kind: "report" | "dataset") {
-  const id = url.match(kind === "report" ? /reports\/([0-9a-f-]{36})/i : /(?:datasets|semanticmodels)\/([0-9a-f-]{36})/i)?.[1] ?? url.match(GUID)?.[0];
-  if (!id) return undefined;
-  const appId = url.match(/apps\/([0-9a-f-]{36})/i)?.[1];
-  const groupId = url.match(/groups\/([0-9a-f-]{36})/i)?.[1];
-  return { id: id.toLowerCase(), appId: appId?.toLowerCase(), groupId: groupId && groupId !== "me" ? groupId.toLowerCase() : undefined };
+/**
+ * Any Power BI link → ids: the browser's address of a report or a model (a workspace's, an app's, "My
+ * workspace", shared), an embed link (reportEmbed?reportId=…&groupId=…), or a bare id.
+ */
+export function parseLink(url: string) {
+  const g = (re: RegExp) => url.match(re)?.[1]?.toLowerCase();
+  const report = g(/(?:reports|rdlreports)\/([0-9a-f-]{36})/i) ?? g(/[?&]reportId=([0-9a-f-]{36})/i);
+  const dataset = g(/(?:datasets|semanticmodels)\/([0-9a-f-]{36})/i) ?? g(/[?&]datasetId=([0-9a-f-]{36})/i);
+  const appId = g(/apps\/([0-9a-f-]{36})/i) ?? g(/[?&]appId=([0-9a-f-]{36})/i);
+  const groupId = g(/groups\/([0-9a-f-]{36})/i) ?? g(/[?&]groupId=([0-9a-f-]{36})/i);
+  const bare = !report && !dataset && !appId && !groupId ? url.match(GUID)?.[0]?.toLowerCase() : undefined;
+  return report || dataset || bare ? { report, dataset, bare, appId, groupId } : undefined;
+}
+type Link = NonNullable<ReturnType<typeof parseLink>>;
+
+/** What a link adds: a report (by its id), or a model — its own link, or the model of a report's link. */
+async function addFromLink(kind: "report" | "dataset", l: Link) {
+  if (kind === "report") {
+    const id = l.report ?? l.bare;
+    if (!id) throw new Error("This is the link of a semantic model, not of a report.");
+    return (await addReport({ id, groupId: l.groupId, appId: l.appId })).id;
+  }
+  if (l.dataset || (l.bare && !l.report)) return (await addDataset({ id: (l.dataset ?? l.bare)!, groupId: l.groupId })).id;
+  const q = new URLSearchParams({ id: l.report!, ...(l.groupId ? { groupId: l.groupId } : {}), ...(l.appId ? { appId: l.appId } : {}) });
+  const r = await get<ReportRef>(`/powerbi/report?${q}`);
+  if (!r.datasetId) throw new Error(`The model of "${r.name}" cannot be read with your rights.`);
+  return (await addDataset({ id: r.datasetId, groupId: r.datasetGroupId })).id;
 }
 
 /** Reads a report's details from the server (model, access), keeps it, and reads its structure in the background. */
@@ -76,12 +97,11 @@ export function AddDialog({ kind, open, onOpenChange, onAdded, editable }: { kin
     post<Record<string, ReportAccess>>("/powerbi/access", unknown.map((c) => ({ id: c.id, groupId: c.groupId }))).then((a) => !gone && setAccess((x) => ({ ...x, ...a })), () => undefined);
     return () => void (gone = true);
   }, [unknown.map((c) => c.id).join()]); // eslint-disable-line react-hooks/exhaustive-deps
-  const choose = async (ref: { id: string; groupId?: string; appId?: string; name?: string }) => {
-    setBusy(ref.id);
+  const choose = async (ref: { id: string; groupId?: string; appId?: string; name?: string } | Link) => {
+    setBusy("id" in ref ? ref.id : "link");
     try {
-      if (kind === "report") await addReport(ref);
-      else await addDataset(ref);
-      onAdded(ref.id);
+      const id = !("id" in ref) ? await addFromLink(kind, ref) : kind === "report" ? (await addReport(ref)).id : (await addDataset(ref)).id;
+      onAdded(id);
       onOpenChange(false);
     } catch (e) {
       toast.error(errorText(e));
@@ -89,7 +109,7 @@ export function AddDialog({ kind, open, onOpenChange, onAdded, editable }: { kin
       setBusy(undefined);
     }
   };
-  const link = query.includes("powerbi.com") || GUID.test(query) ? parseLink(query, kind) : undefined;
+  const link = query.includes("powerbi.com") || GUID.test(query) ? parseLink(query) : undefined;
   const pages = Math.max(1, Math.ceil(candidates.length / PAGE));
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -99,11 +119,11 @@ export function AddDialog({ kind, open, onOpenChange, onAdded, editable }: { kin
         </DialogHeader>
         <div className="flex items-center gap-2 rounded-xl border px-3">
           <SearchIcon className="size-4 text-muted-foreground" />
-          <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search, or paste a Power BI link (workspace or app)" className="h-10 flex-1 bg-transparent text-[14px] outline-none" />
+          <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && link && !busy && void choose(link)} placeholder={kind === "report" ? "Search, or paste the report's address from your browser" : "Search, or paste the link of a model or of one of its reports"} className="h-10 flex-1 bg-transparent text-[14px] outline-none" />
         </div>
         {link && (
           <Button variant="dark" onClick={() => choose(link)} disabled={!!busy}>
-            Add from the link
+            {busy === "link" ? <Loader2Icon className="animate-spin" /> : null} {kind === "dataset" && link.report && !link.dataset ? "Add this report's semantic model" : "Add from the link"}
           </Button>
         )}
         <div className="max-h-[50vh] min-h-40 overflow-y-auto">
@@ -147,7 +167,8 @@ export function AddDialog({ kind, open, onOpenChange, onAdded, editable }: { kin
 /** The chosen report or model of a screen, with its list and "Add". */
 export function usePicked<K extends "report" | "dataset">(kind: K, screen: string) {
   const items = useItems(kind);
-  const [id, setId] = useLocal<string>(`picked:${screen}:${kind}`, "");
+  // In the address (each browser tab its own), else the last one chosen here.
+  const [id, setId] = useItemParam(`picked:${screen}:${kind}`);
   const sorted = useMemo(() => [...(items ?? [])].sort((a, b) => a.name.localeCompare(b.name)), [items]);
   const current = sorted.find((x) => x.id === id) ?? (items && !id ? sorted[0] : undefined);
   return { items: sorted, current, select: setId, loading: !items };

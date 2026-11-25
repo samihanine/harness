@@ -1,7 +1,8 @@
 /** Formatting of a visual (title, labels, colors, legend…) from plain values, checked against Power BI's format catalog. */
 import { z } from "zod";
-import { applyAdds, pageOf, visualOf, writeJson } from "@server/pbi/draft";
-import { formatOps, formatOptions as options, ignoredText, pageFormatOps } from "@server/pbi/visual-spec";
+import { applyAdds, draftModel, pageOf, reportMeasures, visualOf, writeJson } from "@server/pbi/draft";
+import { formatOps, formatOptions as options, ignoredText, pageFormatOps, projection } from "@server/pbi/visual-spec";
+import { reportOf } from "../helpers";
 import { tool } from "../tool";
 import { draft } from "./shared";
 
@@ -17,7 +18,7 @@ export const formatOptions = tool({
 export const formatVisual = tool({
   name: "format_visual",
   description:
-    'Format a visual: {"title": {"show": true, "text": "Sales", "fontSize": 14, "fontColor": "#203247"}, "labels": {"show": true}, "dataPoint": {"defaultColor": "#B39251"}, "background": {"color": "#FFFFFF"}}. Names come from format_options. Also page colors: give page_background / page_wallpaper with no visual.',
+    'Format one visual, inside and frame: {"title": {"show": true, "text": "Sales", "fontSize": 14, "fontColor": "#203247", "alignment": "center", "fontFamily": "Georgia"}, "labels": {"fontSize": 28, "color": "#B39251"}, "background": {"color": "#FFFFFF"}}. Names come from format_options. One series of a chart: "dataPoint:[Sales LY]" (a measure) or "dataPoint:East" (a value of its series / category), e.g. {"dataPoint:[Forecast]": {"fill": "#9CA3AF"}}. A value from a measure (conditional formatting, e.g. red when negative: a measure returning "#D64550" or "#1F7A4D"): {"labels": {"color": {"measure": "[vs LY color]"}}}. Lines: {"lineStyles": {"lineChartType": "linear"}}. Also page colors: give page_background / page_wallpaper with no visual.',
   args: z.object({ page: z.string(), visual: z.string().optional(), format: z.record(z.string(), z.record(z.string(), z.unknown())).optional(), page_background: z.string().optional(), page_wallpaper: z.string().optional() }),
   changes: true,
   async run(a, ctx) {
@@ -31,7 +32,8 @@ export const formatVisual = tool({
       return `Page "${page.displayName}" colors set.`;
     }
     const { path, json } = visualOf(d, page.name, a.visual);
-    const { ops, ignored } = formatOps(json, a.format ?? {});
+    const info = await draftModel(reportOf(ctx));
+    const { ops, ignored } = formatOps(json, a.format ?? {}, (spec) => projection(spec, info, reportMeasures(d)).field);
     applyAdds(json, ops);
     writeJson(d, path, json);
     return `Formatted ${json.name} (${ops.length} properties).${ignoredText(ignored)}`;

@@ -43,6 +43,16 @@ export async function listPages(folder?: string): Promise<{ id: string; title: s
   return results.map((p) => ({ id: String(p.id), title: p.title })).sort((a, b) => a.title.localeCompare(b.title));
 }
 
+/** The address of a folder (or of a page used as a folder) in Confluence, to open it in the browser. */
+export async function folderUrl(id: string): Promise<string> {
+  const { url } = await config();
+  const base = url.trim().replace(/\/+$/, "");
+  const folder = await call<{ _links?: { webui?: string; base?: string } }>(`/api/v2/folders/${id}`).catch(() => undefined);
+  if (folder?._links?.webui) return link(base, folder)!;
+  const page = await call<{ _links?: { webui?: string; base?: string } }>(`/rest/api/content/${id}`).catch(() => undefined);
+  return (page && link(base, page)) ?? `${base}/pages/viewpage.action?pageId=${id}`;
+}
+
 export async function readPage(id: string): Promise<ConfluencePage> {
   if (!/^\d+$/.test(id)) throw new Error("A Confluence page id is a number.");
   const { url } = await config();

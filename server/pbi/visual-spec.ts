@@ -29,9 +29,14 @@ export const ROLES: Record<string, string[]> = {
   gauge: ["Y", "MinValue", "MaxValue", "TargetValue"],
   textbox: [],
   shape: [],
+  image: [],
   actionButton: [],
 };
-export const TYPE_NOTES = "barChart = stacked bars, columnChart = stacked columns, clustered* = side by side, hundredPercentStacked* = 100 %; SmallMultiples = one small chart per value of a column (grid: format smallMultiplesLayout); actionButton = a button (create_button)";
+export const TYPE_NOTES =
+  "barChart = stacked bars, columnChart = stacked columns, clustered* = side by side, hundredPercentStacked* = 100 %; SmallMultiples = one small chart per value of a column (grid: format smallMultiplesLayout); slicer with several columns in Values = a hierarchy slicer (Zone > SubZone); textbox = free text (text, text_style); shape = a rectangle, line, oval… (shape, fill: a frame, a band, a separator); image = a picture from a public link (image_url); actionButton = a button with a text and/or a Power BI icon (text, icon, action)";
+
+/** The icons of Power BI buttons (actionButton "icon"). */
+export const BUTTON_ICONS = ["blank", "leftArrow", "rightArrow", "reset", "back", "information", "help", "qna", "bookmark", "navigator"];
 /** A role as PBIR names it (the small multiples are the "Rows" of a chart). */
 export const roleKey = (role: string) => (role === "SmallMultiples" ? "Rows" : role);
 
@@ -105,6 +110,16 @@ export type VisualSpec = {
   text?: string;
   /** Keep the first N items of the category (or rows) by a value, e.g. a top 10 products by sales. */
   top?: { count: number; by: string; bottom?: boolean };
+  /** textbox and button: how the text looks. */
+  textStyle?: { fontSize?: number; bold?: boolean; italic?: boolean; color?: string; fontFamily?: string; align?: "left" | "center" | "right" };
+  /** image: a public link to the picture. */
+  imageUrl?: string;
+  /** actionButton: its Power BI icon and what a click does. */
+  icon?: string;
+  action?: { type: "page" | "bookmark" | "back" | "url"; target?: string };
+  /** shape: its form (rectangle, rectangleRounded, line, oval…) and fill color. */
+  shape?: string;
+  fill?: string;
 };
 
 /** The roles holding the items a Top N keeps (the first column found). */
@@ -161,6 +176,19 @@ export function fitRoles(type: string, fields: Record<string, string[]> | undefi
   );
 }
 
+const colorOf = (c: string) => {
+  if (!/^#[0-9a-f]{3,8}$/i.test(c.trim())) throw new Error(`a color "#RRGGBB", not ${JSON.stringify(c)}`);
+  return { solid: { color: lit(`'${c.trim()}'`) } };
+};
+
+/** What a click on a button does: a page, a bookmark, back, or a web link. */
+function buttonAction(a: NonNullable<VisualSpec["action"]>) {
+  const type = { page: "PageNavigation", bookmark: "Bookmark", back: "Back", url: "WebUrl" }[a.type];
+  if (!type) throw new Error('action.type: "page", "bookmark", "back" or "url".');
+  if (a.type !== "back" && !a.target) throw new Error(`action.target: the ${a.type === "page" ? "page name" : a.type === "bookmark" ? "bookmark name" : "link"}.`);
+  return { show: lit("true"), type: textLiteral(type), ...(a.type === "page" && { navigationSection: textLiteral(a.target!) }), ...(a.type === "bookmark" && { bookmark: textLiteral(a.target!) }), ...(a.type === "url" && { webUrl: textLiteral(a.target!) }) };
+}
+
 /** visual.json of a spec; `schema` = the $schema the report's other visuals use (same version). */
 export function buildVisual(spec: VisualSpec, name: string, z: number, info: ModelInfo | undefined, extension: ReportMeasures, schema = VISUAL_SCHEMA) {
   const roles = ROLES[spec.type];
@@ -180,8 +208,38 @@ export function buildVisual(spec: VisualSpec, name: string, z: number, info: Mod
     visual.query = query;
   }
   const filterConfig = spec.top ? { filters: [topNFilter(queryState, spec.top, info, extension)] } : undefined;
-  if (spec.type === "textbox" && spec.text) visual.objects = { general: [{ properties: { paragraphs: spec.text.split("\n").map((line) => ({ textRuns: [{ value: line }] })) } }] };
-  if (spec.title) visual.visualContainerObjects = { title: [{ properties: { show: lit("true"), text: textLiteral(spec.title) } }] };
+  const st = spec.textStyle ?? {};
+  if (spec.type === "textbox" && spec.text)
+    visual.objects = {
+      general: [
+        {
+          properties: {
+            paragraphs: spec.text.split("\n").map((line) => ({
+              textRuns: [{ value: line, ...(Object.keys(st).some((k) => k !== "align") && { textStyle: { ...(st.fontSize && { fontSize: `${st.fontSize}pt` }), ...(st.bold && { fontWeight: "bold" }), ...(st.italic && { fontStyle: "italic" }), ...(st.color && { color: st.color }), ...(st.fontFamily && { fontFamily: st.fontFamily }) } }) }],
+              ...(st.align && { horizontalTextAlignment: st.align }),
+            })),
+          },
+        },
+      ],
+    };
+  if (spec.type === "image") {
+    if (!spec.imageUrl || !/^https:\/\//.test(spec.imageUrl)) throw new Error("An image needs image_url: a public https link to the picture (png, jpg, svg).");
+    visual.objects = { image: [{ properties: { sourceType: textLiteral("imageUrl"), sourceUrl: textLiteral(spec.imageUrl), fit: textLiteral("Fit") } }], general: [{ properties: { imageUrl: textLiteral(spec.imageUrl) } }] };
+  }
+  if (spec.type === "shape") {
+    visual.objects = { shape: [{ properties: { tileShape: textLiteral(spec.shape ?? "rectangle") } }], ...(spec.fill && { fill: [{ properties: { show: lit("true") } }, { properties: { fillColor: colorOf(spec.fill), transparency: lit("0D") }, selector: { id: "default" } }] }), outline: [{ properties: { show: lit("false") } }] };
+  }
+  if (spec.type === "actionButton") {
+    if (spec.icon && !BUTTON_ICONS.includes(spec.icon)) throw new Error(`No icon "${spec.icon}". Icons: ${BUTTON_ICONS.join(", ")}.`);
+    const state = (props: Record<string, unknown>) => [{ properties: { show: lit("true") } }, { properties: props, selector: { id: "default" } }];
+    visual.objects = {
+      icon: spec.icon && spec.icon !== "blank" ? state({ shapeType: textLiteral(spec.icon), ...(st.color && { lineColor: colorOf(st.color) }) }) : [{ properties: { show: lit("false") } }],
+      ...(spec.text && { text: state({ text: textLiteral(spec.text), ...(st.color && { fontColor: colorOf(st.color) }), ...(st.fontSize && { fontSize: lit(`${st.fontSize}D`) }), ...(st.bold && { bold: lit("true") }), ...(st.fontFamily && { fontFamily: textLiteral(st.fontFamily) }), ...(st.align && { horizontalAlignment: textLiteral(st.align) }) }) }),
+      ...(spec.fill && { fill: state({ fillColor: colorOf(spec.fill), transparency: lit("0D") }) }),
+    };
+    if (spec.action) visual.visualContainerObjects = { visualLink: [{ properties: buttonAction(spec.action) }] };
+  }
+  if (spec.title) visual.visualContainerObjects = { ...(visual.visualContainerObjects as object), title: [{ properties: { show: lit("true"), text: textLiteral(spec.title) } }] };
   // A titled card or slicer would say its field twice (and a card's label is cut in a short box).
   if (spec.title && spec.type === "card") visual.objects = { ...(visual.objects as object), categoryLabels: [{ properties: { show: lit("false") } }] };
   if (spec.title && spec.type === "slicer") visual.objects = { ...(visual.objects as object), header: [{ properties: { show: lit("false") } }] };
@@ -196,6 +254,14 @@ export const buildPage = (name: string, displayName: string, width = 1280, heigh
 
 type Catalog = { container: string[]; visuals: Record<string, Record<string, Record<string, string>>> };
 const CATALOG = catalog as Catalog;
+// Buttons are not in Power BI's theme schema: their objects are a shape's, with the icon.
+CATALOG.visuals.actionButton ??= {
+  ...CATALOG.visuals.shape,
+  icon: { show: "boolean", shapeType: BUTTON_ICONS.join("|"), lineColor: "color", lineWeight: "number", lineTransparency: "number", horizontalAlignment: "left|center|right", verticalAlignment: "top|middle|bottom", padding: "integer", iconSize: "integer" },
+  text: { ...CATALOG.visuals.shape.text, horizontalAlignment: "left|center|right", verticalAlignment: "top|middle|bottom" },
+};
+/** Objects of buttons and shapes written per state ("default"): their show stays general. */
+const STATEFUL: Record<string, string[]> = { actionButton: ["icon", "text", "fill", "outline", "glow", "shadow"], shape: ["fill", "outline", "text", "glow", "shadow"] };
 
 const where = (o: string) => (CATALOG.container.includes(o) ? "visualContainerObjects" : "objects");
 /** "title", "visualContainerObjects.title" or "objects.labels" → the object's name. */
@@ -228,7 +294,13 @@ export function formatOptions(type: string, object?: string) {
 }
 
 /** A plain value (16, true, "#203247", "Outer") → its PBIR expression, by the property's type. */
-function expression(t: string, value: unknown) {
+function expression(t: string, value: unknown, field?: (spec: string) => unknown) {
+  // A value from a measure (conditional formatting: a measure returning a color, a text…).
+  if (value && typeof value === "object" && typeof (value as { measure?: unknown }).measure === "string") {
+    if (!field) throw new Error("a measure here needs the model");
+    const expr = field((value as { measure: string }).measure);
+    return t === "color" ? { solid: { color: { expr } } } : { expr };
+  }
   if (value && typeof value === "object") return value; // already an expression
   if (t === "color") {
     if (typeof value !== "string" || !/^#[0-9a-f]{3,8}$/i.test(value.trim())) throw new Error(`a color "#RRGGBB", not ${JSON.stringify(value)}`);
@@ -247,7 +319,7 @@ function expression(t: string, value: unknown) {
     const allowed = t.split("|");
     const v = allowed.find((a) => a.toLowerCase() === String(value).toLowerCase());
     if (!v) throw new Error(`one of ${allowed.map((a) => `"${a}"`).join(", ")}, not ${JSON.stringify(value)}`);
-    return textLiteral(v);
+    return allowed.every((a) => /^\d+$/.test(a)) ? lit(`${v}D`) : textLiteral(v);
   }
   return typeof value === "number" ? lit(`${value}D`) : typeof value === "boolean" ? lit(String(value)) : textLiteral(String(value));
 }
@@ -259,10 +331,10 @@ export const formatObjects = (type: string): Record<string, Record<string, strin
 
 /**
  * JSON Patch operations writing a plain format ({"title": {"fontSize": 16, "bold": true}}) into a
- * visual.json: names checked against the catalog, values written as expressions, each object's
- * general entry (the one without selector) kept and completed. Every mistake is listed at once.
+ * visual.json: names checked against the catalog, values written as expressions, each object's entries kept and
+ * completed (the general one, a series' one, a button state's). Every mistake is listed at once.
  */
-export function formatOps(json: any, format: Format) {
+export function formatOps(json: any, format: Format, field?: (spec: string) => unknown) {
   const type = String(json?.visual?.visualType ?? "");
   const objects = CATALOG.visuals[type];
   if (!objects) throw new Error(`No format catalog for "${type}": change it with update_visual.`);
@@ -270,7 +342,10 @@ export function formatOps(json: any, format: Format) {
   const errors: string[] = [];
   /** Names that do not exist on this type: skipped (the rest is applied), and said in the result. */
   const ignored: string[] = [];
-  for (const [given, props] of Object.entries(format ?? {})) {
+  const lists: Record<string, any[]> = {};
+  for (const [given0, props] of Object.entries(format ?? {})) {
+    // "dataPoint:[Revenue]" = the series of a measure, "dataPoint:East" = a value of the visual's series (or category) column.
+    const [given, only] = given0.split(/:(.+)/) as [string, string | undefined];
     const o = bareObject(given);
     const known = objects[o];
     if (!known) {
@@ -281,9 +356,24 @@ export function formatOps(json: any, format: Format) {
       errors.push(`${o} must be an object of properties`);
       continue;
     }
-    const list: any[] = json.visual?.[where(o)]?.[o] ?? [];
-    const at = list.findIndex((e) => !e?.selector);
-    const index = at < 0 ? list.length : at;
+    // One working copy per object: several selectors of the same object ("dataPoint:A", "dataPoint:B") add up.
+    const key = `${where(o)}/${o}`;
+    const list: any[] = (lists[key] ??= JSON.parse(JSON.stringify(json.visual?.[where(o)]?.[o] ?? [])));
+    let selector: unknown;
+    try {
+      selector = only ? seriesSelector(json, only, field) : undefined;
+    } catch (e) {
+      errors.push(`${given0}: ${e instanceof Error ? e.message : e}`);
+      continue;
+    }
+    /** The entry of the object for a selector (none: the general one), added at the end when missing. */
+    const entry = (sel: unknown) => {
+      const at = list.findIndex((e) => JSON.stringify(e?.selector ?? null) === JSON.stringify(sel ?? null));
+      if (at >= 0) return list[at];
+      list.push({ properties: {}, ...(sel ? { selector: sel } : {}) });
+      return list.at(-1);
+    };
+    const stateful = !only && STATEFUL[type]?.includes(o);
     for (const [p, value] of Object.entries(props)) {
       const t = known[p];
       if (!t) {
@@ -291,14 +381,33 @@ export function formatOps(json: any, format: Format) {
         continue;
       }
       try {
-        ops.push({ op: "add", path: `/visual/${where(o)}/${o}/${index}/properties/${p}`, value: expression(t, value) });
+        const e = entry(stateful && p !== "show" ? { id: "default" } : selector);
+        e.properties = { ...(e.properties ?? {}), [p]: expression(t, value, field) };
       } catch (e) {
         errors.push(`${o}.${p} must be ${e instanceof Error ? e.message : e}`);
       }
     }
   }
   if (errors.length) throw new Error(`${type}: ${errors.join("; ")}. Nothing was changed.`);
+  for (const [key, value] of Object.entries(lists)) if (value.length) ops.push({ op: "add", path: `/visual/${key}`, value });
   return { ops, ignored };
+}
+
+/** The selector of one series: a measure of the visual ([Revenue]), or a value of its series / category column. */
+function seriesSelector(json: any, only: string, field?: (spec: string) => unknown) {
+  const state = json?.visual?.query?.queryState ?? {};
+  const all = Object.values<any>(state).flatMap((r) => r.projections ?? []);
+  const name = only.trim().match(/^\[(.+)\]$/)?.[1] ?? only.trim().match(/^'?[^'[]+'?\[(.+)\]$/)?.[1];
+  if (name) {
+    const hit = all.find((p) => p.field?.Measure?.Property?.toLowerCase() === name.toLowerCase() || String(p.queryRef).toLowerCase().endsWith(`.${name.toLowerCase()}`));
+    if (!hit) throw new Error(`no measure [${name}] in this visual (its fields: ${all.map((p) => p.queryRef).join(", ")})`);
+    return { metadata: hit.queryRef };
+  }
+  const column = ["Series", "Category", "Rows", "Columns"].flatMap((r) => state[r]?.projections ?? []).find((p: any) => p.field?.Column)?.field.Column;
+  if (!column) throw new Error("this visual has no series or category column to pick a value of; name a measure as [Measure]");
+  const value = (/^-?\d+(\.\d+)?$/.test(only.trim()) ? lit(`${only.trim()}L`) : textLiteral(only.trim())).expr;
+  void field;
+  return { data: [{ scopeId: { Comparison: { ComparisonKind: 0, Left: { Column: column }, Right: value } } }] };
 }
 
 /** What format results say about skipped names. */

@@ -1,10 +1,11 @@
 /**
- * What the user can do with a report: "edit" when its PBIR definition is readable (the Builder writes it),
- * "editor" when it is editable but only in another format (PBIR-Legacy: the Builder works in the embedded
- * Power BI editor), "view" when the API gives no definition. Kept a while (one Fabric call per report).
+ * What the user can do with a report: "edit" when its definition is readable (PBIR, or the old PBIR-Legacy
+ * format shown as PBIR: the Builder writes it), "editor" when it is readable in no format the Builder writes
+ * (the Builder works in the embedded Power BI editor), "view" when the API gives no definition. Kept a while (one Fabric call per report).
  */
 import type { Ref, ReportAccess } from "@shared/types";
 import { anyReportDefinition, reportDefinition } from "./definitions";
+import { isLegacy } from "./legacy";
 
 const cache = new Map<string, { at: number; access: Promise<ReportAccess> }>();
 
@@ -14,7 +15,8 @@ export function reportAccess(r: Ref): Promise<ReportAccess> {
   if (hit && Date.now() - hit.at < 30 * 60_000) return hit.access;
   const access = reportDefinition(r).then(
     () => "edit" as const,
-    () => anyReportDefinition(r).then(() => "editor" as const, () => "view" as const),
+    // The old format (PBIR-Legacy) is written too (server/pbi/legacy.ts); another one only in the Power BI editor.
+    () => anyReportDefinition(r).then((parts) => (isLegacy(parts) ? ("edit" as const) : ("editor" as const)), () => "view" as const),
   );
   cache.set(r.id, { at: Date.now(), access });
   return access;

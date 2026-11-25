@@ -3,12 +3,14 @@
  * buttons), the mascot dressed for the screen, and the composer (text, pictures and files).
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowUpIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, FolderOpenIcon, HistoryIcon, Loader2Icon, PaperclipIcon, PanelLeftCloseIcon, PlusIcon, SquareIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ArrowUpIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, DownloadIcon, EllipsisIcon, ExternalLinkIcon, FolderOpenIcon, HistoryIcon, Loader2Icon, MessageSquareTextIcon, PaperclipIcon, PanelLeftCloseIcon, PlusIcon, RefreshCwIcon, SquareIcon, ThumbsDownIcon, ThumbsUpIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { ChatItem, FileRef, ScreenId } from "@shared/types";
 import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
+import { refreshProject, useProjectsStatus } from "@/lib/projects";
 import { Mascot, outfitOf } from "@/features/mascot";
 import type { useChat } from "@/lib/chat";
 import { errorText, fileUrl } from "@/lib/api";
@@ -25,12 +27,15 @@ const LABELS: Record<ScreenId, string> = { trainer: "Trainer", builder: "Builder
 function ProjectsMenu() {
   const settings = useSettings();
   const [chosen, setChosen] = useProjects();
+  const [open, setOpen] = useState(false);
+  const status = useProjectsStatus(open);
+  const [busy, setBusy] = useState(false);
   const all = settings?.confluence.projects ?? [];
   if (!all.length) return null;
   const ids = chosen ?? all.slice(0, 1).map((p) => p.id);
   const names = all.filter((p) => ids.includes(p.id)).map((p) => p.name);
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button className="flex max-w-36 items-center gap-1 rounded-full border px-2.5 py-1 text-[12px] text-muted-foreground hover:bg-muted hover:text-foreground" title="Projects: their Confluence pages are the assistant's context">
           <FolderOpenIcon className="size-3.5 shrink-0" />
@@ -38,22 +43,70 @@ function ProjectsMenu() {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-64">
-        <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Projects: their Confluence pages are given to the assistant at the start of a conversation.</div>
+        <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Projects: their Confluence pages (read once and kept) are given to the assistant at the start of a conversation.</div>
         {all.map((p) => {
           const on = ids.includes(p.id);
+          const st = status?.find((x) => x.id === p.id);
           return (
             <DropdownMenuItem key={p.id} onSelect={(e) => (e.preventDefault(), setChosen(on ? ids.filter((x) => x !== p.id) : [...ids, p.id]))}>
               <span className={cn("flex size-4 items-center justify-center rounded border", on && "border-foreground bg-foreground text-background")}>{on && <CheckIcon className="size-3" />}</span>
               <span className="flex-1 truncate">{p.name}</span>
+              {st && <span className="text-[11px] text-muted-foreground">{st.error ? "!" : `${st.pages} p.`}</span>}
+              {st?.url && (
+                <a href={st.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} title="Open the folder in Confluence" className="text-muted-foreground hover:text-foreground">
+                  <ExternalLinkIcon className="size-3.5" />
+                </a>
+              )}
             </DropdownMenuItem>
           );
         })}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem disabled={busy || !ids.length} onSelect={(e) => (e.preventDefault(), setBusy(true), Promise.all(ids.map(refreshProject)).then(() => toast.success("Pages read again: the next conversations get them."), (x) => toast.error(errorText(x))).finally(() => setBusy(false)))}>
+          {busy ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Refresh the chosen projects' pages
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-export function ChatPanel({ chat, screen, placeholder, disabled, accept = "image/*", suggestions, onFold }: { chat: Chat; screen: ScreenId; placeholder?: string; disabled?: string; accept?: string; suggestions?: string[]; onFold?: () => void }) {
+/** The open conversation's feedback: thumbs, a comment, the JSON file. */
+function Feedback({ chat }: { chat: Chat }) {
+  const c = chat.conversation;
+  const [commenting, setCommenting] = useState(false);
+  const [text, setText] = useState("");
+  if (!c) return null;
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="icon-sm" aria-label="This conversation">
+            {c.rating === "up" ? <ThumbsUpIcon className="text-success" /> : c.rating === "down" ? <ThumbsDownIcon className="text-destructive" /> : <EllipsisIcon />}
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-60">
+          <div className="px-2 py-1.5 text-[12px] text-muted-foreground">How was this conversation?</div>
+          <div className="flex gap-1 px-2 pb-1.5">
+            <Button variant={c.rating === "up" ? "dark" : "outline"} size="sm" className="flex-1" onClick={() => void chat.rate({ rating: c.rating === "up" ? undefined : "up" })}><ThumbsUpIcon /> Good</Button>
+            <Button variant={c.rating === "down" ? "dark" : "outline"} size="sm" className="flex-1" onClick={() => void chat.rate({ rating: c.rating === "down" ? undefined : "down" })}><ThumbsDownIcon /> Bad</Button>
+          </div>
+          <DropdownMenuItem onSelect={() => (setText(c.comment ?? ""), setCommenting(true))}><MessageSquareTextIcon /> {c.comment ? "Edit the comment" : "Add a comment"}</DropdownMenuItem>
+          <DropdownMenuItem onSelect={chat.exportJson}><DownloadIcon /> Download (JSON)</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Dialog open={commenting} onOpenChange={setCommenting}>
+        <DialogContent className="max-w-md rounded-3xl">
+          <DialogHeader>
+            <DialogTitle>Comment on this conversation</DialogTitle>
+          </DialogHeader>
+          <textarea autoFocus value={text} onChange={(e) => setText(e.target.value)} rows={5} placeholder="What went well, what went wrong…" className="input h-auto py-2" />
+          <Button variant="dark" onClick={() => void chat.rate({ comment: text.trim() || undefined }).then(() => setCommenting(false))}>Save</Button>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+export function ChatPanel({ chat, screen, placeholder, disabled, accept = "image/*", suggestions, onFold, itemLabel }: { chat: Chat; screen: ScreenId; placeholder?: string; disabled?: string; accept?: string; suggestions?: string[]; onFold?: () => void; /** The name of a conversation's item (history). */ itemLabel?: (item: string) => string | undefined }) {
   const settings = useSettings();
   const items = chat.conversation?.items ?? [];
   const scroller = useRef<HTMLDivElement>(null);
@@ -73,17 +126,27 @@ export function ChatPanel({ chat, screen, placeholder, disabled, accept = "image
           <div className="truncate text-[12px] text-muted-foreground">{chat.conversation?.title ?? "New conversation"}</div>
         </div>
         <ProjectsMenu />
+        <Feedback chat={chat} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label="Conversations">
               <HistoryIcon />
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-72">
+          <DropdownMenuContent align="end" className="max-h-[70vh] w-80 overflow-y-auto">
             {chat.conversations.length === 0 && <div className="px-2 py-1.5 text-[13px] text-muted-foreground">No conversation yet.</div>}
-            {chat.conversations.slice(0, 20).map((c) => (
-              <DropdownMenuItem key={c.id} onSelect={() => chat.select(c.id)} className={cn("group", c.id === chat.conversation?.id && "bg-accent")}>
-                <span className="min-w-0 flex-1 truncate">{c.title}</span>
+            {chat.conversations.slice(0, 60).map((c) => (
+              <DropdownMenuItem key={c.id} onSelect={() => chat.select(c.id, c.item)} className={cn("group", c.id === chat.conversation?.id && "bg-accent")}>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5 truncate">
+                    {chat.isRunning(c.id) && <Loader2Icon className="size-3 shrink-0 animate-spin" />}
+                    <span className="truncate">{c.title}</span>
+                  </div>
+                  <div className="truncate text-[11.5px] text-muted-foreground">
+                    {itemLabel?.(c.item) ?? "—"} · {new Date(c.updatedAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}
+                    {c.rating === "up" ? " · 👍" : c.rating === "down" ? " · 👎" : ""}
+                  </div>
+                </div>
                 <button
                   className="opacity-0 group-hover:opacity-100"
                   onClick={(e) => {

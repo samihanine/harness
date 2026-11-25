@@ -6,7 +6,7 @@
 import { z } from "zod";
 import { resolveField } from "@server/pbi/model";
 import { modelInfo } from "@server/pbi/models";
-import { layoutRows } from "@server/pbi/layout";
+import { layoutProblems, layoutRows, snapBox } from "@server/pbi/layout";
 import { forgetReport } from "@server/capture/browser";
 import { ROLES, TYPE_NOTES, fitRoles } from "@server/pbi/visual-spec";
 import { reportOf } from "../helpers";
@@ -109,6 +109,23 @@ export const editorLayoutPage = tool({
   },
 });
 
+export const editorPlaceVisuals = tool({
+  name: "place_visuals",
+  description: "Free positions in px (editor mode): each visual's x, y, width, height, snapped to a 4 px grid and kept in the page; overlaps are reported.",
+  args: z.object({ page: z.string().optional(), visuals: z.array(z.object({ visual: z.string(), x: z.number(), y: z.number(), width: z.number(), height: z.number() })) }),
+  changes: true,
+  async run(a, ctx) {
+    type Page = { name: string; size?: { width: number; height: number }; visuals: { name: string; title?: string; type: string; x: number; y: number; width: number; height: number; hidden?: boolean }[] };
+    const [p] = (await ctx.browser("editor.overview", { page: a.page })) as Page[];
+    const size = { width: p.size?.width ?? 1280, height: p.size?.height ?? 720 };
+    const boxes = a.visuals.map((b) => snapBox({ ...b, visual: p.visuals.find((v) => v.name === b.visual || (v.title ?? "").toLowerCase() === b.visual.toLowerCase())?.name ?? b.visual }, size));
+    await ctx.browser("editor.move", { page: p.name, boxes });
+    const placed = p.visuals.map((v) => ({ ...v, ...(boxes.find((b) => b.visual === v.name) ?? {}) }));
+    const problems = layoutProblems(placed, size);
+    return `Placed ${boxes.length} visual(s).${problems.length ? ` Overlaps: ${problems.join("; ")}.` : ""}`;
+  },
+});
+
 export const editorRemove = tool({
   name: "remove",
   description: "Remove a visual (page + visual) or a whole page (page only), editor mode.",
@@ -161,4 +178,4 @@ export const editorSave = tool({
   },
 });
 
-export const EDITOR_TOOLS = [editorOverview, editorAddPage, editorAddVisual, editorUpdateVisual, editorFormatVisual, editorLayoutPage, editorRemove, editorRenamePage, editorTheme, editorSave];
+export const EDITOR_TOOLS = [editorOverview, editorAddPage, editorAddVisual, editorUpdateVisual, editorFormatVisual, editorLayoutPage, editorPlaceVisuals, editorRemove, editorRenamePage, editorTheme, editorSave];

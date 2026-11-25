@@ -23,7 +23,7 @@ import { addPage } from "@/tools/builder/add-page";
 import { addVisual } from "@/tools/builder/add-visual";
 import { updateVisual } from "@/tools/builder/update-visual";
 import { formatOptions, formatVisual } from "@/tools/builder/format-visual";
-import { layoutPage } from "@/tools/builder/layout-page";
+import { layoutPage, placeVisuals } from "@/tools/builder/layout-page";
 import { removeItem } from "@/tools/builder/remove";
 import { discardChanges, saveReport } from "@/tools/builder/save-report";
 import { deleteMeasure, saveMeasure } from "@/tools/datasets/measures";
@@ -58,7 +58,7 @@ const AGENTS: Record<ScreenId, ScreenAgent> = {
     tools: (s) => {
       const read = [lookAtReport, reportStructure, listReports, ...(hasModel(s) ? [...modelTools, saveMeasure] : [])];
       // Editable definition: the PBIR tools; editable in the Power BI editor only: the editor tools; else reading.
-      if (s.report?.access === "edit") return withContext(s, [reportOverview, addPage, addVisual, updateVisual, formatVisual, formatOptions, layoutPage, removeItem, saveReport, discardChanges, readDefinitionFile, writeDefinitionFile, ...read]);
+      if (s.report?.access === "edit") return withContext(s, [reportOverview, addPage, addVisual, updateVisual, formatVisual, formatOptions, layoutPage, placeVisuals, removeItem, saveReport, discardChanges, readDefinitionFile, writeDefinitionFile, ...read]);
       if (s.report?.access === "editor") return withContext(s, [...EDITOR_TOOLS, ...read]);
       return withContext(s, read);
     },

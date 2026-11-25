@@ -12,7 +12,29 @@ import { download, errorText, get } from "@/lib/api";
 import { reportStructure } from "@/lib/items";
 import { useItems } from "@/lib/store";
 
-type Structure = { source: string; note?: string; pages: { name: string; displayName: string; hidden?: boolean; visuals: { name: string; type: string; title?: string; fields?: Record<string, string[]>; slicerOn?: string[] }[] }[]; theme?: { base?: string; custom?: string }; measures?: unknown[] };
+type Filter = { field: string; type?: string; selection?: string; hidden?: boolean };
+type Visual = { name: string; type: string; title?: string; fields?: Record<string, string[]>; slicerOn?: string[]; filters?: (Filter | string)[]; hidden?: boolean };
+type Structure = { source: string; note?: string; format?: string; reportFilters?: Filter[]; pages: { name: string; displayName: string; hidden?: boolean; filters?: Filter[]; visuals: Visual[] }[]; theme?: { base?: string; custom?: string }; measures?: unknown[] };
+
+/** Filters as chips: the field, and what it keeps. */
+function Filters({ label, list }: { label: string; list?: (Filter | string)[] }) {
+  if (!list?.length) return null;
+  return (
+    <div className="flex flex-wrap items-baseline gap-1.5 text-[12px]">
+      <span className="text-muted-foreground">{label}</span>
+      {list.map((f, i) => {
+        const x = typeof f === "string" ? { field: f } : f;
+        return (
+          <span key={i} className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11.5px]">
+            {x.field}
+            {x.selection ? <span className="text-muted-foreground"> {x.selection}</span> : null}
+            {x.hidden ? <span className="text-muted-foreground"> (hidden)</span> : null}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 const query = (r: ReportRef, detail: string) => new URLSearchParams({ id: r.id, detail, ...(r.groupId ? { groupId: r.groupId } : {}), ...(r.appId ? { appId: r.appId } : {}) });
 
@@ -47,8 +69,8 @@ export function StructureView({ report }: { report?: ReportRef }) {
   return (
     <div className="flex flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="flex-1 text-[13px] text-muted-foreground">
-          {s.pages.length} pages · {s.pages.reduce((n, p) => n + p.visuals.length, 0)} visuals · {s.source === "definition" ? `full definition — theme ${s.theme?.custom ?? s.theme?.base ?? "default"}, ${s.measures?.length ?? 0} report measures` : "read through an embed (view only)"}
+        <div className="min-w-[240px] flex-1 text-[13px] text-muted-foreground">
+          {s.pages.length} pages · {s.pages.reduce((n, p) => n + p.visuals.length, 0)} visuals · {s.source === "definition" ? `full definition${s.format ? ` (${s.format})` : ""} — theme ${s.theme?.custom ?? s.theme?.base ?? "default"}, ${s.measures?.length ?? 0} report measures` : "read through an embed (view only)"}
           {kept?.structureAt && ` · read ${new Date(kept.structureAt).toLocaleString()}`}
         </div>
         <Button variant="outline" size="sm" onClick={() => read(true)} disabled={!!busy}>
@@ -59,6 +81,11 @@ export function StructureView({ report }: { report?: ReportRef }) {
         </Button>
       </div>
       {error && <ErrorBox>{error}</ErrorBox>}
+      {!!s.reportFilters?.length && (
+        <div className="rounded-2xl border px-4 py-3">
+          <Filters label="Report filters" list={s.reportFilters} />
+        </div>
+      )}
       {s.pages.map((p) => (
         <div key={p.name} className="rounded-2xl border">
           <div className="flex items-center gap-2 border-b px-4 py-3">
@@ -66,12 +93,31 @@ export function StructureView({ report }: { report?: ReportRef }) {
             {p.hidden && <span className="badge bg-muted">hidden</span>}
             <span className="text-[12px] text-muted-foreground">{p.visuals.length} visuals</span>
           </div>
+          {!!p.filters?.length && (
+            <div className="border-b px-4 py-2">
+              <Filters label="Page filters" list={p.filters} />
+            </div>
+          )}
           <div className="divide-y">
             {p.visuals.map((v) => (
-              <div key={v.name} className="flex gap-3 px-4 py-2 text-[12.5px]">
-                <span className="w-36 shrink-0 truncate font-mono text-muted-foreground">{v.type}</span>
-                <span className="w-48 shrink-0 truncate font-medium">{v.title ?? ""}</span>
-                <span className="min-w-0 flex-1 truncate text-muted-foreground">{v.fields ? Object.entries(v.fields).map(([r, f]) => `${r}: ${f.join(", ")}`).join(" · ") : v.slicerOn?.join(", ")}</span>
+              <div key={v.name} className="flex flex-wrap gap-x-3 gap-y-1 px-4 py-2 text-[12.5px]">
+                <span className="w-36 min-w-0 truncate font-mono text-muted-foreground" title={v.name}>{v.type}</span>
+                <span className="w-48 min-w-0 truncate font-medium" title={v.title}>{v.title ?? ""}{v.hidden ? <span className="font-normal text-muted-foreground"> (hidden)</span> : null}</span>
+                <div className="flex min-w-[220px] flex-1 basis-[260px] flex-col gap-1">
+                  {v.fields && Object.keys(v.fields).length ? (
+                    Object.entries(v.fields).map(([r, f]) => (
+                      <div key={r} className="break-words">
+                        <span className="text-muted-foreground">{r}: </span>
+                        <span className="font-mono text-[11.5px]">{f.join(", ")}</span>
+                      </div>
+                    ))
+                  ) : v.slicerOn ? (
+                    <div className="break-words"><span className="text-muted-foreground">Slicer on: </span><span className="font-mono text-[11.5px]">{v.slicerOn.join(" > ")}</span></div>
+                  ) : (
+                    <span className="text-muted-foreground">—</span>
+                  )}
+                  <Filters label="Filters" list={v.filters} />
+                </div>
               </div>
             ))}
           </div>

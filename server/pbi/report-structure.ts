@@ -8,7 +8,8 @@
 import type { Ref } from "@shared/types";
 import { pbi, scope } from "../ms/api";
 import { embeddedStructure } from "../capture/browser";
-import { partText, reportDefinition, type Part } from "./definitions";
+import { partText, type Part } from "./definitions";
+import { definitionFiles } from "./draft";
 
 const literal = (v: unknown) => String((v as any)?.expr?.Literal?.Value ?? "").replace(/^'(.*)'$/s, "$1").replace(/''/g, "'");
 const fieldOf = (f: any): string => {
@@ -19,12 +20,28 @@ const fieldOf = (f: any): string => {
   if (f.HierarchyLevel) return `${f.HierarchyLevel.Expression?.Hierarchy?.Expression?.SourceRef?.Entity ?? "?"}[${f.HierarchyLevel.Level}]`;
   return JSON.stringify(f).slice(0, 80);
 };
+const valueOf = (x: any): string => {
+  const v = x?.Literal?.Value;
+  if (v === undefined) return x?.Column ? fieldOf(x) : "?";
+  return String(v).replace(/^'(.*)'$/s, "$1").replace(/^datetime'(.*)'$/, "$1").replace(/(\d)[LD]$/, "$1");
+};
+const COMPARE = ["=", ">", ">=", "<", "<="];
+/** A filter's condition in words: In [values], comparisons, Not, And / Or. */
+const conditionText = (c: any): string => {
+  if (!c) return "";
+  if (c.In) return `in [${(c.In.Values ?? []).map((row: any[]) => row.map(valueOf).join(" | ")).join(", ")}]`;
+  if (c.Not) return `not ${conditionText(c.Not.Expression)}`;
+  if (c.And) return `${conditionText(c.And.Left)} and ${conditionText(c.And.Right)}`;
+  if (c.Or) return `${conditionText(c.Or.Left)} or ${conditionText(c.Or.Right)}`;
+  if (c.Comparison) return `${COMPARE[c.Comparison.ComparisonKind] ?? "?"} ${valueOf(c.Comparison.Right)}`;
+  if (c.Contains) return `contains ${valueOf(c.Contains.Right)}`;
+  return JSON.stringify(c).replace(/"(Expression|SourceRef|Source|Property)":/g, "").slice(0, 200);
+};
 const filtersOf = (config: any) =>
-  (config?.filters ?? []).map((f: any) => ({
-    field: fieldOf(f.field),
-    type: f.type,
-    ...(f.filter?.Where ? { condition: JSON.stringify(f.filter.Where).replace(/"(Expression|SourceRef|Source|Property)":/g, "").slice(0, 300) } : {}),
-  }));
+  (config?.filters ?? []).map((f: any) => {
+    const where = (f.filter?.Where ?? []).map((w: any) => conditionText(w.Condition)).filter(Boolean).join("; ");
+    return { field: fieldOf(f.field), type: f.type, ...(where ? { selection: where } : {}), ...(f.isHiddenInViewMode ? { hidden: true } : {}), ...(f.isLockedInViewMode ? { locked: true } : {}) };
+  });
 
 export type ReportStructure = { source: "definition" | "embed"; report: { id: string; name?: string }; [k: string]: unknown };
 
@@ -91,8 +108,8 @@ export async function reportStructure(ref: Ref, detail: "summary" | "full" = "su
   const head = { id: ref.id, name: meta?.name, datasetId: meta?.datasetId, webUrl: meta?.webUrl };
   if (!ref.appId) {
     try {
-      const parts = await reportDefinition(ref);
-      return { source: "definition", report: head, ...(await reportStructureFromParts(parts, detail)) };
+      const { parts, legacy } = await definitionFiles(ref);
+      return { source: "definition", report: head, ...(legacy ? { format: "PBIR-Legacy" } : {}), ...(await reportStructureFromParts(parts, detail)) };
     } catch {
       // Not editable: read through an embed.
     }
