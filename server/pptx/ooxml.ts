@@ -44,6 +44,15 @@ export type ShapeInfo = {
 };
 export type SlideInfo = { number: number; layout: string; shapes: ShapeInfo[]; notes?: string };
 
+/** A part's path relative to another part's folder (for a relationship's Target). */
+function relative(from: string, to: string) {
+  const a = from.split("/").slice(0, -1);
+  const b = to.split("/");
+  let i = 0;
+  while (i < a.length && a[i] === b[i]) i++;
+  return [...a.slice(i).map(() => ".."), ...b.slice(i)].join("/");
+}
+
 const parse = (xml: string) => new DOMParser().parseFromString(xml, "application/xml") as unknown as Document;
 const serialize = (doc: Document) => new XMLSerializer().serializeToString(doc as never);
 const round = (v: number) => Math.round(v * 100) / 100;
@@ -57,13 +66,13 @@ function textOf(body: El | undefined) {
 
 export class Pptx {
   private docs = new Map<string, Document>();
-  private constructor(private zip: JSZip) {}
+  private constructor(readonly zip: JSZip) {}
 
   static async load(data: Uint8Array) {
     return new Pptx(await JSZip.loadAsync(data));
   }
 
-  private async doc(file: string) {
+  async doc(file: string) {
     if (!this.docs.has(file)) {
       const text = await this.zip.file(file)?.async("string");
       if (text === undefined) throw new Error(`Missing part ${file}`);
@@ -71,13 +80,13 @@ export class Pptx {
     }
     return this.docs.get(file)!;
   }
-  private relsPath = (file: string) => file.replace(/([^/]+)$/, "_rels/$1.rels");
+  relsPath = (file: string) => file.replace(/([^/]+)$/, "_rels/$1.rels");
   private async rels(file: string) {
     const p = this.relsPath(file);
     if (!this.zip.file(p)) this.zip.file(p, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${NS.rel}"/>`);
     return this.doc(p);
   }
-  private resolve(from: string, target: string) {
+  resolve(from: string, target: string) {
     const parts = from.split("/").slice(0, -1);
     for (const seg of target.split("/")) seg === ".." ? parts.pop() : seg !== "." && parts.push(seg);
     return parts.join("/");
@@ -91,7 +100,7 @@ export class Pptx {
     return all(pres, NS.p, "sldId").map((s) => this.resolve("ppt/presentation.xml", byId.get(s.getAttributeNS(NS.r, "id")!)!));
   }
 
-  private async slideFile(number: number) {
+  async slideFile(number: number) {
     const files = await this.slideFiles();
     const f = files[number - 1];
     if (!f) throw new Error(`No slide ${number} (the deck has ${files.length}).`);
@@ -406,6 +415,124 @@ export class Pptx {
     list.removeChild(item);
     const rest = kids(list, NS.p, "sldId");
     list.insertBefore(item, rest[to - 1] ?? null);
+  }
+
+  /** Slide size in EMU. */
+  private async size() {
+    const sz = all(await this.doc("ppt/presentation.xml"), NS.p, "sldSz")[0];
+    return { cx: Number(sz?.getAttribute("cx") ?? 12192000), cy: Number(sz?.getAttribute("cy") ?? 6858000) };
+  }
+
+  private async contentType(part: string, type: string) {
+    const ct = await this.doc("[Content_Types].xml");
+    if (all(ct, NS.ct, "Override").some((o) => o.getAttribute("PartName") === `/${part}`)) return;
+    const o = ct.createElementNS(NS.ct, "Override");
+    o.setAttribute("PartName", `/${part}`);
+    o.setAttribute("ContentType", type);
+    ct.documentElement!.appendChild(o);
+  }
+
+  private uniqueName(dir: string, base: string, ext: string) {
+    let n = 1;
+    while (this.zip.file(`${dir}/${base}${n}.${ext}`)) n++;
+    return `${dir}/${base}${n}.${ext}`;
+  }
+
+  /**
+   * A slide of another deck (e.g. one drawn from the template) copied into this one after slide `after`
+   * (0: first): its pictures, charts and links come along, it takes a layout of this deck (a blank one
+   * when there is one), and it is scaled when the slide sizes differ. Returns its number.
+   */
+  async importSlide(src: Pptx, number: number, after: number) {
+    const srcFile = await src.slideFile(number);
+    const target = this.uniqueName("ppt/slides", "slide", "xml");
+    const srcCt = await src.doc("[Content_Types].xml");
+    const typeOf = (part: string) => all(srcCt, NS.ct, "Override").find((o) => o.getAttribute("PartName") === `/${part}`)?.getAttribute("ContentType");
+    /** Copies a part and the parts it refers to (except layouts and notes), under new names; returns the new path. */
+    const copied = new Map<string, string>();
+    const copyPart = async (from: string): Promise<string> => {
+      if (copied.has(from)) return copied.get(from)!;
+      const ext = from.split(".").pop()!;
+      const dir = from.split("/").slice(0, -1).join("/");
+      const to = from === srcFile ? target : this.uniqueName(dir, (from.split("/").pop() ?? "part").replace(/\d*\.\w+$/, ""), ext);
+      copied.set(from, to);
+      const relsFrom = src.relsPath(from);
+      if (src.zip.file(relsFrom)) {
+        const rels = parse(await src.zip.file(relsFrom)!.async("string"));
+        for (const r of all(rels, NS.rel, "Relationship")) {
+          const type = r.getAttribute("Type")!;
+          if (r.getAttribute("TargetMode") === "External") continue;
+          const abs = src.resolve(from, r.getAttribute("Target")!);
+          if (/slideLayout$/.test(type)) r.setAttribute("Target", `../slideLayouts/${(await this.blankLayout()).split("/").pop()}`);
+          else if (/notesSlide$/.test(type)) r.parentNode!.removeChild(r);
+          else if (src.zip.file(abs)) {
+            const newPath = await copyPart(abs);
+            r.setAttribute("Target", relative(to, newPath));
+          }
+        }
+        this.zip.file(this.relsPath(to), serialize(rels));
+      }
+      const data = await src.zip.file(from)!.async("uint8array");
+      this.zip.file(to, data);
+      const type = typeOf(from);
+      if (type) await this.contentType(to, type);
+      else {
+        // A file typed by its extension (pictures, embedded workbooks).
+        const ct = await this.doc("[Content_Types].xml");
+        if (!all(ct, NS.ct, "Default").some((d) => d.getAttribute("Extension") === ext)) {
+          const d = ct.createElementNS(NS.ct, "Default");
+          const srcDefault = all(srcCt, NS.ct, "Default").find((x) => x.getAttribute("Extension") === ext);
+          d.setAttribute("Extension", ext);
+          d.setAttribute("ContentType", srcDefault?.getAttribute("ContentType") ?? "application/octet-stream");
+          ct.documentElement!.insertBefore(d, ct.documentElement!.firstChild);
+        }
+      }
+      return to;
+    };
+    await copyPart(srcFile);
+    await this.contentType(target, "application/vnd.openxmlformats-officedocument.presentationml.slide+xml");
+    // Scaled to this deck's slide size.
+    const [a, b] = [await src.size(), await this.size()];
+    if (a.cx !== b.cx || a.cy !== b.cy) {
+      const doc = parse(await this.zip.file(target)!.async("string"));
+      const kx = b.cx / a.cx, ky = b.cy / a.cy;
+      for (const off of all(doc, NS.a, "off")) (off.setAttribute("x", String(Math.round(Number(off.getAttribute("x")) * kx))), off.setAttribute("y", String(Math.round(Number(off.getAttribute("y")) * ky))));
+      for (const ext of all(doc, NS.a, "ext")) if (ext.getAttribute("cx")) (ext.setAttribute("cx", String(Math.round(Number(ext.getAttribute("cx")) * kx))), ext.setAttribute("cy", String(Math.round(Number(ext.getAttribute("cy")) * ky))));
+      this.zip.file(target, serialize(doc));
+    }
+    // In the slide list, after `after`.
+    const presRels = await this.rels("ppt/presentation.xml");
+    const ids = new Set(all(presRels, NS.rel, "Relationship").map((r) => r.getAttribute("Id")));
+    let n = ids.size + 1;
+    while (ids.has(`rId${n}`)) n++;
+    const rel = presRels.createElementNS(NS.rel, "Relationship");
+    rel.setAttribute("Id", `rId${n}`);
+    rel.setAttribute("Type", REL_SLIDE);
+    rel.setAttribute("Target", `slides/${target.split("/").pop()}`);
+    presRels.documentElement!.appendChild(rel);
+    const pres = await this.doc("ppt/presentation.xml");
+    const list = all(pres, NS.p, "sldIdLst")[0];
+    const items = kids(list, NS.p, "sldId");
+    const sid = pres.createElementNS(NS.p, "p:sldId");
+    sid.setAttribute("id", String(Math.max(255, ...items.map((i) => Number(i.getAttribute("id")))) + 1));
+    sid.setAttributeNS(NS.r, "r:id", `rId${n}`);
+    list.insertBefore(sid, items[after] ?? null);
+    return after + 1;
+  }
+
+  /** A layout of this deck for imported slides: a blank one when there is one, else the one with the fewest shapes. */
+  private async blankLayout() {
+    const layouts = Object.keys(this.zip.files).filter((f) => /^ppt\/slideLayouts\/slideLayout\d+\.xml$/.test(f));
+    let best = layouts[0];
+    let bestShapes = Infinity;
+    for (const f of layouts) {
+      const d = await this.doc(f);
+      const name = all(d, NS.p, "cSld")[0]?.getAttribute("name") ?? "";
+      const shapes = all(d, NS.p, "sp").length + all(d, NS.p, "pic").length;
+      if (/blank|vide/i.test(name)) return f;
+      if (shapes < bestShapes) (best = f), (bestShapes = shapes);
+    }
+    return best;
   }
 
   /** The bytes of a picture of the deck (by its file name in the structure). */

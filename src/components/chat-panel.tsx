@@ -3,7 +3,7 @@
  * buttons), the mascot dressed for the screen, and the composer (text, pictures and files).
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowUpIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, HistoryIcon, Loader2Icon, PaperclipIcon, PanelLeftCloseIcon, PlusIcon, SquareIcon, Trash2Icon, XIcon } from "lucide-react";
+import { ArrowUpIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, FolderOpenIcon, HistoryIcon, Loader2Icon, PaperclipIcon, PanelLeftCloseIcon, PlusIcon, SquareIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import type { ChatItem, FileRef, ScreenId } from "@shared/types";
 import { Markdown } from "./markdown";
@@ -12,14 +12,46 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Mascot, outfitOf } from "@/features/mascot";
 import type { useChat } from "@/lib/chat";
 import { errorText, fileUrl } from "@/lib/api";
-import { keepFile } from "@/lib/store";
+import { keepFile, useProjects } from "@/lib/store";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
 type Chat = ReturnType<typeof useChat>;
 type Assistant = Extract<ChatItem, { kind: "assistant" }>;
 
-const LABELS: Record<ScreenId, string> = { trainer: "Trainer", builder: "Builder", scientist: "Data Scientist", presenter: "Presenter", reports: "Assistant", datasets: "Assistant", confluence: "Writer" };
+const LABELS: Record<ScreenId, string> = { trainer: "Trainer", builder: "Builder", scientist: "Data Scientist", presenter: "Presenter" };
+
+/** The projects whose Confluence pages are the context (global choice, several allowed). */
+function ProjectsMenu() {
+  const settings = useSettings();
+  const [chosen, setChosen] = useProjects();
+  const all = settings?.confluence.projects ?? [];
+  if (!all.length) return null;
+  const ids = chosen ?? all.slice(0, 1).map((p) => p.id);
+  const names = all.filter((p) => ids.includes(p.id)).map((p) => p.name);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="flex max-w-36 items-center gap-1 rounded-full border px-2.5 py-1 text-[12px] text-muted-foreground hover:bg-muted hover:text-foreground" title="Projects: their Confluence pages are the assistant's context">
+          <FolderOpenIcon className="size-3.5 shrink-0" />
+          <span className="truncate">{names.length ? names.join(", ") : "No project"}</span>
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Projects: their Confluence pages are given to the assistant at the start of a conversation.</div>
+        {all.map((p) => {
+          const on = ids.includes(p.id);
+          return (
+            <DropdownMenuItem key={p.id} onSelect={(e) => (e.preventDefault(), setChosen(on ? ids.filter((x) => x !== p.id) : [...ids, p.id]))}>
+              <span className={cn("flex size-4 items-center justify-center rounded border", on && "border-foreground bg-foreground text-background")}>{on && <CheckIcon className="size-3" />}</span>
+              <span className="flex-1 truncate">{p.name}</span>
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
 
 export function ChatPanel({ chat, screen, placeholder, disabled, accept = "image/*", suggestions, onFold }: { chat: Chat; screen: ScreenId; placeholder?: string; disabled?: string; accept?: string; suggestions?: string[]; onFold?: () => void }) {
   const settings = useSettings();
@@ -34,12 +66,13 @@ export function ChatPanel({ chat, screen, placeholder, disabled, accept = "image
   const state = chat.running ? (chat.status?.includes("Saving") || chat.status?.includes("Working") ? "working" : items.at(-1)?.kind === "assistant" && (items.at(-1) as Assistant).text ? "talking" : "thinking") : "idle";
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center gap-2 border-b px-4 py-3">
+      <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4">
         <div className="flex size-9 items-center justify-center overflow-hidden rounded-xl bg-muted">{mascot ? <Mascot outfit={outfitOf(screen)} state={chat.running ? "thinking" : "idle"} size={34} /> : <span className="text-[13px] font-semibold">AI</span>}</div>
         <div className="min-w-0 flex-1">
           <div className="text-[14px] font-semibold">{LABELS[screen]}</div>
           <div className="truncate text-[12px] text-muted-foreground">{chat.conversation?.title ?? "New conversation"}</div>
         </div>
+        <ProjectsMenu />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label="Conversations">
@@ -221,7 +254,8 @@ function AssistantMessage({ item, last, status, mascot, onAnswer, disabled }: { 
       <div className="w-8 shrink-0 pt-0.5">{mascot}</div>
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <Steps tools={item.tools} />
-        {item.text && (
+        {/* A question is shown alone: its card says everything (the text written beside it is not shown). */}
+        {item.text && !item.ask && (
           <div className="text-[13.5px]">
             <Markdown>{item.text}</Markdown>
           </div>

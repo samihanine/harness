@@ -6,8 +6,10 @@
  * a logo picture is given; else the brand is written).
  */
 import PptxGenJS from "pptxgenjs";
-import { parseDeck, plain, type Block, type Cell, type Deck, type Inline, type Slide } from "@shared/deck";
-import { loadPicture, type Picture } from "./images";
+import { parseDeck, plain, slideZones, type Block, type Cell, type Deck, type Inline, type PbiZone, type Slide } from "@shared/deck";
+import { imageSize, loadPicture, type Picture } from "./images";
+import { rasterize } from "../capture/browser";
+import { capturePbiZone } from "./pbi-zones";
 import { staticFile } from "../static";
 
 const W = 13.333;
@@ -53,14 +55,34 @@ function missingPicture(slide: PSlide, box: Box, src: string) {
   slide.addText(`Picture not found\n${src.slice(0, 80)}`, { ...box, fontFace: FONT, fontSize: 10, color: C.muted, align: "center", valign: "middle" });
 }
 
-function brand(slide: PSlide, deck: Deck, box: Box, color = C.text, size = 16) {
-  const logo = template("logo.png") && logoData;
-  if (logo) slide.addImage({ data: logo, ...box, sizing: { type: "contain", w: box.w, h: box.h } as never });
-  else slide.addText(deck.head.brand.split("").join(" "), { ...box, fontFace: "Didot", fontSize: size, color, bold: false, charSpacing: 4, margin: 0, valign: "middle" });
+/** The logo (the template's, or the deck's `logo:`), as tall as the box, from its left (or centered). */
+function brand(slide: PSlide, deck: Deck, box: Box, color = C.text, size = 16, center = false) {
+  const logo = color === C.white ? logos?.white : logos?.black;
+  if (logo) {
+    const w = Math.min(box.w, box.h * logo.ratio);
+    const h = w / logo.ratio;
+    slide.addImage({ data: logo.data, x: center ? box.x + (box.w - w) / 2 : box.x, y: box.y + (box.h - h) / 2, w, h });
+  } else slide.addText(deck.head.brand.split("").join(" "), { ...box, fontFace: "Didot", fontSize: size, color, bold: false, charSpacing: 4, margin: 0, valign: "middle" });
 }
 
 /** The template's logo picture (assets/template/logo.png), read once per export. */
-let logoData: string | undefined;
+let logos: { black?: { data: string; ratio: number }; white?: { data: string; ratio: number } } | undefined;
+
+/** The logo pictures of an export: the deck's own (`logo:`), else the template's SVG drawn in black and in white. */
+async function loadLogos(deck: Deck) {
+  if (deck.head.logo) {
+    const p = await loadPicture(deck.head.logo).catch(() => undefined);
+    return p ? { black: { data: p.data, ratio: p.width / p.height }, white: { data: p.data, ratio: p.width / p.height } } : {};
+  }
+  const svg = await staticFile("assets/template/logo.svg")?.text();
+  if (!svg) return {};
+  const draw = async (color: string) => {
+    const png = await rasterize(new TextEncoder().encode(svg.replaceAll("currentColor", color)), "image/svg+xml", 1600).catch(() => undefined);
+    const size = png && imageSize(png);
+    return png && size ? { data: `image/png;base64,${png.toString("base64")}`, ratio: size.width / size.height } : undefined;
+  };
+  return { black: await draw("#000000"), white: await draw("#FFFFFF") };
+}
 
 /* ------------------------------ Content blocks ------------------------------ */
 
@@ -267,7 +289,7 @@ async function drawSlide(pptx: Pptx, deck: Deck, s: Slide) {
     case "end": {
       await heroPhoto(slide, s, "end.jpg", { x: 0, y: 0, w: W, h: H });
       slide.addShape("rect", { x: 0, y: 0, w: W, h: H, fill: { color: "000000", transparency: 55 }, line: { color: "000000", transparency: 100 } });
-      brand(slide, deck, { x: W / 2 - 1.5, y: 2.6, w: 3, h: 0.7 }, C.white, 30);
+      brand(slide, deck, { x: W / 2 - 1.5, y: 2.5, w: 3, h: 0.8 }, C.white, 30, true);
       const text = [title, ...s.blocks.filter((b) => b.type === "paragraph").map((b) => plain((b as { content: Inline[] }).content))].filter(Boolean).join("\n");
       if (text) slide.addText(text, { x: 1, y: 3.6, w: W - 2, h: 1.5, fontFace: FONT, fontSize: 18, color: C.white, align: "center", margin: 0 });
       return;
@@ -355,16 +377,51 @@ async function drawSlide(pptx: Pptx, deck: Deck, s: Slide) {
       }
       return;
     }
+    case "report":
+    case "visual":
+    case "compare":
+    case "tutorial": {
+      chrome(slide, deck, s, n);
+      const zones = slideZones(s);
+      if (!zones.length) {
+        missingPicture(slide, body, "report: is missing (report: <id or name>, page:, visual:)");
+        return;
+      }
+      for (const z of zones) {
+        if (z.caption) slide.addText(z.caption, { x: z.box.x, y: z.box.y - 0.42, w: z.box.w, h: 0.36, fontFace: FONT, fontSize: 13, bold: true, color: C.navy, margin: 0 });
+        await drawZone(slide, z);
+      }
+      // Text beside the visual: the message (visual) or numbered steps (tutorial).
+      if (s.layout === "visual" || s.layout === "tutorial") {
+        const x = body.x + body.w * 0.6 + 0.4;
+        const blocks = s.layout === "tutorial" ? s.blocks.map((b) => (b.type === "list" ? { ...b, ordered: true } : b)) : s.blocks;
+        if (s.layout === "tutorial") slide.addShape("rect", { x: x - 0.2, y: body.y, w: 0.05, h: body.h, fill: { color: C.gold }, line: { color: C.gold } });
+        await drawBlocks(slide, blocks, { x, y: body.y, w: body.x + body.w - x, h: body.h });
+      }
+      return;
+    }
     default:
       chrome(slide, deck, s, n);
       await drawBlocks(slide, [...s.blocks, ...s.right], body);
   }
 }
 
+/** A Power BI view captured as a picture, fitted in its zone (a placeholder saying why when it fails). */
+async function drawZone(slide: PSlide, z: PbiZone) {
+  try {
+    const png = await capturePbiZone(z);
+    const size = imageSize(png);
+    if (!size) throw new Error("no picture");
+    addPicture(slide, { data: `image/png;base64,${png.toString("base64")}`, mime: "image/png", ...size }, z.box);
+  } catch (e) {
+    missingPicture(slide, z.box, `Power BI: ${e instanceof Error ? e.message : e}`.slice(0, 160));
+  }
+}
+
 /** The deck as a .pptx file. */
 export async function deckToPptx(source: string): Promise<Buffer> {
   const deck = parseDeck(source);
-  logoData = template("logo.png") ? (await loadPicture("template:logo.png").catch(() => undefined))?.data : undefined;
+  logos = await loadLogos(deck);
   const pptx = new PptxGenJS();
   pptx.layout = "LAYOUT_WIDE";
   pptx.title = deck.head.title;

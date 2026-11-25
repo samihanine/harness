@@ -81,7 +81,12 @@ export async function reportStructureFromParts(parts: Part[], detail: "summary" 
   };
 }
 
-export async function reportStructure(ref: Ref, detail: "summary" | "full" = "summary"): Promise<ReportStructure> {
+/** Summaries the browser already holds (kept with the report, refreshed on demand). */
+const seeded = new Map<string, ReportStructure>();
+export const seedStructure = (id: string, s: unknown) => void (s && typeof s === "object" && Array.isArray((s as { pages?: unknown }).pages) && seeded.set(id, s as ReportStructure));
+
+export async function reportStructure(ref: Ref, detail: "summary" | "full" = "summary", fresh = false): Promise<ReportStructure> {
+  if (detail === "summary" && !fresh && seeded.has(ref.id)) return seeded.get(ref.id)!;
   const meta = ref.appId ? undefined : await pbi(`${scope(ref.groupId)}/reports/${ref.id}`).catch(() => undefined);
   const head = { id: ref.id, name: meta?.name, datasetId: meta?.datasetId, webUrl: meta?.webUrl };
   if (!ref.appId) {

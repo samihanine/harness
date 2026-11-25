@@ -4,19 +4,20 @@ import { DownloadIcon, RefreshCwIcon, TableIcon } from "lucide-react";
 import type { Ref } from "@shared/types";
 import { Empty, ErrorBox, Loading } from "@/components/common";
 import { Button } from "@/components/ui/button";
-import { download, errorText, get } from "@/lib/api";
+import { download, errorText } from "@/lib/api";
+import { modelInfo } from "@/lib/items";
 
 type Info = { source: string; tables: { name: string; description?: string; hidden?: boolean; kind?: string; rows?: number; columns: { name: string; type?: string; values?: string; hidden?: boolean; description?: string; expression?: string }[]; measures: { name: string; expression?: string; format?: string; folder?: string }[]; hierarchies: string[] }[]; relationships: { from: string; to: string; cardinality: string; both: boolean; active: boolean }[]; roles: string[]; warnings: string[]; readAt: string };
 
+/** The model's structure kept in this browser (read once; `reload` reads it again). */
 export function useModel(ref?: Ref, reload = 0) {
   const [info, setInfo] = useState<Info>();
   const [error, setError] = useState<string>();
   useEffect(() => {
     if (!ref?.id) return;
-    setInfo(undefined);
     setError(undefined);
-    const q = new URLSearchParams({ id: ref.id, ...(ref.groupId ? { groupId: ref.groupId } : {}), ...(reload ? { fresh: "1" } : {}) });
-    get<Info>(`/powerbi/model?${q}`).then(setInfo, (e) => setError(errorText(e)));
+    if (reload) setInfo(undefined);
+    modelInfo(ref, reload > 0).then((x) => setInfo(x as Info), (e) => setError(errorText(e)));
   }, [ref?.id, ref?.groupId, reload]);
   return { info, error };
 }
@@ -33,10 +34,10 @@ export function ModelView({ refOf, name }: { refOf?: Ref; name?: string }) {
     <div className="flex flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex-1 text-[13px] text-muted-foreground">
-          {info.tables.length} tables · {info.tables.reduce((n, t) => n + t.measures.length, 0)} measures · {info.relationships.length} relationships · {info.source === "tmdl" ? "full definition" : "read with DAX"}
+          {info.tables.length} tables · {info.tables.reduce((n, t) => n + t.measures.length, 0)} measures · {info.relationships.length} relationships · {info.source === "tmdl" ? "full definition" : "read with DAX"} · read {new Date(info.readAt).toLocaleString()}
         </div>
         <Button variant="outline" size="sm" onClick={() => setReload((n) => n + 1)}>
-          <RefreshCwIcon /> Read again
+          <RefreshCwIcon /> Refresh
         </Button>
         <Button variant="dark" size="sm" onClick={() => download(new Blob([JSON.stringify(info, null, 2)], { type: "application/json" }), `${name ?? "model"}.json`)}>
           <DownloadIcon /> Structure (JSON)

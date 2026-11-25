@@ -5,7 +5,7 @@ import { tool } from "../tool";
 export const askUser = tool({
   name: "ask_user",
   description:
-    "Ask the user to clarify or confirm before acting. Say briefly what you found (message), then 1 to 3 questions, each with 2 to 6 short options built from what you explored (real names and values, the most likely first). The user answers with a click or in words. Your turn ends with this call: write nothing after it.",
+    "Ask the user to clarify or confirm before acting. Say briefly what you found (message), then 1 to 3 questions, each with 2 to 6 short options built from what you explored (real names and values, the most likely first). The user answers with a click or in words. Everything you want to say goes in `message` (the user sees only this card): write no other text in the same reply. Your turn ends with this call.",
   args: z.object({
     message: z.string().optional().describe("What you found / understood, in 1-3 short sentences (markdown)."),
     questions: z

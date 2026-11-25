@@ -3,6 +3,8 @@ import { z } from "zod";
 import { capture, captureArgs } from "../deck/capture-powerbi";
 import { tool, type ToolContext } from "../tool";
 import { openPptx, pictureBytes, savePptx } from "./shared";
+import { Pptx } from "@server/pptx/ooxml";
+import { deckToPptx } from "@server/pptx/deck";
 
 const source = z.object({ capture: z.object(captureArgs).optional().describe("A fresh picture of a Power BI page or visual."), src: z.string().optional().describe("file:<id> (a capture or an uploaded picture) or an https URL.") });
 
@@ -94,5 +96,24 @@ export const slideAction = tool({
     else await pptx.moveSlide(a.slide, a.to ?? 1);
     await savePptx(ctx, doc, pptx);
     return `Slide ${a.slide}: ${a.action} done${note ? `, ${note}` : ""}. Numbers of the following slides changed: read the structure again.`;
+  },
+});
+
+export const addTemplateSlide = tool({
+  name: "add_template_slide",
+  description:
+    "Add a new slide drawn from the company template (the create mode's markdown and layouts: kpis, table, two-cols, visual (Power BI), chart, quote…) into the PowerPoint, after slide `after` (0 = first). Use it for a new slide; change existing slides in place with the other tools (custom slides).",
+  args: z.object({ after: z.number().int().min(0), markdown: z.string().describe("One slide: its frontmatter (layout: …) then a --- line, then its content.") }),
+  changes: true,
+  async run(a, ctx) {
+    const { doc, pptx } = await openPptx(ctx);
+    // A leading --- would make an empty first slide; a lone slide without a layout would be read as a cover.
+    const src = a.markdown.replace(/^\s*---[ \t]*\n/, "");
+    const md = /^\s*layout\s*:/m.test(src.split("---")[0] ?? "") ? src : `layout: default\n---\n${src}`;
+    ctx.status("Drawing the slide from the template…");
+    const drawn = await Pptx.load(new Uint8Array(await deckToPptx(`---\ntitle: ${doc.name}\n---\n${md}`)));
+    const number = await pptx.importSlide(drawn, 1, a.after);
+    await savePptx(ctx, doc, pptx);
+    return `Template slide added: slide ${number}. Check it with look_at_slides.`;
   },
 });

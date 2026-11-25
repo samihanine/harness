@@ -2,7 +2,8 @@
 import type { ChatScope, ScreenId } from "@shared/types";
 import type { Tool, ToolContext } from "@/tools/tool";
 import { slicerBriefing } from "@/tools/trainer/briefing";
-import { readContext } from "@/tools/common/read-context";
+import { readProjectPage } from "@/tools/common/read-context";
+import { EDITOR_TOOLS } from "@/tools/editor/editor";
 import { modelStructure } from "@/tools/model/model-structure";
 import { describeTable } from "@/tools/model/describe-table";
 import { searchModel } from "@/tools/model/search-model";
@@ -34,19 +35,17 @@ import { capturePowerbi } from "@/tools/deck/capture-powerbi";
 import { editSlides, readDeck, writeDeck } from "@/tools/deck/deck";
 import { lookAtDeck } from "@/tools/deck/look-at-deck";
 import { lookAtSlides, pptxStructure, viewPicture } from "@/tools/pptx/structure";
-import { addPicture, addText, replacePicture, setText, shapeAction, slideAction } from "@/tools/pptx/edit";
-import { listConfluencePages, readPage, writePage } from "@/tools/confluence/page";
+import { addPicture, addTemplateSlide, addText, replacePicture, setText, shapeAction, slideAction } from "@/tools/pptx/edit";
 import { TRAINER } from "@/prompts/trainer";
-import { BUILDER } from "@/prompts/builder";
+import { BUILDER, BUILDER_EDITOR } from "@/prompts/builder";
 import { SCIENTIST } from "@/prompts/scientist";
 import { PRESENTER_CREATE, PRESENTER_EDIT } from "@/prompts/presenter";
-import { CONFLUENCE, DATASETS, REPORTS } from "@/prompts/items";
 
 export type ScreenAgent = { system: (scope: ChatScope) => string; tools: (scope: ChatScope) => Tool[]; briefing?: (ctx: ToolContext) => Promise<string | undefined> };
 
 const modelTools = [modelStructure, describeTable, searchModel, runDax];
 const hasModel = (s: ChatScope) => !!(s.dataset || s.report?.datasetId || s.datasets?.length);
-const withContext = (s: ChatScope, tools: Tool[]) => (s.contexts?.length ? [...tools, readContext] : tools);
+const withContext = (s: ChatScope, tools: Tool[]) => (s.projects?.length ? [...tools, readProjectPage] : tools);
 
 const AGENTS: Record<ScreenId, ScreenAgent> = {
   trainer: {
@@ -55,19 +54,24 @@ const AGENTS: Record<ScreenId, ScreenAgent> = {
     tools: (s) => withContext(s, [readView, setSlicer, setFilter, goToPage, resetView, visualData, lookAtReport, reportStructure, ...(hasModel(s) ? modelTools : [])]),
   },
   builder: {
-    system: () => BUILDER,
-    tools: (s) =>
-      withContext(s, [reportOverview, addPage, addVisual, updateVisual, formatVisual, formatOptions, layoutPage, removeItem, saveReport, discardChanges, readDefinitionFile, writeDefinitionFile, lookAtReport, reportStructure, listReports, ...(hasModel(s) ? [...modelTools, ...(s.report?.access === "edit" ? [saveMeasure] : [])] : [])]),
+    system: (s) => (s.report?.access === "editor" ? BUILDER_EDITOR : BUILDER),
+    tools: (s) => {
+      const read = [lookAtReport, reportStructure, listReports, ...(hasModel(s) ? [...modelTools, saveMeasure] : [])];
+      // Editable definition: the PBIR tools; editable in the Power BI editor only: the editor tools; else reading.
+      if (s.report?.access === "edit") return withContext(s, [reportOverview, addPage, addVisual, updateVisual, formatVisual, formatOptions, layoutPage, removeItem, saveReport, discardChanges, readDefinitionFile, writeDefinitionFile, ...read]);
+      if (s.report?.access === "editor") return withContext(s, [...EDITOR_TOOLS, ...read]);
+      return withContext(s, read);
+    },
   },
   scientist: {
     system: () => SCIENTIST,
-    tools: (s) => withContext(s, [listSources, loadDax, loadFile, sqlQuery, createStep, setBlock, removeBlock, readAnalysis, setTitle, ...(hasModel(s) ? modelTools : [])]),
+    tools: (s) => withContext(s, [listSources, loadDax, loadFile, sqlQuery, createStep, setBlock, removeBlock, readAnalysis, setTitle, ...(hasModel(s) ? [...modelTools, saveMeasure, deleteMeasure] : [])]),
   },
   presenter: {
     system: (s) => (s.mode === "edit" ? PRESENTER_EDIT : PRESENTER_CREATE),
     tools: (s) =>
       withContext(s, [
-        ...(s.mode === "edit" ? [pptxStructure, lookAtSlides, viewPicture, setText, replacePicture, addPicture, addText, shapeAction, slideAction] : [readDeck, writeDeck, editSlides, lookAtDeck]),
+        ...(s.mode === "edit" ? [pptxStructure, lookAtSlides, viewPicture, setText, replacePicture, addPicture, addText, shapeAction, slideAction, addTemplateSlide] : [readDeck, writeDeck, editSlides, lookAtDeck]),
         capturePowerbi,
         listReports,
         reportStructure,
@@ -75,9 +79,6 @@ const AGENTS: Record<ScreenId, ScreenAgent> = {
         ...(hasModel(s) ? modelTools : []),
       ]),
   },
-  reports: { system: () => REPORTS, tools: (s) => withContext(s, [reportStructure, lookAtReport, listReports, ...(hasModel(s) ? modelTools : [])]) },
-  datasets: { system: () => DATASETS, tools: (s) => withContext(s, [...modelTools, ...(s.dataset?.access !== "view" ? [saveMeasure, deleteMeasure] : [])]) },
-  confluence: { system: () => CONFLUENCE, tools: (s) => withContext(s, [readPage, writePage, listConfluencePages, listReports, reportStructure, ...(hasModel(s) ? modelTools : [])]) },
 };
 
 export const screenAgent = (screen: ScreenId) => {

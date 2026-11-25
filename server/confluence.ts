@@ -32,9 +32,11 @@ async function call<T = any>(path: string, init: RequestInit = {}): Promise<T> {
 
 const link = (base: string, page: { _links?: { webui?: string; base?: string } }) => (page._links?.webui ? `${page._links.base ?? base.replace(/\/+$/, "")}${page._links.webui}` : undefined);
 
-export async function listPages(): Promise<{ id: string; title: string }[]> {
-  const { folderId } = await config();
-  if (!folderId) throw new Error("No Confluence folder set (Settings › Confluence › folder id).");
+/** The pages of a folder (its descendants; the settings' folder when none is given), by title. */
+export async function listPages(folder?: string): Promise<{ id: string; title: string }[]> {
+  const folderId = folder ?? (await config()).folderId;
+  if (!folderId) throw new Error("No Confluence folder set (Settings › Confluence).");
+  if (!/^\d+$/.test(folderId)) throw new Error(`"${folderId}" is not a Confluence folder id.`);
   const cql = encodeURIComponent(`ancestor=${folderId} and type=page order by title`);
   const found = await call<{ results: { id: string; title: string }[] }>(`/rest/api/content/search?cql=${cql}&limit=250`).catch(() => undefined);
   const results = found?.results ?? (await call<{ results: { id: string; title: string }[] }>(`/rest/api/content/${folderId}/child/page?limit=250`)).results;

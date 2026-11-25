@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { pagesOf, saveDraft, visualsOf } from "@server/pbi/draft";
 import { layoutProblems } from "@server/pbi/layout";
+import { forgetReport } from "@server/capture/browser";
 import { tool } from "../tool";
 import { draft } from "./shared";
 
@@ -18,6 +19,7 @@ export const saveReport = tool({
     ctx.status("Saving the report…");
     const n = await saveDraft(d);
     ctx.effect("reload");
+    await forgetReport(d.ref.id);
     // The service serves the new definition a little after it is written.
     await new Promise((r) => setTimeout(r, 2500));
     return `Saved (${n} change(s)). The report on screen reloads.`;

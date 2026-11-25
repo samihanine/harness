@@ -7,7 +7,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ChatEvent, ChatItem, ChatScope, FileRef, ScreenId } from "@shared/types";
 import { errorText, post } from "./api";
-import { ensureFiles, item, readLocal, remove, save, useItems, writeLocal, type Stored } from "./store";
+import { describeError } from "@/tools/browser/report-actions";
+import { ensureFiles, item, projectsOf, readLocal, remove, save, useItems, writeLocal, type Stored } from "./store";
+import { modelsFor } from "./items";
+import { loadSettings } from "./settings";
+
+/** Without a choice yet: the default project (the settings' Confluence folder), when there is one. */
+const defaultProjects = async () => (await loadSettings().catch(() => undefined))?.confluence.projects.slice(0, 1).map((p) => p.id) ?? [];
 
 export type BrowserActions = Record<string, (args: any) => Promise<unknown>>;
 type Conversation = Stored["conversation"];
@@ -19,7 +25,7 @@ const transcript = (items: ChatItem[]) =>
     .join("\n\n")
     .slice(-20_000);
 
-export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatScope; actions?: () => BrowserActions; onEffect?: (name: string, data: unknown) => void }) {
+export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatScope | Promise<ChatScope>; actions?: () => BrowserActions; onEffect?: (name: string, data: unknown) => void }) {
   const all = useItems("conversation");
   const key = `chat:${o.screen}:${o.item}`;
   const [currentId, setCurrentId] = useState<string>(() => readLocal(key, ""));
@@ -62,7 +68,11 @@ export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatSc
         }
       };
       try {
-        const scope = opts.current.scope();
+        const base = await opts.current.scope();
+        // With the projects chosen in the chat header, and the models already read (not read again).
+        const projects = projectsOf() ?? (await defaultProjects());
+        const ids = [base.report?.datasetId, base.dataset?.id, ...(base.datasets ?? []).map((d) => d.id)];
+        const scope: ChatScope = { ...base, projects, models: { ...(await modelsFor(ids)), ...(base.models ?? {}) } };
         await ensureFiles([...files, ...(scope.files ?? [])]);
         const r = await fetch("/api/chat", { method: "POST", signal: ctrl.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: conv.id, screen, message: text, files, scope, transcript: history || undefined }) });
         if (!r.ok || !r.body) throw new Error((await r.text()) || `Error ${r.status}`);
@@ -118,7 +128,7 @@ export function useChat(o: { screen: ScreenId; item: string; scope: () => ChatSc
           }
           case "client_tool": {
             const action = opts.current.actions?.()[e.name];
-            const reply = action ? await action(e.args).then((result) => ({ result: result ?? null }), (err) => ({ error: errorText(err) })) : { error: `This screen cannot do "${e.name}" (open the report first).` };
+            const reply = action ? await action(e.args).then((result) => ({ result: result ?? null }), (err) => ({ error: describeError(err) })) : { error: `This screen cannot do "${e.name}" (open the report first).` };
             await post("/chat/tool-result", { callId: e.callId, ...reply }).catch(() => undefined);
             return;
           }

@@ -7,7 +7,7 @@
 import { createStore, del, entries, get, set } from "idb-keyval";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Analysis } from "@shared/analysis";
-import type { ChatItem, ContextLink, DatasetRef, FileRef, ReportRef, ScreenId } from "@shared/types";
+import type { ChatItem, DatasetRef, FileRef, ReportRef, ScreenId } from "@shared/types";
 import { upload } from "./api";
 
 const db = createStore("hub-v2", "items");
@@ -16,9 +16,13 @@ export type Stored = {
   report: ReportRef & { addedAt: number };
   dataset: DatasetRef & { addedAt: number };
   analysis: Analysis & { id: string; datasetIds: string[]; files: FileRef[] };
-  deck: { id: string; title: string; markdown: string; updatedAt: string };
-  pptx: { id: string; name: string; fileId: string; history: string[]; updatedAt: string };
+  /** A deck written in markdown from the template; `reportIds` / `datasetIds`: what its assistant may use. */
+  deck: { id: string; title: string; markdown: string; updatedAt: string; reportIds?: string[]; datasetIds?: string[] };
+  /** An imported PowerPoint (each change a new file: `history` to go back). */
+  pptx: { id: string; name: string; fileId: string; history: string[]; updatedAt: string; reportIds?: string[]; datasetIds?: string[] };
   conversation: { id: string; screen: ScreenId; item: string; title: string; items: ChatItem[]; updatedAt: string };
+  /** A semantic model's structure (tables, columns with value examples, measures, relationships), read once. */
+  model: { id: string; info: unknown; at: string };
 };
 export type Kind = keyof Stored;
 
@@ -127,9 +131,9 @@ export function useLocal<T>(key: string, fallback: T): [T, (v: T) => void] {
   return [parsed, (v: T) => writeLocal(key, v)];
 }
 
-/** Confluence pages linked to an item as its context (as in v1: kept in this browser). */
-export const useContexts = (itemKey: string) => useLocal<ContextLink[]>(`contexts:${itemKey}`, []);
-export const contextsOf = (itemKey: string) => readLocal<ContextLink[]>(`contexts:${itemKey}`, []);
+/** The projects chosen in the chat header (global): their Confluence pages are the conversations' context. */
+export const useProjects = () => useLocal<string[] | null>("projects", null);
+export const projectsOf = () => readLocal<string[] | null>("projects", null);
 
 /** Everything of this browser as one JSON file (Settings › General), and back. */
 export async function exportAll() {

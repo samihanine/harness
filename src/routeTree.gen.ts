@@ -11,10 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as BuilderRouteImport } from './routes/builder'
-import { Route as ConfluenceRouteImport } from './routes/confluence'
-import { Route as DatasetsRouteImport } from './routes/datasets'
 import { Route as PresenterRouteImport } from './routes/presenter'
-import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as ScientistRouteImport } from './routes/scientist'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as TrainerRouteImport } from './routes/trainer'
@@ -29,24 +26,9 @@ const BuilderRoute = BuilderRouteImport.update({
   path: '/builder',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ConfluenceRoute = ConfluenceRouteImport.update({
-  id: '/confluence',
-  path: '/confluence',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DatasetsRoute = DatasetsRouteImport.update({
-  id: '/datasets',
-  path: '/datasets',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const PresenterRoute = PresenterRouteImport.update({
   id: '/presenter',
   path: '/presenter',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ReportsRoute = ReportsRouteImport.update({
-  id: '/reports',
-  path: '/reports',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ScientistRoute = ScientistRouteImport.update({
@@ -68,10 +50,7 @@ const TrainerRoute = TrainerRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/builder': typeof BuilderRoute
-  '/confluence': typeof ConfluenceRoute
-  '/datasets': typeof DatasetsRoute
   '/presenter': typeof PresenterRoute
-  '/reports': typeof ReportsRoute
   '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
   '/trainer': typeof TrainerRoute
@@ -79,10 +58,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/builder': typeof BuilderRoute
-  '/confluence': typeof ConfluenceRoute
-  '/datasets': typeof DatasetsRoute
   '/presenter': typeof PresenterRoute
-  '/reports': typeof ReportsRoute
   '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
   '/trainer': typeof TrainerRoute
@@ -91,10 +67,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/builder': typeof BuilderRoute
-  '/confluence': typeof ConfluenceRoute
-  '/datasets': typeof DatasetsRoute
   '/presenter': typeof PresenterRoute
-  '/reports': typeof ReportsRoute
   '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
   '/trainer': typeof TrainerRoute
@@ -102,34 +75,14 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | '/'
-    | '/builder'
-    | '/confluence'
-    | '/datasets'
-    | '/presenter'
-    | '/reports'
-    | '/scientist'
-    | '/settings'
-    | '/trainer'
+    '/' | '/builder' | '/presenter' | '/scientist' | '/settings' | '/trainer'
   fileRoutesByTo: FileRoutesByTo
-  to:
-    | '/'
-    | '/builder'
-    | '/confluence'
-    | '/datasets'
-    | '/presenter'
-    | '/reports'
-    | '/scientist'
-    | '/settings'
-    | '/trainer'
+  to: '/' | '/builder' | '/presenter' | '/scientist' | '/settings' | '/trainer'
   id:
     | '__root__'
     | '/'
     | '/builder'
-    | '/confluence'
-    | '/datasets'
     | '/presenter'
-    | '/reports'
     | '/scientist'
     | '/settings'
     | '/trainer'
@@ -138,10 +91,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   BuilderRoute: typeof BuilderRoute
-  ConfluenceRoute: typeof ConfluenceRoute
-  DatasetsRoute: typeof DatasetsRoute
   PresenterRoute: typeof PresenterRoute
-  ReportsRoute: typeof ReportsRoute
   ScientistRoute: typeof ScientistRoute
   SettingsRoute: typeof SettingsRoute
   TrainerRoute: typeof TrainerRoute
@@ -163,32 +113,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof BuilderRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/confluence': {
-      id: '/confluence'
-      path: '/confluence'
-      fullPath: '/confluence'
-      preLoaderRoute: typeof ConfluenceRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/datasets': {
-      id: '/datasets'
-      path: '/datasets'
-      fullPath: '/datasets'
-      preLoaderRoute: typeof DatasetsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/presenter': {
       id: '/presenter'
       path: '/presenter'
       fullPath: '/presenter'
       preLoaderRoute: typeof PresenterRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/reports': {
-      id: '/reports'
-      path: '/reports'
-      fullPath: '/reports'
-      preLoaderRoute: typeof ReportsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/scientist': {
@@ -218,10 +147,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   BuilderRoute: BuilderRoute,
-  ConfluenceRoute: ConfluenceRoute,
-  DatasetsRoute: DatasetsRoute,
   PresenterRoute: PresenterRoute,
-  ReportsRoute: ReportsRoute,
   ScientistRoute: ScientistRoute,
   SettingsRoute: SettingsRoute,
   TrainerRoute: TrainerRoute,

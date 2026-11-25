@@ -2,12 +2,12 @@
 
 Hub v2: a Bun server (`server/`) and a React app (`src/`, TanStack Router + Vite) to work on Power BI
 reports, Excel-style analyses linked to Power BI, and PowerPoint decks, with AI assistants that use tools.
-Every screen is a `Workspace` (`src/components/workspace.tsx`): the assistant on the left (foldable), the
-screen's title and item, its tabs as pills, its content. Screens: Trainer (Report / Semantic model / Context),
-Builder (Report / Semantic model / References / Context), Data Scientist (Analysis / Sources / Context),
-Presenter (create from the template: Preview / Edit / Context — or edit an uploaded PowerPoint: Slides /
-Context), Reports (Structure / Context), Semantic models (Structure / DAX / Context), Confluence (Edit /
-Preview / Linked to), Settings (General / AI / Power BI / Confluence). Code layout: `docs/structure.md`.
+Every screen is a `Workspace` (`src/components/workspace.tsx`): the assistant on the left (foldable; its header
+chooses the projects), the screen's title and item (renamable), its tabs as pills, its content. Screens: Trainer
+(Report / Structure / Semantic model), Builder (Report / Structure / Semantic model / References), Data Scientist
+(Analysis / Sources / DAX), Presenter (a deck from the template or an imported PowerPoint: Edit / Present /
+Template / Reports / Models), Settings (General / AI / Power BI / Confluence with the projects). Code layout:
+`docs/structure.md`.
 Run with `bun dev` (app on :3300, API on :3301), check with `bun run typecheck`; `bun run build && bun run start`
 serves the built app and the API on one port; `bun run export:server` makes one executable (the app, the
 headless browser's scripts and the template's pictures embedded: `scripts/build-server.ts`, `server/static.ts`).
@@ -51,7 +51,21 @@ headless browser's scripts and the template's pictures embedded: `scripts/build-
 - Presenter create: markdown with Slidev-like `---` slides and layouts (`shared/deck.ts`, the template's
   layouts — cover, agenda, section, end — and free ones); the template's pictures in `assets/template/`.
   Presenter edit: the uploaded .pptx changed in place (`server/pptx/ooxml.ts`), each change a new version.
-- Context: Confluence pages linked to an item (links kept in the browser, pages read by the server).
+- Context: projects (Settings › Confluence › Projects: a name and a Confluence folder; the default one is
+  CONFLUENCE_FOLDER_ID). The projects chosen in the chat header (global, several) give their pages at the start
+  of a conversation (`server/projects.ts`, up to a size; the others by title, `read_project_page`).
+- Reports and models: their structure is read when they are added and kept in the browser (`src/lib/items.ts`,
+  "Refresh" reads it again), sent with the conversation: the tools use it without reading it again. The catalog
+  lists workspaces and apps (`server/pbi/catalog.ts`); a pasted link adds an app's report or model.
+- Report access (`server/pbi/access.ts`): "edit" (PBIR definition: the Builder's draft tools), "editor" (other
+  formats: the Builder works live in the embedded Power BI editor, `src/tools/editor/`, browser side
+  `src/tools/browser/editor-actions.ts`), "view". The Builder's "Add" lists editable reports, checked page by page.
+- Presenter: Power BI layouts (report, visual, compare, tutorial: `report:`, `page:`, `visual:`, `filters:`) are
+  live in full screen (`src/features/presenter/present.tsx`) and pictures in the PowerPoint; an imported
+  PowerPoint takes new slides drawn from the template (`Pptx.importSlide`). Template pictures and the vector logo:
+  `assets/template/` (cover.jpg, agenda.jpg, section.jpg, end.jpg, logo.svg).
+- Settings: the .env file gives the defaults (`.env.example`), changes in Settings are saved over them, "Reset to
+  .env" forgets them. Settings › AI and Power BI have "Test the connection".
 - UI: shadcn components (`src/components/ui`), tokens in `src/styles.css` (light / dark, primary color from
   Settings), `Workspace`, `Pills`, `Empty`, `Section`. English UI; the AI answers in the user's language.
 - Every text sent to the model lives in `src/prompts/` or in a tool's description.

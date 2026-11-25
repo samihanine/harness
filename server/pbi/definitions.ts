@@ -32,6 +32,13 @@ export async function reportDefinition(report: Ref): Promise<Part[]> {
   return result.definition.parts.filter((p: Part) => p.path !== ".platform");
 }
 
+/** The definition in whatever format the report is saved in (PBIR-Legacy reports cannot be converted to PBIR). */
+export async function anyReportDefinition(report: Ref): Promise<Part[]> {
+  const ws = await workspaceId(report.groupId);
+  const result = await fabric(`/workspaces/${ws}/reports/${report.id}/getDefinition`, "POST");
+  return result.definition.parts.filter((p: Part) => p.path !== ".platform");
+}
+
 export async function writeReportDefinition(report: Ref, parts: Part[]) {
   await fabric(`/workspaces/${await workspaceId(report.groupId)}/reports/${report.id}/updateDefinition`, "POST", { definition: { parts } });
 }

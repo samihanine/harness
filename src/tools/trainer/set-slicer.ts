@@ -23,8 +23,8 @@ export const setSlicer = tool({
     const field = s.fields[0];
     const report = ctx.scope.report;
     if (values?.length && field && report?.datasetId) values = (await checkValues({ id: report.datasetId, groupId: report.datasetGroupId }, field.table, field.column, values)) as typeof values;
-    await ctx.browser("report.setSlicer", { name: s.name, values, range: a.range, clear: a.clear || (!values?.length && !a.range) });
+    const done = (await ctx.browser("report.setSlicer", { name: s.name, values, range: a.range, clear: a.clear || (!values?.length && !a.range) })) as { note?: string };
     const after = (await ctx.browser("report.state")) as ViewState;
-    return `Done. ${viewText(after).split("\n").filter((l) => l.includes(`name=${s.name}`)).join("\n")}`;
+    return `Done.${done?.note ? ` ${done.note}` : ""} ${viewText(after).split("\n").filter((l) => l.includes(`name=${s.name}`) || l.startsWith("Page filters")).join("\n")}`;
   },
 });

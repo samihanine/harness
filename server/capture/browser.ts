@@ -112,6 +112,14 @@ async function embedded(ref: Ref, width: number, height: number): Promise<Embedd
   return made;
 }
 
+/** Forgets a report open in the headless browser (it was saved: the next picture loads the new version). */
+export async function forgetReport(id: string) {
+  const open = reports.get(id);
+  reports.delete(id);
+  const e = await open?.catch(() => undefined);
+  await e?.page.close().catch(() => undefined);
+}
+
 /** Opens a report in the headless browser ahead of time: the first picture then takes about a second. */
 export function warmReport(ref: Ref) {
   void embedded(ref, 1280, 720).catch(() => undefined);

@@ -1,27 +1,29 @@
 /** Builder: the assistant builds and changes a Power BI report (its PBIR definition), shown live on the right. */
 import { useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { BarChart3Icon, BlocksIcon, BookOpenTextIcon, CheckIcon, DatabaseIcon, ExternalLinkIcon, LibraryIcon, Loader2Icon, PlusIcon } from "lucide-react";
+import { BarChart3Icon, BlocksIcon, CheckIcon, DatabaseIcon, ExternalLinkIcon, FileJsonIcon, LibraryIcon, Loader2Icon, PencilRulerIcon, PlusIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Workspace } from "@/components/workspace";
 import { ChatPanel } from "@/components/chat-panel";
-import { AddDialog, ItemPicker, addReport, usePicked } from "@/components/pickers";
-import { ContextLinks } from "@/components/context-links";
+import { AddButton, AddDialog, ItemPicker, addReport, usePicked } from "@/components/pickers";
 import { Empty } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ReportFrame } from "@/features/views/report-view";
 import { ModelView } from "@/features/views/model-view";
+import { StructureView } from "@/features/views/structure-view";
+import { editorActions } from "@/tools/browser/editor-actions";
 import { useEmbed, type Report } from "@/features/powerbi/embed";
 import { reportActions } from "@/tools/browser/report-actions";
 import { useChat } from "@/lib/chat";
 import { errorText, get, post } from "@/lib/api";
-import { contextsOf, useItems, useLocal } from "@/lib/store";
+import { save, useItems, useLocal } from "@/lib/store";
+import { withStructure } from "@/lib/items";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/builder")({ component: Builder });
 
-type TabId = "report" | "model" | "references" | "context";
+type TabId = "report" | "structure" | "model" | "references";
 
 function NewReport({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; onCreated: (id: string) => void }) {
   const [name, setName] = useState("New report");
@@ -108,16 +110,17 @@ function Builder() {
   const [reload, setReload] = useState(0);
   const [creating, setCreating] = useState(false);
   const [refIds, setRefIds] = useLocal<string[]>(`builder:refs:${current?.id}`, []);
-  const embed = useEmbed(current, reload);
+  // Editor mode: the report opens in the Power BI editor (its definition cannot be written by the API).
+  const editorMode = current?.access === "editor";
+  const embed = useEmbed(current, reload, editorMode ? "edit" : "view");
   const reportRef = useRef<Report | undefined>(undefined);
   reportRef.current = embed.report;
-  const itemKey = `report:${current?.id ?? "none"}`;
   const references = all.filter((r) => refIds.includes(r.id));
   const chat = useChat({
     screen: "builder",
     item: current?.id ?? "none",
-    scope: () => ({ report: current, references, contexts: contextsOf(itemKey) }),
-    actions: () => reportActions(() => reportRef.current),
+    scope: async () => ({ report: await withStructure(current), references: await Promise.all(references.map(async (r) => (await withStructure(r))!)) }),
+    actions: () => ({ ...reportActions(() => reportRef.current, embed.ready), ...editorActions(() => reportRef.current, embed.ready) }),
     onEffect: (name) => name === "reload" && setReload((n) => n + 1),
   });
   const model = useMemo(() => (current?.datasetId ? { id: current.datasetId, groupId: current.datasetGroupId } : undefined), [current?.datasetId, current?.datasetGroupId]);
@@ -125,7 +128,7 @@ function Builder() {
     <Workspace
       screen="builder"
       title="Builder"
-      item={<ItemPicker kind="report" items={items} current={current} onSelect={select} extra={(r) => (r.access === "view" ? "view only" : undefined)} />}
+      item={<ItemPicker kind="report" items={items} current={current} onSelect={select} editable extra={(r) => (r.access === "view" ? "view only" : r.access === "editor" ? "editor mode" : undefined)} />}
       actions={
         <>
           <Button variant="dark" size="sm" onClick={() => setCreating(true)}><PlusIcon /> New report</Button>
@@ -136,22 +139,34 @@ function Builder() {
           )}
         </>
       }
-      tabs={[{ id: "report", label: "Report", icon: <BarChart3Icon /> }, { id: "model", label: "Semantic model", icon: <DatabaseIcon /> }, { id: "references", label: "References", icon: <LibraryIcon />, count: references.length || undefined }, { id: "context", label: "Context", icon: <BookOpenTextIcon /> }]}
+      tabs={[{ id: "report", label: "Report", icon: <BarChart3Icon /> }, { id: "structure", label: "Structure", icon: <FileJsonIcon /> }, { id: "model", label: "Semantic model", icon: <DatabaseIcon /> }, { id: "references", label: "References", icon: <LibraryIcon />, count: references.length || undefined }]}
       tab={tab}
       onTab={setTab}
       scroll={false}
-      chat={<ChatPanel chat={chat} screen="builder" disabled={!current ? "Choose or create a report first" : current.access === "view" ? "This report is view only: choose one you can edit" : undefined} placeholder="Describe the page to build, or drop a screenshot to redo…" suggestions={["Build an overview page with the key figures", "Redo the page of this screenshot (attach it)", "Make this page look like my reference report"]} />}
+      chat={<ChatPanel chat={chat} screen="builder" disabled={!current ? "Choose or create a report first" : current.access === "view" ? "This report is view only: choose one you can edit, or try the editor mode" : undefined} placeholder="Describe the page to build, or drop a screenshot to redo…" suggestions={["Build an overview page with the key figures", "Redo the page of this screenshot (attach it)", "Make this page look like my reference report"]} />}
     >
       {!current ? (
-        <Empty icon={<BlocksIcon />} title="Choose or create a report">Pick a report you can edit, or create one on a semantic model: the assistant builds its pages.</Empty>
+        <Empty icon={<BlocksIcon />} title="Choose or create a report">Pick a report you can edit, or create one on a semantic model: the assistant builds its pages.<div><AddButton kind="report" onAdded={select} editable /></div></Empty>
       ) : (
         <>
           <div className={cn("min-h-0 flex-1 flex-col", tab === "report" ? "flex" : "hidden")}>
+            {current.access === "view" && (
+              <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl border bg-muted/40 px-4 py-2.5 text-[13px]">
+                <span className="flex-1">The API gives no definition of this report. If you can edit it in Power BI, the assistant can work in the Power BI editor instead.</span>
+                <Button variant="dark" size="sm" onClick={() => void save("report", { ...current, access: "editor" })}><PencilRulerIcon /> Try the editor mode</Button>
+              </div>
+            )}
+            {editorMode && (
+              <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl bg-primary/10 px-4 py-2 text-[12.5px]">
+                <span className="flex-1">{embed.error ? "Power BI refused to open this report in its editor: you cannot edit it." : "Editor mode: the assistant changes this report live in the Power BI editor, then saves it."}</span>
+                {embed.error && <Button variant="outline" size="sm" onClick={() => void save("report", { ...current, access: "view" })}>Back to view only</Button>}
+              </div>
+            )}
             <ReportFrame embed={embed} refOf={current} />
           </div>
+          {tab === "structure" && <div className="min-h-0 flex-1 overflow-auto"><StructureView report={current} /></div>}
           {tab === "model" && <div className="min-h-0 flex-1 overflow-auto"><ModelView refOf={model} name={current.name} /></div>}
           {tab === "references" && <div className="min-h-0 flex-1 overflow-auto"><References current={current.id} ids={refIds} setIds={setRefIds} /></div>}
-          {tab === "context" && <div className="min-h-0 flex-1 overflow-auto"><ContextLinks itemKey={itemKey} title={current.name} /></div>}
         </>
       )}
       <NewReport open={creating} onOpenChange={setCreating} onCreated={select} />

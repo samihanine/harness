@@ -17,9 +17,12 @@ import { AuthError, type Block, type Message, type ToolSpec } from "../llm/types
 import { runClaudeCode } from "../llm/claude-code";
 import { screenAgent } from "./screens";
 import { warmReport } from "../capture/browser";
+import { projectContext } from "../projects";
+import { seedModel } from "../pbi/models";
+import { seedStructure } from "../pbi/report-structure";
 import { FIRST_QUESTION_REMINDER, NOT_ASKED_YET, scopeText } from "@/prompts/common";
 
-type Conversation = { state: ConversationState; messages: Message[]; system: string; scopeKey: string; claudeSession?: string; provider: string; tokens: number; lastAt: number };
+type Conversation = { state: ConversationState; messages: Message[]; system: string; scopeKey: string; projectsKey: string; claudeSession?: string; provider: string; tokens: number; lastAt: number };
 const conversations = new Map<string, Conversation>();
 
 /** Past this many input tokens a conversation starts again from its transcript (calls stay fast). */
@@ -76,6 +79,7 @@ export async function runChat(req: ChatRequest, emit: (e: ChatEvent) => void, si
       messages: [],
       system: agent.system(req.scope),
       scopeKey: "",
+      projectsKey: "",
       provider,
       tokens: 0,
       lastAt: Date.now(),
@@ -100,6 +104,8 @@ export async function runChat(req: ChatRequest, emit: (e: ChatEvent) => void, si
         const timer = setTimeout(() => browserResult(callId, undefined, "The browser did not answer in 60 s (is the screen still open?)."), 60_000);
         waiting.set(callId, { resolve: (v) => (clearTimeout(timer), resolve(v)), reject: (e) => (clearTimeout(timer), reject(e)) });
         emit({ type: "client_tool", callId, name: action, args });
+        // The report on screen still loading: said in the chat while the browser waits for it.
+        setTimeout(() => waiting.has(callId) && emit({ type: "status", label: "Waiting for the report to finish loading on screen…" }), 2000);
       }),
   };
 
@@ -107,6 +113,19 @@ export async function runChat(req: ChatRequest, emit: (e: ChatEvent) => void, si
   const content: Block[] = [];
   const notes: string[] = [];
   if (!conv.messages.length && req.transcript) notes.push(`Earlier in this conversation (the server restarted it):\n${req.transcript.slice(-20_000)}`);
+  // What the browser already read (structures, models): used as is, not read again.
+  for (const [id, info] of Object.entries(req.scope.models ?? {})) seedModel(id, info);
+  if (req.scope.report?.structure) seedStructure(req.scope.report.id, req.scope.report.structure);
+  for (const r of req.scope.references ?? []) if (r.structure) seedStructure(r.id, r.structure);
+  // The projects chosen in the chat: their Confluence pages, given at the start (and when the choice changes).
+  const projectsKey = (req.scope.projects ?? []).slice().sort().join(",");
+  if (projectsKey !== conv.projectsKey) {
+    conv.projectsKey = projectsKey;
+    emit({ type: "status", label: "Reading the projects' Confluence pages…" });
+    const text = await projectContext(req.scope.projects ?? []).catch((e) => `Projects' pages not readable: ${e instanceof Error ? e.message : e}`);
+    if (text) notes.push(text);
+    else if (conv.messages.length) notes.push("No project is chosen any more: forget the projects' pages given before.");
+  }
   if (scopeKey !== conv.scopeKey) {
     notes.push(conv.scopeKey ? `The screen changed. Now:\n${scopeKey}` : `On the screen:\n${scopeKey}`);
     conv.scopeKey = scopeKey;

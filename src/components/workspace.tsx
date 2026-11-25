@@ -12,7 +12,7 @@ import type { ScreenId } from "@shared/types";
 export type Tab<T extends string> = { id: T; label: string; icon?: ReactNode; count?: number };
 
 export function Workspace<T extends string>(o: {
-  screen: ScreenId;
+  screen: ScreenId | "settings";
   title: string;
   /** The chosen item (a picker) next to the title. */
   item?: ReactNode;
@@ -40,8 +40,9 @@ export function Workspace<T extends string>(o: {
           <div className="flex w-[min(420px,38vw)] min-w-[320px] shrink-0 flex-col overflow-hidden rounded-3xl border bg-card">{withFold(o.chat, () => setFolded(true))}</div>
         ))}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-3xl border bg-card">
-        <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b px-7 pt-5 pb-4 xl:flex-nowrap">
-          <h1 className="shrink-0 text-[26px] font-light tracking-tight text-foreground/90">{o.title}</h1>
+        {/* As tall as the chat's header: the two lines meet. */}
+        <header className="flex min-h-16 flex-wrap items-center gap-x-3 gap-y-1 border-b px-5 py-2 xl:flex-nowrap">
+          <h1 className="shrink-0 text-[15px] font-semibold tracking-tight">{o.title}</h1>
           {o.item && (
             <>
               <span className="size-1.5 shrink-0 rounded-full bg-border" />

@@ -22,10 +22,10 @@ export type Cell = { content: Inline[]; image?: { src: string; alt: string } };
 
 export type ChartSpec = { type: "bar" | "column" | "line" | "pie" | "doughnut" | "area"; title?: string; labels: string[]; series: { name: string; values: number[] }[]; stacked?: boolean };
 
-/** Layouts of the template (Dior) and free layouts for any content. */
+/** Layouts of the template (Dior), free layouts for any content, and Power BI layouts. */
 export const LAYOUTS = {
-  cover: "First page: `# Title`, then paragraphs (subtitle, date). `image:` replaces the photo.",
-  agenda: "Table of contents: `# Agenda` and a numbered list of the parts; `active: n` highlights part n.",
+  cover: "First page: `# Title`, then paragraphs (subtitle, date). `image: <public link>` replaces the photo.",
+  agenda: "Table of contents: `# Agenda` and a numbered list of the parts; `active: n` highlights part n; `image:` replaces the photo.",
   section: "Section divider, numbered automatically: `# Part title`. `image:` replaces the photo.",
   default: "Content page: `# Title`, then any blocks: paragraphs, bullet lists (nested with 2 spaces), tables, a picture, a callout (`> **Title**` lines), a chart (```chart JSON```).",
   "two-cols": "Two columns: `# Title`, blocks for the left column, a `::right::` line, blocks for the right column.",
@@ -36,12 +36,16 @@ export const LAYOUTS = {
   kpis: "Key figures: `# Title`, then a list `- **1.97 bn** Revenue — +12 % vs 2025` (value in bold, label, optional detail after —). 2 to 6 items.",
   table: "A big table: `# Title`, a markdown table (a cell may hold only a picture: `![](url)`), an optional paragraph under it.",
   quote: "One statement: `# Title` (optional), a blockquote, an optional author line `— Name`.",
-  end: "Last page: optional short text (thanks, contact).",
+  end: "Last page: optional short text (thanks, contact). `image:` replaces the photo.",
+  report: "A Power BI report page, whole: `# Title`, then `report:` (id or name), `page:` (name or display name), `filters:` (optional). Live in the presentation, a picture in the PowerPoint.",
+  visual: "One Power BI visual on the left (`report:`, `page:`, `visual:` (title or name), `filters:`) and the text blocks on the right (the message, 2-4 bullets).",
+  compare: "Two Power BI visuals side by side: `report:` `page:` `visual:` `filters:` for the left one, `report2:` `page2:` `visual2:` `filters2:` for the right one (missing keys: the left one's), `caption:` / `caption2:` above each. E.g. one visual for two regions.",
+  tutorial: "A Power BI visual on the left and numbered steps on the right (a numbered list): how to read or use it.",
 } as const;
 export type Layout = keyof typeof LAYOUTS;
 
 export type Slide = { index: number; line: number; layout: Layout; meta: Record<string, string>; title?: Inline[]; blocks: Block[]; right: Block[]; columns: Block[][]; notes: string };
-export type Headmatter = { title: string; footer?: string; brand: string };
+export type Headmatter = { title: string; footer?: string; brand: string; logo?: string };
 export type Deck = { head: Headmatter; slides: Slide[] };
 
 const KEY = /^([A-Za-z_][\w-]*)\s*:\s*(.*)$/;
@@ -224,7 +228,7 @@ export function parseDeck(source: string): Deck {
       notes,
     });
   }
-  return { head: { title: head.title ?? (slides[0]?.title ? plain(slides[0].title) : "Presentation"), footer: head.footer, brand: head.brand ?? "DIOR" }, slides };
+  return { head: { title: head.title ?? (slides[0]?.title ? plain(slides[0].title) : "Presentation"), footer: head.footer, brand: head.brand ?? "DIOR", logo: head.logo }, slides };
 }
 
 /** The markdown of a new deck: cover, agenda and one example content page. */
@@ -287,3 +291,37 @@ export function joinSlides(head: string, slides: string[]) {
   const withMeta = (s: string) => (/^[A-Za-z_][\w-]*\s*:/.test(s.split("\n")[0]) && s.includes("\n---\n") ? s : `\n${s}`);
   return `---\n${head.trim()}\n---\n${slides.map((s, i) => (i === 0 ? `\n${s}` : withMeta(s))).join("\n\n---\n")}\n`;
 }
+
+/* ------------------------------- Power BI zones ------------------------------- */
+
+export type PbiFilter = { table: string; column: string; values: (string | number)[] };
+/** A Power BI view of a slide: where it is (inches on a 13.33 × 7.5 slide) and what it shows. */
+export type PbiZone = { slide: number; box: { x: number; y: number; w: number; h: number }; report: string; page?: string; visual?: string; filters: PbiFilter[]; caption?: string };
+
+export const SLIDE = { w: 13.333, h: 7.5, margin: 0.6, top: 1.45 };
+const BODY = { x: SLIDE.margin, y: SLIDE.top, w: SLIDE.w - 2 * SLIDE.margin, h: SLIDE.h - SLIDE.top - 0.6 };
+
+/** `'Account'[Region] = East, West; 'Product'[Product] = Talus` → filters. */
+export function parseFilters(text?: string): PbiFilter[] {
+  if (!text) return [];
+  return text
+    .split(";")
+    .map((part) => part.trim().match(/^'?([^'[]+?)'?\[([^\]]+)\]\s*(?:=|in)\s*(.+)$/i))
+    .filter((m): m is RegExpMatchArray => !!m)
+    .map((m) => ({ table: m[1].trim(), column: m[2].trim(), values: m[3].split(",").map((v) => v.trim().replace(/^["']|["']$/g, "")).filter(Boolean).map((v) => (/^-?\d+(\.\d+)?$/.test(v) ? Number(v) : v)) }));
+}
+
+/** The Power BI views of a slide (empty for other layouts). */
+export function slideZones(s: Slide): PbiZone[] {
+  const m = s.meta;
+  if (!m.report || !["report", "visual", "compare", "tutorial"].includes(s.layout)) return [];
+  const one = (box: PbiZone["box"], k = "") => ({ slide: s.index, box, report: m[`report${k}`] || m.report, page: m[`page${k}`] || m.page, visual: s.layout === "report" ? undefined : m[`visual${k}`] || m.visual, filters: parseFilters(k && m[`filters${k}`] !== undefined ? m[`filters${k}`] : m.filters), caption: m[`caption${k}`] });
+  if (s.layout === "report") return [one(BODY)];
+  if (s.layout === "compare") {
+    const w = (BODY.w - 0.4) / 2;
+    return [one({ x: BODY.x, y: BODY.y + 0.45, w, h: BODY.h - 0.45 }), one({ x: BODY.x + w + 0.4, y: BODY.y + 0.45, w, h: BODY.h - 0.45 }, "2")];
+  }
+  return [one({ x: BODY.x, y: BODY.y, w: BODY.w * 0.6, h: BODY.h })];
+}
+
+export const deckZones = (deck: Deck) => deck.slides.flatMap(slideZones);

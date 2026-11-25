@@ -18,7 +18,7 @@
   --card-foreground: #111111;
   --popover: #ffffff;
   --popover-foreground: #111111;
-  --primary: #d97757;
+  --primary: #b39251;
   --primary-foreground: #ffffff;
   --secondary: #f2f2f1;
   --secondary-foreground: #111111;
@@ -29,10 +29,10 @@
   --destructive: #dc2626;
   --border: #e9e8e6;
   --input: #e4e3e0;
-  --ring: #d97757;
+  --ring: #b39251;
   --cta: #111111;
   --cta-foreground: #ffffff;
-  --chart-1: #d97757;
+  --chart-1: #b39251;
   --chart-2: #4b5d8a;
   --chart-3: #e9b949;
   --chart-4: #3f9c8a;
@@ -378,4 +378,9 @@
 }
 .slide-still .toile-drift {
   display: none;
+}
+
+@keyframes blink {
+  0%, 100% { transform: scaleY(1); }
+  50% { transform: scaleY(0.1); }
 }

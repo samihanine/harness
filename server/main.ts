@@ -11,19 +11,22 @@
  */
 import type { ChatEvent, ChatRequest, SettingsPatch } from "@shared/types";
 import { deckToPptx } from "./pptx/deck";
+import { resolveZones } from "./pptx/pbi-zones";
+import { templateGallery } from "./pptx/templates";
+import { deckZones, parseDeck } from "@shared/deck";
 import { slidePictures } from "./pptx/render";
 import { authStatus, embedToken, signIn, signOut } from "./ms/auth";
 import { pbi, scope } from "./ms/api";
 import { browserResult, forgetConversation, runChat } from "./agent/run";
 import { cleanFiles, fileInfo, readStoredFile, saveFile } from "./files";
-import { publicSettings, settings, updateSettings } from "./settings";
-import { modelsOf } from "./llm";
-import { datasetCatalog, reportCatalog } from "./pbi/catalog";
+import { folderIdOf, publicSettings, resetSettings, settings, updateSettings } from "./settings";
+import { modelsOf, providerFor } from "./llm";
+import { datasetCatalog, discoverDataset, discoverReport, reportCatalog } from "./pbi/catalog";
+import { reportsAccess, reportAccess } from "./pbi/access";
 import { reportStructure } from "./pbi/report-structure";
 import { modelInfo } from "./pbi/models";
-import { reportDefinition } from "./pbi/definitions";
 import { createBlankReport } from "./pbi/new-report";
-import { createPage, listPages, readPageMarkdown, writePage } from "./confluence";
+import { listPages } from "./confluence";
 import { analysisToExcel } from "./excel-export";
 import { engineFor } from "./data/engine";
 import { closeBrowser, warmReport } from "./capture/browser";
@@ -48,14 +51,6 @@ const json = (body: unknown, status = 200) => Response.json(body, { status, head
 const fail = (e: unknown, status = 500) => json({ error: e instanceof Error ? e.message : String(e) }, status);
 const ref = (u: URL) => ({ id: u.searchParams.get("id") ?? "", groupId: u.searchParams.get("groupId") || undefined, appId: u.searchParams.get("appId") || undefined });
 const GUID = /^[0-9a-f-]{36}$/i;
-
-/** Whether the user can edit a report (its PBIR definition is readable), kept a while. */
-const access = new Map<string, Promise<"edit" | "view">>();
-const accessOf = (r: { id: string; groupId?: string; appId?: string }) => {
-  if (r.appId) return Promise.resolve("view" as const);
-  if (!access.has(r.id)) access.set(r.id, reportDefinition(r).then(() => "edit" as const, () => "view" as const));
-  return access.get(r.id)!;
-};
 
 function chat(req: Request) {
   return req.json().then((body: ChatRequest) => {
@@ -100,6 +95,23 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (p === "/api/embed-token" && m === "GET") return json(await embedToken());
   // Settings
   if (p === "/api/settings" && m === "GET") return json({ ...(await publicSettings()), models: modelsOf((await settings()).ai.provider) });
+  if (p === "/api/settings/reset" && m === "POST") {
+    const s = await resetSettings(((await req.json()) as { part: "general" | "ai" | "powerbi" | "confluence" }).part);
+    return json({ ...s, models: modelsOf((await settings()).ai.provider) });
+  }
+  if (p === "/api/settings/test-ai" && m === "POST") {
+    const s = await settings();
+    const t = Date.now();
+    if (s.ai.provider === "claude-code") {
+      const { runClaudeCode } = await import("./llm/claude-code");
+      let text = "";
+      await runClaudeCode({ conv: { system: "Answer with one word." }, tools: [], runTool: async () => ({ output: "", isError: false }), emit: (e) => e.type === "text" && (text += e.text), signal: AbortSignal.timeout(90_000), model: s.ai.model, effort: "low", maxSteps: 1, config: s.ai.claudeCode, user: { role: "user", content: [{ type: "text", text: "Say OK." }] } });
+      return json({ ok: true, text: `Claude Code answered "${text.trim().slice(0, 40)}" with ${s.ai.model} (${Date.now() - t} ms).` });
+    }
+    const r = await providerFor(s, () => "connection-test").complete({ system: "Answer with one word.", messages: [{ role: "user", content: [{ type: "text", text: "Say OK." }] }], tools: [], model: s.ai.model, effort: "low", signal: AbortSignal.timeout(60_000) });
+    const text = r.message.content.filter((b) => b.type === "text").map((b) => (b as { text: string }).text).join("");
+    return json({ ok: true, text: `${s.ai.provider} answered "${text.trim().slice(0, 40)}" with ${s.ai.model} (${Date.now() - t} ms).` });
+  }
   if (p === "/api/settings" && m === "PUT") {
     const s = await updateSettings((await req.json()) as SettingsPatch);
     return json({ ...s, models: modelsOf((await settings()).ai.provider) });
@@ -135,7 +147,22 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!GUID.test(r.id)) return fail("Bad report id", 400);
     const meta = r.appId ? await pbi(`/apps/${r.appId}/reports/${r.id}`) : await pbi(`${scope(r.groupId)}/reports/${r.id}`);
     const ds = meta.datasetId ? await pbi(`/datasets/${meta.datasetId}`).catch(() => undefined) : undefined;
-    return json({ id: r.id, groupId: r.groupId, appId: r.appId, name: meta.name, datasetId: meta.datasetId, datasetGroupId: ds?.workspaceId ?? undefined, webUrl: meta.webUrl, access: await accessOf(r) });
+    if (r.appId) discoverReport({ id: r.id, name: meta.name, appId: r.appId, workspace: "App", datasetId: meta.datasetId, webUrl: meta.webUrl });
+    return json({ id: r.id, groupId: r.groupId, appId: r.appId, name: meta.name, datasetId: meta.datasetId, datasetGroupId: ds?.workspaceId ?? undefined, webUrl: meta.webUrl, access: await reportAccess(r) });
+  }
+  if (p === "/api/powerbi/dataset") {
+    // A model from a pasted link (also an app's): its name, and it joins the list of models.
+    const r = ref(url);
+    if (!GUID.test(r.id)) return fail("Bad model id", 400);
+    const meta = await pbi(`${scope(r.groupId)}/datasets/${r.id}`).catch(() => pbi(`/datasets/${r.id}`));
+    discoverDataset({ id: r.id, name: meta.name, groupId: r.groupId, workspace: r.groupId ? "Workspace" : "Shared" });
+    return json({ id: r.id, groupId: r.groupId, name: meta.name });
+  }
+  if (p === "/api/powerbi/access" && m === "POST") return json(await reportsAccess((await req.json()) as { id: string; groupId?: string; appId?: string }[]));
+  if (p === "/api/powerbi/test") {
+    const t = Date.now();
+    const [reports, models] = await Promise.all([reportCatalog(), datasetCatalog()]);
+    return json({ ok: true, text: `${reports.length} reports and ${models.length} semantic models reachable (${Date.now() - t} ms).` });
   }
   if (p === "/api/powerbi/warm" && m === "POST") {
     // The report on screen opened in the headless browser ahead of time (the first picture is then quick).
@@ -143,7 +170,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (GUID.test(b.id)) warmReport(b);
     return json({ ok: true });
   }
-  if (p === "/api/powerbi/report-structure") return json(await reportStructure(ref(url), url.searchParams.get("detail") === "full" ? "full" : "summary"));
+  if (p === "/api/powerbi/report-structure") return json(await reportStructure(ref(url), url.searchParams.get("detail") === "full" ? "full" : "summary", true));
   if (p === "/api/powerbi/model") {
     const r = ref(url);
     return json(await modelInfo(r, url.searchParams.has("fresh")));
@@ -157,16 +184,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     const b = (await req.json()) as { name: string; datasetId: string; groupId?: string };
     return json(await createBlankReport(b.name, { id: b.datasetId, groupId: b.groupId }, b.groupId));
   }
-  // Confluence
-  if (p === "/api/confluence/pages" && m === "GET") return json(await listPages());
-  if (p === "/api/confluence/pages" && m === "POST") return json(await createPage(((await req.json()) as { title: string }).title));
-  if (p.startsWith("/api/confluence/page/")) {
-    const id = p.split("/")[4];
-    if (m === "GET") return json(await readPageMarkdown(id));
-    if (m === "PUT") {
-      const b = (await req.json()) as { title: string; markdown: string; version: number };
-      return json(await writePage({ id, title: b.title, version: b.version }, b.markdown));
-    }
+  // Confluence (projects)
+  if (p === "/api/confluence/pages" && m === "GET") return json(await listPages(url.searchParams.get("folder") || undefined));
+  if (p === "/api/projects/test" && m === "POST") {
+    const { folderId } = (await req.json()) as { folderId: string };
+    const pages = await listPages(folderIdOf(folderId));
+    return json({ ok: true, text: `${pages.length} pages: ${pages.slice(0, 5).map((x) => x.title).join(", ")}${pages.length > 5 ? "…" : ""}` });
   }
   // Presenter
   if (p === "/api/deck/pptx" && m === "POST") {
@@ -180,6 +203,26 @@ async function api(req: Request, url: URL): Promise<Response> {
     const pics = await slidePictures(data, b.slides, 1280);
     const files = await Promise.all(pics.map((png, i) => saveFile(png, `slide-${i + 1}.png`, "image/png")));
     return json(files.map((f) => f.id));
+  }
+  if (p === "/api/deck/zones" && m === "POST") {
+    // The Power BI views of a deck, resolved for live embeds (presentation mode).
+    const { markdown } = (await req.json()) as { markdown: string };
+    return json(await resolveZones(deckZones(parseDeck(markdown))));
+  }
+  if (p === "/api/deck/templates" && m === "GET") return json(await templateGallery());
+  if (p === "/api/pptx/structure" && m === "GET") {
+    const { Pptx } = await import("./pptx/ooxml");
+    return json(await (await Pptx.load((await readStoredFile(url.searchParams.get("fileId") ?? "")).data)).structure());
+  }
+  if (p === "/api/pptx/add-template" && m === "POST") {
+    // A slide drawn from the template added to an imported PowerPoint: a new version of the file.
+    const b = (await req.json()) as { fileId: string; name: string; markdown: string; after: number };
+    const { Pptx } = await import("./pptx/ooxml");
+    const target = await Pptx.load((await readStoredFile(b.fileId)).data);
+    const md = /^\s*layout\s*:/m.test(b.markdown.split("---")[0] ?? "") ? b.markdown : `layout: default\n---\n${b.markdown}`;
+    const drawn = await Pptx.load(new Uint8Array(await deckToPptx(`---\ntitle: ${b.name}\n---\n${md}`)));
+    await target.importSlide(drawn, 1, b.after);
+    return json(await saveFile(await target.save(), b.name, "application/vnd.openxmlformats-officedocument.presentationml.presentation"));
   }
   // Data Scientist
   if (p === "/api/analysis/export" && m === "POST") {

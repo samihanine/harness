@@ -4,20 +4,20 @@
  */
 import { useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { BookOpenTextIcon, DatabaseIcon, DownloadIcon, FileSpreadsheetIcon, FlaskConicalIcon, Loader2Icon, PlusIcon, RefreshCwIcon, SheetIcon, Trash2Icon, UploadIcon, XIcon } from "lucide-react";
+import { CodeIcon, DatabaseIcon, DownloadIcon, FileSpreadsheetIcon, FlaskConicalIcon, Loader2Icon, PlusIcon, RefreshCwIcon, SheetIcon, Trash2Icon, UploadIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
 import { emptyAnalysis, type Analysis } from "@shared/analysis";
 import { Workspace } from "@/components/workspace";
 import { ChatPanel } from "@/components/chat-panel";
 import { DocPicker } from "@/components/doc-picker";
 import { AddDialog } from "@/components/pickers";
-import { ContextLinks } from "@/components/context-links";
+import { DaxConsole } from "@/features/views/dax-console";
 import { Empty } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { BlockView } from "@/features/scientist/blocks";
 import { useChat } from "@/lib/chat";
 import { download, errorText, post } from "@/lib/api";
-import { contextsOf, keepFile, remove, save, useItems, useLocal, type Stored } from "@/lib/store";
+import { keepFile, remove, save, useItems, useLocal, type Stored } from "@/lib/store";
 
 export const Route = createFileRoute("/scientist")({ component: Scientist });
 
@@ -108,7 +108,7 @@ function Scientist() {
   const datasets = useItems("dataset") ?? [];
   const [id, setId] = useLocal("scientist:current", "");
   const doc = docs.find((d) => d.id === id) ?? docs[0];
-  const [tab, setTab] = useState<"analysis" | "sources" | "context">("analysis");
+  const [tab, setTab] = useState<"analysis" | "sources" | "dax">("analysis");
   const [busy, setBusy] = useState<string>();
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -119,14 +119,13 @@ function Scientist() {
     setId(d.id);
     setTab("sources");
   };
-  const itemKey = `analysis:${doc?.id ?? "none"}`;
   const chat = useChat({
     screen: "scientist",
     item: doc?.id ?? "none",
     scope: () => {
       const d = docRef.current!;
       const { id: _i, datasetIds, files, ...analysis } = d;
-      return { datasets: datasets.filter((x) => datasetIds.includes(x.id)), files, doc: analysis, contexts: contextsOf(itemKey) };
+      return { datasets: datasets.filter((x) => datasetIds.includes(x.id)), files, doc: analysis };
     },
     onEffect: (name, data) => {
       if (name === "doc" && docRef.current) {
@@ -152,7 +151,7 @@ function Scientist() {
     <Workspace
       screen="scientist"
       title="Data Scientist"
-      item={<DocPicker items={docs} current={doc} name={(d) => d.title} onSelect={setId} onCreate={create} onDelete={(x) => void remove("analysis", x)} createLabel="New analysis" empty="No analysis" />}
+      item={<DocPicker items={docs} current={doc} name={(d) => d.title} onSelect={setId} onCreate={create} onDelete={(x) => void remove("analysis", x)} onRename={(d, title) => void save("analysis", { ...d, title })} createLabel="New analysis" empty="No analysis" />}
       actions={doc && (
         <>
           <Button variant="outline" size="sm" disabled={!!busy || !doc.sources.length} onClick={() => run("refresh", async () => update({ ...doc, ...(await post<Analysis>("/analysis/refresh", analysisOf(doc))) }))}>
@@ -163,7 +162,7 @@ function Scientist() {
           </Button>
         </>
       )}
-      tabs={[{ id: "analysis", label: "Analysis", icon: <SheetIcon />, count: doc?.blocks.length || undefined }, { id: "sources", label: "Sources", icon: <DatabaseIcon />, count: (doc ? doc.datasetIds.length + doc.files.length : 0) || undefined }, { id: "context", label: "Context", icon: <BookOpenTextIcon /> }]}
+      tabs={[{ id: "analysis", label: "Analysis", icon: <SheetIcon />, count: doc?.blocks.length || undefined }, { id: "sources", label: "Sources", icon: <DatabaseIcon />, count: (doc ? doc.datasetIds.length + doc.files.length : 0) || undefined }, { id: "dax", label: "DAX", icon: <CodeIcon /> }]}
       tab={tab}
       onTab={setTab}
       chat={<ChatPanel chat={chat} screen="scientist" accept="image/*,.xlsx,.xls,.csv" disabled={!doc ? "Create an analysis first" : !doc.datasetIds.length && !doc.files.length ? "Add a model or a file in Sources" : undefined} suggestions={["What drives the revenue growth?", "Compare actuals with the targets of my Excel file", "Find the anomalies by month and region"]} />}
@@ -189,7 +188,7 @@ function Scientist() {
       ) : tab === "sources" ? (
         <Sources doc={doc} update={update} />
       ) : (
-        <ContextLinks itemKey={itemKey} title={doc.title} />
+        <DaxConsole models={datasets.filter((d) => doc.datasetIds.includes(d.id))} />
       )}
     </Workspace>
   );

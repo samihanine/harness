@@ -1,7 +1,7 @@
 /** The server's settings as the browser sees them (no secret), shared by every screen. */
 import { useEffect, useState } from "react";
 import type { PublicSettings, SettingsPatch } from "@shared/types";
-import { get, put } from "./api";
+import { get, post, put } from "./api";
 
 export type AppSettings = PublicSettings & { models: string[] };
 let current: AppSettings | undefined;
@@ -27,5 +27,13 @@ export function useSettings() {
     void loadSettings().then(set, () => undefined);
     return () => void listeners.delete(set);
   }, []);
+  return s;
+}
+
+/** Forgets the changes of a part of the settings: back to the .env values. */
+export async function resetSettings(part: "general" | "ai" | "powerbi" | "confluence") {
+  const s = await post<AppSettings>("/settings/reset", { part });
+  current = s;
+  listeners.forEach((l) => l(s));
   return s;
 }

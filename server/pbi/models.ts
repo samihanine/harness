@@ -14,3 +14,11 @@ export function modelInfo(ref: Ref, fresh = false): Promise<ModelInfo> {
 }
 
 export const forgetModel = (id: string) => cache.delete(id);
+
+/** A model the browser already read (kept with its item): used as is while it is fresh enough. */
+export function seedModel(id: string, info: unknown) {
+  if (!info || typeof info !== "object" || !Array.isArray((info as ModelInfo).tables)) return;
+  const hit = cache.get(id);
+  if (hit && Date.now() - hit.at < 15 * 60_000) return;
+  cache.set(id, { at: Date.now(), info: Promise.resolve(info as ModelInfo) });
+}

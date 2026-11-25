@@ -1,9 +1,9 @@
 /** Settings in four tabs: General, AI, Power BI, Confluence. Secrets are written to the server, never read back. */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { BookOpenTextIcon, BotIcon, CheckIcon, DownloadIcon, ExternalLinkIcon, Loader2Icon, LogOutIcon, PaletteIcon, UploadIcon } from "lucide-react";
+import { BookOpenTextIcon, BotIcon, CheckIcon, DownloadIcon, ExternalLinkIcon, FolderOpenIcon, Loader2Icon, LogOutIcon, PaletteIcon, PlugZapIcon, PlusIcon, RotateCcwIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
-import { SCREENS, type Provider, type SettingsPatch } from "@shared/types";
+import { DEFAULT_PROJECT, SCREENS, type Project, type Provider, type SettingsPatch } from "@shared/types";
 import { Workspace } from "@/components/workspace";
 import { SCREEN_INFO } from "@/components/screens";
 import { ErrorBox, Loading } from "@/components/common";
@@ -12,7 +12,7 @@ import { Switch } from "@/components/ui/switch";
 import { Mascot, OUTFITS, OUTFIT_LABELS, STATES, STATE_LABELS, type MascotState, type Outfit } from "@/features/mascot";
 import { recordGif } from "@/features/mascot/gif";
 import { download, errorText, get, post } from "@/lib/api";
-import { saveSettings, useSettings, type AppSettings } from "@/lib/settings";
+import { resetSettings, saveSettings, useSettings, type AppSettings } from "@/lib/settings";
 import { exportAll, importAll, list } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -33,12 +33,33 @@ function Field({ label, hint, children }: { label: string; hint?: ReactNode; chi
   );
 }
 
-const Card = ({ title, children }: { title: string; children: ReactNode }) => (
+const Card = ({ title, children, reset, aside }: { title: string; children: ReactNode; reset?: "general" | "ai" | "powerbi" | "confluence"; aside?: ReactNode }) => (
   <section className="flex flex-col gap-5 rounded-3xl border p-6">
-    <h2 className="text-[16px] font-semibold">{title}</h2>
+    <div className="flex items-center gap-2">
+      <h2 className="flex-1 text-[16px] font-semibold">{title}</h2>
+      {aside}
+      {reset && (
+        <Button variant="ghost" size="sm" title="Back to the values of the .env file (and the app's defaults)" onClick={() => confirm("Reset this part to the .env values?") && void resetSettings(reset).then(() => toast.success("Reset to the .env values"), (e) => toast.error(errorText(e)))}>
+          <RotateCcwIcon /> Reset to .env
+        </Button>
+      )}
+    </div>
     {children}
   </section>
 );
+
+/** "Test the connection": a call that says what works, or why not. */
+function TestButton({ path, body }: { path: string; body?: unknown }) {
+  const [state, setState] = useState<{ busy?: boolean; ok?: boolean; text?: string }>({});
+  return (
+    <div className="flex flex-wrap items-center gap-3">
+      <Button variant="outline" size="sm" disabled={state.busy} onClick={() => (setState({ busy: true }), post<{ text: string }>(path, body ?? {}).then((r) => setState({ ok: true, text: r.text }), (e) => setState({ ok: false, text: errorText(e) })))}>
+        {state.busy ? <Loader2Icon className="animate-spin" /> : <PlugZapIcon />} Test the connection
+      </Button>
+      {state.text && <span className={cn("text-[13px]", state.ok ? "text-success" : "text-destructive")}>{state.ok ? "✓" : "✗"} {state.text}</span>}
+    </div>
+  );
+}
 
 /** Saves on change, with a toast. */
 function useSave() {
@@ -101,11 +122,11 @@ function General({ s }: { s: AppSettings }) {
   const file = useRef<HTMLInputElement>(null);
   return (
     <div className="flex flex-col gap-5">
-      <Card title="Look">
+      <Card title="Look" reset="general">
         <Field label="Primary color" hint="Buttons, highlights, charts.">
           <div className="flex items-center gap-3">
             <input type="color" value={s.general.primaryColor} onChange={(e) => void save({ general: { primaryColor: e.target.value } })} className="size-10 cursor-pointer rounded-xl border bg-transparent" />
-            {["#d97757", "#b39251", "#2563eb", "#0f766e", "#7c3aed", "#111111"].map((c) => (
+            {["#b39251", "#d97757", "#363d4e", "#2563eb", "#0f766e", "#111111"].map((c) => (
               <button key={c} onClick={() => void save({ general: { primaryColor: c } })} className="flex size-8 items-center justify-center rounded-full ring-offset-2" style={{ background: c }} aria-label={c}>
                 {s.general.primaryColor === c && <CheckIcon className="size-4 text-white" />}
               </button>
@@ -155,7 +176,7 @@ function Ai({ s }: { s: AppSettings }) {
   const save = useSave();
   return (
     <div className="flex flex-col gap-5">
-      <Card title="Model">
+      <Card title="Model" reset="ai">
         <Field label="Provider">
           <div className="grid gap-2">
             {PROVIDERS.map((p) => (
@@ -177,6 +198,9 @@ function Ai({ s }: { s: AppSettings }) {
         </Field>
         <Field label="Effort" hint="Deeper thinking: better answers, slower.">
           <div className="flex gap-2">{(["low", "medium", "high"] as const).map((e) => <Button key={e} size="sm" variant={s.ai.effort === e ? "dark" : "outline"} onClick={() => void save({ ai: { effort: e } })}>{e}</Button>)}</div>
+        </Field>
+        <Field label="Check" hint="A short request to the chosen model.">
+          <TestButton path="/settings/test-ai" />
         </Field>
         <Field label="Maximum steps" hint="Tool calls per message.">
           <input type="number" min={5} max={200} className="input w-32" defaultValue={s.ai.maxSteps} onBlur={(e) => void save({ ai: { maxSteps: Number(e.target.value) || 40 } })} />
@@ -253,7 +277,10 @@ function PowerBi({ s }: { s: AppSettings }) {
           </Field>
         )}
       </Card>
-      <Card title="Performance limits">
+      <Card title="Connection">
+        <Field label="Check" hint="Lists your reports and models (workspaces and apps)."><TestButton path="/powerbi/test" /></Field>
+      </Card>
+      <Card title="Performance limits" reset="powerbi">
         <div className="text-[12.5px] text-muted-foreground">Every DAX query of the app and the assistants follows these limits, so the semantic models stay fast for everyone.</div>
         <Field label="Rows per query"><input type="number" className="input w-40" defaultValue={p.maxRows} onBlur={(e) => void save({ powerbi: { maxRows: Number(e.target.value) || 2000 } })} /></Field>
         <Field label="Time limit (s)"><input type="number" className="input w-40" defaultValue={p.timeoutMs / 1000} onBlur={(e) => void save({ powerbi: { timeoutMs: (Number(e.target.value) || 20) * 1000 } })} /></Field>
@@ -267,20 +294,39 @@ function PowerBi({ s }: { s: AppSettings }) {
 function ConfluenceSettings({ s }: { s: AppSettings }) {
   const save = useSave();
   const c = s.confluence;
-  const [test, setTest] = useState<string>();
+  const others = c.projects.filter((p) => p.id !== DEFAULT_PROJECT);
+  const saveProjects = (list: Project[]) => void save({ confluence: { projects: list } });
   return (
-    <Card title="Confluence">
-      <Field label="Address" hint="e.g. https://<site>.atlassian.net/wiki"><TextSetting value={c.url} onSave={(v) => void save({ confluence: { url: v.trim() } })} mono /></Field>
-      <Field label="Email" hint="Your Atlassian account (Cloud). Empty: the token is a Data Center personal token."><TextSetting value={c.email} onSave={(v) => void save({ confluence: { email: v.trim() } })} /></Field>
-      <Field label="API token"><SecretInput set={c.keySet} onSave={(v) => void save({ confluence: { key: v } })} /></Field>
-      <Field label="Folder (root)" hint="Id (or link) of the folder or page whose pages the app uses."><TextSetting value={c.folderId} onSave={(v) => void save({ confluence: { folderId: v.trim() } })} mono /></Field>
-      <Field label="Check">
-        <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" onClick={() => get<unknown[]>("/confluence/pages").then((p) => setTest(`✓ ${p.length} pages found`), (e) => setTest(`✗ ${errorText(e)}`))}>Test the connection</Button>
-          {test && <span className={cn("text-[13px]", test.startsWith("✓") ? "text-success" : "text-destructive")}>{test}</span>}
-        </div>
-      </Field>
-    </Card>
+    <div className="flex flex-col gap-5">
+      <Card title="Confluence" reset="confluence">
+        <Field label="Address" hint="e.g. https://<site>.atlassian.net/wiki"><TextSetting value={c.url} onSave={(v) => void save({ confluence: { url: v.trim() } })} mono /></Field>
+        <Field label="Email" hint="Your Atlassian account (Cloud). Empty: the token is a Data Center personal token."><TextSetting value={c.email} onSave={(v) => void save({ confluence: { email: v.trim() } })} /></Field>
+        <Field label="API token"><SecretInput set={c.keySet} onSave={(v) => void save({ confluence: { key: v } })} /></Field>
+        <Field label="Default project's folder" hint="Id (or link) of the folder whose pages are the default project (CONFLUENCE_FOLDER_ID)."><TextSetting value={c.folderId} onSave={(v) => void save({ confluence: { folderId: v.trim() } })} mono /></Field>
+        <Field label="Check"><TestButton path="/projects/test" body={{ folderId: c.folderId }} /></Field>
+      </Card>
+      <Card title="Projects" aside={<Button variant="outline" size="sm" onClick={() => saveProjects([...others, { id: crypto.randomUUID().slice(0, 8), name: `Project ${others.length + 2}`, folderId: "" }])}><PlusIcon /> Add a project</Button>}>
+        <div className="text-[12.5px] text-muted-foreground">A project is a Confluence folder: the pages of the projects chosen in the chat (top of the assistant) are given to it at the start of each conversation — rules, definitions, vocabulary.</div>
+        {c.projects.map((p) => (
+          <div key={p.id} className="flex flex-wrap items-center gap-3 rounded-2xl border p-3">
+            <FolderOpenIcon className="size-4 text-muted-foreground" />
+            {p.id === DEFAULT_PROJECT ? (
+              <span className="w-48 text-[14px] font-medium">{p.name} <span className="text-[12px] text-muted-foreground">(default)</span></span>
+            ) : (
+              <input className="input w-48" defaultValue={p.name} onBlur={(e) => e.target.value !== p.name && saveProjects(others.map((x) => (x.id === p.id ? { ...x, name: e.target.value } : x)))} />
+            )}
+            {p.id === DEFAULT_PROJECT ? (
+              <span className="flex-1 font-mono text-[12.5px] text-muted-foreground">{p.folderId}</span>
+            ) : (
+              <input className="input flex-1 font-mono text-[12.5px]" placeholder="Folder id or link" defaultValue={p.folderId} onBlur={(e) => e.target.value !== p.folderId && saveProjects(others.map((x) => (x.id === p.id ? { ...x, folderId: e.target.value } : x)))} />
+            )}
+            <TestButton path="/projects/test" body={{ folderId: p.folderId }} />
+            {p.id !== DEFAULT_PROJECT && <Button variant="ghost" size="icon-sm" onClick={() => saveProjects(others.filter((x) => x.id !== p.id))} aria-label="Remove"><Trash2Icon /></Button>}
+          </div>
+        ))}
+        {!c.projects.length && <div className="text-[13px] text-muted-foreground">No project: set the default project's folder above, or add one.</div>}
+      </Card>
+    </div>
   );
 }
 
@@ -288,7 +334,7 @@ function Settings() {
   const s = useSettings();
   const [tab, setTab] = useState<TabId>("general");
   return (
-    <Workspace screen="reports" title="Settings" tabs={[{ id: "general", label: "General", icon: <PaletteIcon /> }, { id: "ai", label: "AI", icon: <BotIcon /> }, { id: "powerbi", label: "Power BI", icon: <span className="text-[11px] font-bold">BI</span> }, { id: "confluence", label: "Confluence", icon: <BookOpenTextIcon /> }]} tab={tab} onTab={setTab}>
+    <Workspace screen="settings" title="Settings" tabs={[{ id: "general", label: "General", icon: <PaletteIcon /> }, { id: "ai", label: "AI", icon: <BotIcon /> }, { id: "powerbi", label: "Power BI", icon: <span className="text-[11px] font-bold">BI</span> }, { id: "confluence", label: "Confluence", icon: <BookOpenTextIcon /> }]} tab={tab} onTab={setTab}>
       <div className="mx-auto max-w-4xl p-6">{!s ? <Loading /> : tab === "general" ? <General s={s} /> : tab === "ai" ? <Ai s={s} /> : tab === "powerbi" ? <PowerBi s={s} /> : <ConfluenceSettings s={s} />}</div>
     </Workspace>
   );

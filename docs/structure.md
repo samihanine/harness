@@ -14,15 +14,17 @@ server/                 the Bun server (API, AI, Microsoft, Confluence)
   pptx/                 markdown deck → PowerPoint (deck.ts), existing .pptx edits (ooxml.ts), pictures (render.ts)
   data/engine.ts        the Data Scientist's SQL database (SQLite in memory)
   confluence.ts         Confluence REST, markdown ⇄ storage format
+  projects.ts           the projects' Confluence pages as a conversation's context
   excel-export.ts       an analysis as an Excel workbook
 shared/                 types and formats used by both sides (chat events, deck markdown, analyses)
 src/
   routes/               one file per screen
   components/           Workspace, ChatPanel, pickers, context links, shadcn ui/
   features/             screen parts: powerbi (embed), views (model, report structure), scientist, presenter, mascot
-  tools/                every tool of the AI, one file per tool (run on the server); browser/ = actions on the embed
+  tools/                every tool of the AI, one file per tool (run on the server); editor/ = the Builder's editor
+                        mode; browser/ = actions on the embedded report (view and editor)
   prompts/              every prompt
-  lib/                  api, store (IndexedDB), chat (SSE), settings, theme
+  lib/                  api, store (IndexedDB), items (structures kept), chat (SSE), settings, theme
 assets/template/        the deck template's pictures (placeholders until the real ones)
 scripts/                dev.ts (bun dev), checks/ (headless checks), security/ (audit), make-template-assets.ts
 ```
