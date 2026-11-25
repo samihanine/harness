@@ -243,6 +243,61 @@ export const OUTFITS = {
       </>
     ),
   },
+  /** Santa Claus: the red suit with its white fur and black belt, the hat with its pompom, the beard, a present. */
+  santa: {
+    // Black boots with a white fur cuff.
+    feet: (
+      <>
+        <path d="M74 199 Q74 187 87 187 Q98 187 98 195 Q98 202 88 202 L79 202 Q74 202 74 199 Z" fill="#111827" {...S} />
+        <path d="M126 199 Q126 187 113 187 Q102 187 102 195 Q102 202 112 202 L121 202 Q126 202 126 199 Z" fill="#111827" {...S} />
+        <rect x={78} y={183} width={20} height={7} rx={3.5} fill={C.white} {...S} strokeWidth={2.4} />
+        <rect x={102} y={183} width={20} height={7} rx={3.5} fill={C.white} {...S} strokeWidth={2.4} />
+      </>
+    ),
+    sleeve: "#d62828",
+    torso: (
+      <>
+        <path d={BODY} fill="#d62828" {...S} />
+        <path d="M126 130 Q138 154 130 175 Q137 154 126 130 Z" fill="#a61e1e" />
+        {/* The white fur down the front and along the hem. */}
+        <rect x={93} y={117} width={14} height={72} rx={6} fill={C.white} {...S} strokeWidth={2.4} />
+        <path d="M66 178 Q100 194 134 178 L135 184 Q100 199 65 184 Z" fill={C.white} {...S} strokeWidth={2.4} />
+        {/* The black belt and its gold buckle. */}
+        <rect x={63} y={156} width={74} height={12} rx={3} fill="#111827" {...S} />
+        <rect x={90} y={153} width={20} height={18} rx={3} fill="#f5c542" {...S} strokeWidth={2.6} />
+        <rect x={95} y={158} width={10} height={8} rx={1.5} fill="#111827" />
+      </>
+    ),
+    // The beard under the mouth, and the moustache under the nose.
+    face: (
+      <>
+        <path
+          d="M60 96 Q56 116 66 128 Q70 140 82 140 Q88 150 100 148 Q112 150 118 140 Q130 140 134 128 Q144 116 140 96 Q132 108 120 110 Q112 119 100 119 Q88 119 80 110 Q68 108 60 96 Z"
+          fill={C.white}
+          {...S}
+          strokeWidth={2.6}
+        />
+        <path d="M100 98 Q93 95 86 98 Q82 103 89 103 Q96 103 100 99 Q104 103 111 103 Q118 103 114 98 Q107 95 100 98 Z" fill={C.white} {...S} strokeWidth={2.4} />
+      </>
+    ),
+    // The red hat falling to the side, its white brim and pompom.
+    headTop: (
+      <>
+        <path d="M58 58 Q62 20 100 16 Q134 14 154 34 Q164 46 160 60 L146 58 Q144 44 134 40 Q138 50 142 58 Z" fill="#d62828" {...S} />
+        <path d="M110 20 Q132 22 140 40" fill="none" stroke="#a61e1e" strokeWidth={3} strokeLinecap="round" />
+        <circle cx={158} cy={64} r={9} fill={C.white} {...S} />
+        <path d="M52 56 Q100 44 148 56 Q152 64 146 70 Q100 58 54 70 Q48 64 52 56 Z" fill={C.white} {...S} />
+      </>
+    ),
+    // A present: a gift box with its ribbon and bow.
+    prop: (
+      <>
+        <rect x={116} y={150} width={30} height={26} rx={2.5} fill="#16a34a" {...S} />
+        <path d="M131 150 L131 176 M116 162 L146 162" stroke="#f5c542" strokeWidth={4} />
+        <path d="M131 150 Q122 140 124 147 Q126 152 131 150 Q140 140 138 147 Q136 152 131 150 Z" fill="#f5c542" {...S} strokeWidth={2.2} />
+      </>
+    ),
+  },
 } satisfies Record<string, Slots>;
 
 export type Outfit = keyof typeof OUTFITS;

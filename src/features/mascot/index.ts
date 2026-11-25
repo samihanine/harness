@@ -10,7 +10,7 @@ export { Mascot, STATES, type MascotState } from "./mascot";
 export { WakingMascot } from "./waking";
 export { OUTFITS, OUTFIT_ALIASES, type Outfit } from "./outfits";
 
-export const OUTFIT_LABELS: Record<Outfit, string> = { diver: "Diver", trainer: "Trainer", builder: "Builder", datascientist: "Data Scientist", presenter: "Presenter" };
+export const OUTFIT_LABELS: Record<Outfit, string> = { diver: "Diver", trainer: "Trainer", builder: "Builder", datascientist: "Data Scientist", presenter: "Presenter", santa: "Santa Claus" };
 export const STATE_LABELS: Record<MascotState, string> = { idle: "Idle", thinking: "Thinking", talking: "Talking", working: "Working", sleeping: "Sleeping" };
 
 /** The outfit of a screen's assistant; the diver elsewhere. */
