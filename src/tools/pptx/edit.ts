@@ -14,16 +14,63 @@ async function sourceBytes(ctx: ToolContext, s: z.infer<typeof source>) {
   throw new Error("Give capture or src.");
 }
 
+/** The shape holding a text on a slide (its current text, or a part of it): the one id, or why not. */
+async function shapeByText(pptx: Pptx, slide: number, find: string) {
+  const s = (await pptx.structure())[slide - 1];
+  if (!s) throw new Error(`No slide ${slide}.`);
+  const norm = (t: string) => t.replace(/\s+/g, " ").trim().toLowerCase();
+  const hits = s.shapes.filter((x) => x.text && norm(x.text).includes(norm(find)));
+  if (hits.length === 1) return hits[0];
+  const texts = s.shapes.filter((x) => x.text).map((x) => `id ${x.id}: ${JSON.stringify(x.text!.slice(0, 80))}`).join("; ");
+  throw new Error(hits.length ? `"${find}" is in ${hits.length} shapes of slide ${slide}: give shape (${hits.map((h) => h.id).join(", ")}).` : `No shape of slide ${slide} holds "${find}". Its texts: ${texts}`);
+}
+
 export const setText = tool({
   name: "set_text",
-  description: "Replace the text of a shape (or of a table cell: row, col from 0), keeping its formatting: each line takes the style of the paragraph at the same place (bullets, title of a callout…); **bold** parts are bold.",
-  args: z.object({ slide: z.number().int().min(1), shape: z.string(), text: z.string(), row: z.number().int().optional(), col: z.number().int().optional() }),
+  description:
+    "Replace the WHOLE text of a shape (or of a table cell: row, col from 0), keeping its formatting: each line takes the style of the paragraph at the same place (bullets, title of a callout…); **bold** parts are bold. Find the shape by `find` (a part of its current text) or give its id — with both, the id is checked against the text (shape ids repeat from one slide to another). To change only a word or a figure inside a text, use replace_text.",
+  args: z.object({ slide: z.number().int().min(1), shape: z.string().optional(), find: z.string().optional().describe("A part of the shape's current text."), text: z.string(), row: z.number().int().optional(), col: z.number().int().optional() }),
   changes: true,
   async run(a, ctx) {
     const { doc, pptx } = await openPptx(ctx);
-    await pptx.setText(a.slide, a.shape, a.text, a.row !== undefined && a.col !== undefined ? { row: a.row, col: a.col } : undefined);
+    let id = a.shape;
+    if (a.find) {
+      const found = await shapeByText(pptx, a.slide, a.find).catch((e) => {
+        if (!a.shape) throw e;
+        return undefined;
+      });
+      if (a.shape && found && found.id !== a.shape) throw new Error(`Shape ${a.shape} of slide ${a.slide} does not hold "${a.find}" (shape ${found.id} does): check the id.`);
+      if (a.shape && !found) {
+        const s = (await pptx.structure())[a.slide - 1]?.shapes.find((x) => x.id === a.shape);
+        throw new Error(`Shape ${a.shape} of slide ${a.slide} does not hold "${a.find}"; its text is ${JSON.stringify(s?.text?.slice(0, 200) ?? "(none)")}.`);
+      }
+      id = found!.id;
+    }
+    if (!id) throw new Error("Give find (a part of the shape's current text) or shape (its id).");
+    const before = (await pptx.structure())[a.slide - 1]?.shapes.find((x) => x.id === id)?.text;
+    await pptx.setText(a.slide, id, a.text, a.row !== undefined && a.col !== undefined ? { row: a.row, col: a.col } : undefined);
     await savePptx(ctx, doc, pptx);
-    return `Text of shape ${a.shape} on slide ${a.slide} replaced.`;
+    return `Slide ${a.slide}, shape ${id}: ${JSON.stringify(before?.slice(0, 120) ?? "")} → ${JSON.stringify(a.text.slice(0, 120))}.`;
+  },
+});
+
+export const replaceText = tool({
+  name: "replace_text",
+  description:
+    "Replace pieces of text where they are, keeping the formatting around them (a word, a figure, a date, a typo): each edit's `find` is replaced by `replace` on one slide (or all when slide is not given), in one shape or all. Several edits in one call. The search ignores case and extra spaces when the exact text is not found. Returns where each edit applied; an edit found nowhere is said (nothing else is changed by it).",
+  args: z.object({ edits: z.array(z.object({ find: z.string(), replace: z.string(), slide: z.number().int().min(1).optional(), shape: z.string().optional() })).min(1) }),
+  changes: true,
+  async run(a, ctx) {
+    const { doc, pptx } = await openPptx(ctx);
+    const lines: string[] = [];
+    let changed = 0;
+    for (const e of a.edits) {
+      const hits = await pptx.replaceText(e.find, e.replace, { slide: e.slide, shape: e.shape });
+      changed += hits.length;
+      lines.push(hits.length ? `${JSON.stringify(e.find)} → ${JSON.stringify(e.replace)}: ${hits.map((h) => `slide ${h.slide} shape ${h.shape}`).join(", ")}` : `${JSON.stringify(e.find)}: NOT FOUND${e.slide ? ` on slide ${e.slide}` : ""} — read the slide's texts with pptx_structure`);
+    }
+    if (changed) await savePptx(ctx, doc, pptx);
+    return lines.join("\n");
   },
 });
 

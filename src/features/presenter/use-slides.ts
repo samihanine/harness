@@ -1,4 +1,7 @@
-/** Pictures of a deck's slides as PowerPoint draws them (the server renders them through Microsoft), kept per version. */
+/**
+ * Pictures of a deck's slides as PowerPoint draws them (the server renders them through Microsoft), kept per
+ * version. An imported PowerPoint shows its first slides first, then the others (a big deck takes a while).
+ */
 import { useEffect, useRef, useState } from "react";
 import { errorText, post } from "@/lib/api";
 
@@ -17,6 +20,10 @@ export function useSlides(source: SlidesSource | undefined, key: string) {
     setError(undefined);
     asked.current = key;
     try {
+      if ("fileId" in source && !cache.has(key)) {
+        const first = await post<string[]>("/deck/preview", { ...source, slides: [1, 2, 3, 4, 5, 6] });
+        if (asked.current === key) setPics(first);
+      }
       const ids = await post<string[]>("/deck/preview", source);
       cache.set(key, ids);
       if (asked.current === key) setPics(ids);

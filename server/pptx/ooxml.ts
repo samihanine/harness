@@ -536,6 +536,135 @@ export class Pptx {
   }
 
   /** The bytes of a picture of the deck (by its file name in the structure). */
+  /**
+   * Replaces a piece of text where it is, keeping the formatting of the runs around it: "2015" → "2016" in
+   * a title, a figure in a bullet. On one slide or all, in one shape or all (also table cells). The search
+   * ignores case and extra spaces when the exact text is not found. Returns where it was replaced.
+   */
+  async replaceText(find: string, by: string, where: { slide?: number; shape?: string } = {}) {
+    if (!find) throw new Error("Give the text to find.");
+    const files = await this.slideFiles();
+    const numbers = where.slide ? [where.slide] : files.map((_, i) => i + 1);
+    const hits: { slide: number; shape: string }[] = [];
+    const norm = (t: string) => t.replace(/\s+/g, " ").toLowerCase();
+    for (const n of numbers) {
+      const file = files[n - 1];
+      if (!file) throw new Error(`No slide ${n} (the deck has ${files.length}).`);
+      const doc = await this.doc(file);
+      const roots = where.shape ? [(await this.shape(n, where.shape)).shape] : all(doc, NS.p, "spTree");
+      for (const root of roots)
+        for (const para of all(root, NS.a, "p")) {
+          const runs = kids(para, NS.a, "r").map((r) => kid(r, NS.a, "t")).filter((t): t is El => !!t);
+          if (!runs.length) continue;
+          const text = runs.map((t) => t.textContent ?? "").join("");
+          // Exact first; else without case and with spaces made single (the AI often retypes a text slightly).
+          let at = text.indexOf(find);
+          let length = find.length;
+          if (at < 0) {
+            const map: number[] = [];
+            let flat = "";
+            for (let i = 0; i < text.length; i++) {
+              if (/\s/.test(text[i]) && /\s$/.test(flat)) continue;
+              map.push(i);
+              flat += /\s/.test(text[i]) ? " " : text[i].toLowerCase();
+            }
+            const f = flat.indexOf(norm(find).trim());
+            if (f < 0) continue;
+            at = map[f];
+            length = map[f + norm(find).trim().length - 1] - at + 1;
+          }
+          // The runs the found text spans: the first takes the new text, the others lose their part.
+          let pos = 0;
+          let done = false;
+          for (const t of runs) {
+            const value = t.textContent ?? "";
+            const start = pos;
+            const end = pos + value.length;
+            pos = end;
+            if (end <= at || start >= at + length) continue;
+            const before = value.slice(0, Math.max(0, at - start));
+            const after = value.slice(Math.min(value.length, at + length - start));
+            const next = done ? before + after : before + by + after;
+            done = true;
+            while (t.firstChild) t.removeChild(t.firstChild);
+            t.appendChild(t.ownerDocument!.createTextNode(next));
+          }
+          const sp = (() => {
+            let e: Node | null = para;
+            while (e && !(e.nodeType === 1 && ["sp", "graphicFrame"].includes((e as El).localName!))) e = e.parentNode;
+            return e as El | null;
+          })();
+          const id = sp ? all(sp, NS.p, "cNvPr")[0]?.getAttribute("id") ?? "?" : "?";
+          hits.push({ slide: n, shape: id });
+        }
+    }
+    return hits;
+  }
+
+  /** A fingerprint of what a slide shows: its XML, its relations and what they point to (layout, master, pictures). */
+  async slideHash(number: number) {
+    const { createHash } = await import("node:crypto");
+    const h = createHash("sha1");
+    const add = async (file: string, depth: number) => {
+      const f = this.zip.file(file);
+      if (!f) return;
+      h.update(file).update(await f.async("uint8array"));
+      const rels = this.zip.file(this.relsPath(file));
+      if (!rels || depth > 2) return;
+      const xml = await rels.async("string");
+      h.update(xml);
+      for (const m of xml.matchAll(/Target="([^"]+)"[^>]*?(?:TargetMode="External")?/g)) if (!/TargetMode="External"/.test(m[0]) && !/notesSlide/.test(m[1])) await add(this.resolve(file, m[1]), depth + 1);
+    };
+    await add(await this.slideFile(number), 0);
+    return h.digest("hex");
+  }
+
+  /**
+   * The deck with only some slides (in their order), the others and the pictures only they used removed:
+   * a light file to draw a few slides (a big deck with many pictures is long to send and convert).
+   */
+  async only(numbers: number[]): Promise<Uint8Array> {
+    const files = await this.slideFiles();
+    const keep = new Set(numbers.map((n) => files[n - 1]).filter(Boolean));
+    const pres = await this.doc("ppt/presentation.xml");
+    const presRels = await this.rels("ppt/presentation.xml");
+    const list = all(pres, NS.p, "sldIdLst")[0];
+    const types = await this.doc("[Content_Types].xml");
+    const removed = new Set<string>();
+    const drop = (file: string) => {
+      removed.add(file);
+      this.zip.remove(file);
+      this.zip.remove(this.relsPath(file));
+      this.docs.delete(file);
+      this.docs.delete(this.relsPath(file));
+      for (const o of all(types, NS.ct, "Override")) if (o.getAttribute("PartName") === `/${file}`) o.parentNode!.removeChild(o);
+    };
+    for (const sld of kids(list, NS.p, "sldId")) {
+      const rel = all(presRels, NS.rel, "Relationship").find((r) => r.getAttribute("Id") === sld.getAttributeNS(NS.r, "id"));
+      const file = rel && this.resolve("ppt/presentation.xml", rel.getAttribute("Target")!);
+      if (!file || keep.has(file)) continue;
+      // The slide's notes go with it.
+      const notes = (await this.zip.file(this.relsPath(file))?.async("string"))?.match(/Target="([^"]*notesSlide[^"]*)"/)?.[1];
+      if (notes) drop(this.resolve(file, notes));
+      list.removeChild(sld);
+      rel.parentNode!.removeChild(rel);
+      drop(file);
+      // Sections (PowerPoint 2010) list slides by id too.
+      for (const e of all(pres, "http://schemas.microsoft.com/office/powerpoint/2010/main", "sldId")) if (e.getAttribute("id") === sld.getAttribute("id")) e.parentNode!.removeChild(e);
+    }
+    // Pictures and embedded files no part points to any more.
+    for (const [file, doc] of this.docs) this.zip.file(file, serialize(doc));
+    const used = new Set<string>();
+    for (const name of Object.keys(this.zip.files).filter((f) => f.endsWith(".rels"))) {
+      const xml = await this.zip.file(name)!.async("string");
+      const owner = name.replace(/_rels\/([^/]+)\.rels$/, "$1");
+      for (const m of xml.matchAll(/Target="([^"]+)"/g)) used.add(this.resolve(owner, m[1]));
+    }
+    // (not the folders themselves: removing a folder removes what is in it)
+    for (const name of Object.keys(this.zip.files)) if (/^ppt\/(media|embeddings)\/.+[^/]$/.test(name) && !used.has(name)) this.zip.remove(name);
+    return this.save();
+  }
+
   async media(name: string) {
     const f = this.zip.file(`ppt/media/${name.replace(/[^\w.-]/g, "")}`);
     if (!f) throw new Error(`No picture "${name}" in the deck.`);

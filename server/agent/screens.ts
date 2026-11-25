@@ -35,7 +35,7 @@ import { capturePowerbi } from "@/tools/deck/capture-powerbi";
 import { editSlides, readDeck, writeDeck } from "@/tools/deck/deck";
 import { lookAtDeck } from "@/tools/deck/look-at-deck";
 import { lookAtSlides, pptxStructure, viewPicture } from "@/tools/pptx/structure";
-import { addPicture, addTemplateSlide, addText, replacePicture, setText, shapeAction, slideAction } from "@/tools/pptx/edit";
+import { addPicture, addTemplateSlide, addText, replacePicture, replaceText, setText, shapeAction, slideAction } from "@/tools/pptx/edit";
 import { TRAINER } from "@/prompts/trainer";
 import { BUILDER, BUILDER_EDITOR } from "@/prompts/builder";
 import { SCIENTIST } from "@/prompts/scientist";
@@ -71,7 +71,7 @@ const AGENTS: Record<ScreenId, ScreenAgent> = {
     system: (s) => (s.mode === "edit" ? PRESENTER_EDIT : PRESENTER_CREATE),
     tools: (s) =>
       withContext(s, [
-        ...(s.mode === "edit" ? [pptxStructure, lookAtSlides, viewPicture, setText, replacePicture, addPicture, addText, shapeAction, slideAction, addTemplateSlide] : [readDeck, writeDeck, editSlides, lookAtDeck]),
+        ...(s.mode === "edit" ? [pptxStructure, lookAtSlides, viewPicture, setText, replaceText, replacePicture, addPicture, addText, shapeAction, slideAction, addTemplateSlide] : [readDeck, writeDeck, editSlides, lookAtDeck]),
         capturePowerbi,
         listReports,
         reportStructure,
