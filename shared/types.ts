@@ -3,7 +3,7 @@
 /** A Power BI item: `appId` when opened from a Power BI app, `groupId` its workspace (none: My workspace). */
 export type Ref = { id: string; groupId?: string; appId?: string };
 
-export type ScreenId = "trainer" | "builder" | "scientist" | "presenter";
+export type ScreenId = "trainer" | "builder" | "scientist" | "presenter" | "teams";
 
 /**
  * A report as the app keeps it. `access`: "edit" when its PBIR definition can be read and written (the
@@ -11,12 +11,18 @@ export type ScreenId = "trainer" | "builder" | "scientist" | "presenter";
  * format, or a definition the API refuses: the Builder works in the embedded editor), "view" otherwise.
  * `structure`: its structure read once (pages, visuals, fields), refreshed on demand.
  */
-export type ReportAccess = "view" | "edit" | "editor";
+/** "edit": the Builder's copy of a dropped .pbix (its definition is written). */
+export type ReportAccess = "view" | "edit";
 export type ReportRef = Ref & { name: string; datasetId?: string; datasetGroupId?: string; access?: ReportAccess; webUrl?: string; structure?: unknown; structureAt?: string };
 export type DatasetRef = Ref & { name: string; access?: "view" | "edit" };
 
 /** A project: a name and a Confluence folder whose pages are the context of the conversations. */
-export type Project = { id: string; name: string; folderId: string };
+/** The catalog (Confluence): one page per report or model — its name, Power BI link and description. */
+export type LibraryKind = "report" | "dataset";
+export type LibraryEntry = { pageId: string; name: string; url: string; description: string; pageUrl?: string; id?: string; groupId?: string; appId?: string; error?: string };
+
+/** A project: a sub-folder of the Confluence projects folder (its id is the folder's). */
+export type Project = { id: string; name: string; pages?: number; at?: string; url?: string; error?: string };
 
 /** A file sent to the server (image for the AI, Excel / CSV for the Data Scientist, PowerPoint for the Presenter). */
 export type FileRef = { id: string; name: string; type: string; size: number };
@@ -37,8 +43,8 @@ export type ChatScope = {
   projects?: string[];
   /** Structures and models the browser already holds (read once, refreshed on demand): not read again. */
   models?: Record<string, unknown>;
-  /** Presenter: "create" (a deck written in markdown) or "edit" (an uploaded PowerPoint). */
-  mode?: "create" | "edit";
+  /** Presenter: the visual templates (the browser's, favorites marked) the slides are drawn with. */
+  templates?: unknown[];
   doc?: unknown;
 };
 
@@ -90,7 +96,7 @@ export type PublicSettings = {
     claudeCode: { baseUrl: string; headers: string; keyHelper: string; keySet: boolean };
   };
   powerbi: { maxRows: number; timeoutMs: number; concurrency: number; cacheMs: number };
-  confluence: { url: string; email: string; folderId: string; keySet: boolean; projects: Project[] };
+  confluence: { url: string; email: string; keySet: boolean; projectsFolderId: string; reportsFolderId: string; datasetsFolderId: string; /** The catalog can be changed from Settings (CONFLUENCE_CATALOG_EDIT). */ catalogEdit: boolean };
   /** Settings given by the .env file (the values a reset goes back to). */
   env: string[];
 };
@@ -104,10 +110,9 @@ export type SettingsPatch = {
     claudeCode?: Partial<{ baseUrl: string; headers: string; keyHelper: string; key: string }>;
   };
   powerbi?: Partial<PublicSettings["powerbi"]>;
-  confluence?: Partial<{ url: string; email: string; folderId: string; key: string; projects: Project[] }>;
+  confluence?: Partial<{ url: string; email: string; key: string; projectsFolderId: string; reportsFolderId: string; datasetsFolderId: string }>;
 };
 
-export const SCREENS: ScreenId[] = ["trainer", "builder", "scientist", "presenter"];
+export const SCREENS: ScreenId[] = ["trainer", "builder", "scientist", "presenter", "teams"];
 
 /** The project of the Confluence folder of the settings (CONFLUENCE_FOLDER_ID). */
-export const DEFAULT_PROJECT = "default";

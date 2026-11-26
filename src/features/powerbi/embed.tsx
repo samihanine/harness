@@ -26,11 +26,17 @@ export async function embedToken() {
 
 export const embedUrl = (ref: Ref) => `https://app.powerbi.com/reportEmbed?reportId=${ref.id}${ref.appId ? `&appId=${ref.appId}` : ref.groupId ? `&groupId=${ref.groupId}` : ""}`;
 
-/** The page as wide as the frame (a tall page scrolls): the "100 %" of the zoom, on load and at each page change. */
+/**
+ * The page as wide as the frame (a tall or wide page scrolls): the "100 %" of the zoom, on load and at each page
+ * change. Power BI's zoom is absolute (1 = the page's real size), so it is not reset after fitting; switching the
+ * layout away and back makes Power BI fit again even when it already was "fit to width". Returns the fitted zoom.
+ */
 export async function fitReport(report: Report) {
   const { pbi } = await powerbi();
-  await report.updateSettings({ layoutType: pbi.models.LayoutType.Custom, customLayout: { displayOption: pbi.models.DisplayOption.FitToWidth } }).catch(() => undefined);
-  await report.setZoom(1).catch(() => undefined);
+  const layout = (displayOption: PbiClient.models.DisplayOption) => report.updateSettings({ layoutType: pbi.models.LayoutType.Custom, customLayout: { displayOption } }).catch(() => undefined);
+  await layout(pbi.models.DisplayOption.FitToPage);
+  await layout(pbi.models.DisplayOption.FitToWidth);
+  return report.getZoom().catch(() => 1);
 }
 
 export function useEmbed(ref: Ref | undefined, reloadKey = 0, mode: "view" | "edit" = "view") {
@@ -81,7 +87,6 @@ export function useEmbed(ref: Ref | undefined, reloadKey = 0, mode: "view" | "ed
           setReport(r);
           void fitReport(r);
         });
-        r.on("pageChanged", () => !cancelled && void fitReport(r));
         r.on("rendered", () => {
           if (cancelled || !first) return;
           first = false;

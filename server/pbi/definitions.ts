@@ -1,4 +1,4 @@
-/** Definitions through the Fabric API: semantic models as TMDL, reports as PBIR (read and written whole). */
+/** Definitions through the Fabric API: semantic models as TMDL (read), reports as PBIR or PBIR-Legacy (read and written whole). */
 import type { Ref } from "@shared/types";
 import { fabric, workspaceId } from "../ms/api";
 
@@ -13,14 +13,6 @@ export const textPart = (path: string, text: string): Part => ({ path, payload: 
 export async function readModelFiles(datasetId: string, groupId?: string): Promise<ModelFile[]> {
   const result = await fabric(`/workspaces/${await workspaceId(groupId)}/semanticModels/${datasetId}/getDefinition?format=TMDL`, "POST");
   return result.definition.parts.filter((p: Part) => p.path !== ".platform").map((p: Part) => ({ path: p.path, text: decode(p.payload) }));
-}
-
-export async function writeModelFiles(datasetId: string, files: ModelFile[], groupId?: string) {
-  await fabric(`/workspaces/${await workspaceId(groupId)}/semanticModels/${datasetId}/updateDefinition`, "POST", { definition: { parts: files.map((f) => textPart(f.path, f.text)) } }).catch((e) => {
-    const m = e instanceof Error ? e.message : String(e);
-    if (/content provider or type not supported/i.test(m)) throw new Error("Power BI does not let this model be changed through its API (a sample model, or a kind of model it cannot write). Give the DAX to the user to add it in Power BI Desktop.");
-    throw e;
-  });
 }
 
 /** A report's definition in PBIR format (refused for reports not editable, or with an encrypted sensitivity label). */

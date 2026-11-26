@@ -10,7 +10,7 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 import { animate, motion, useMotionValue, useMotionValueEvent, useTransform, type MotionValue } from "motion/react";
 import { BODY, C, OUTFITS, type Outfit } from "./outfits";
 
-export const STATES = ["idle", "thinking", "talking", "working", "sleeping"] as const;
+export const STATES = ["idle", "thinking", "talking", "working", "sleeping", "happy", "sad", "angry", "surprised", "party"] as const;
 export type MascotState = (typeof STATES)[number];
 
 /** Keyframes of one part (degrees, px or scale), looped over `duration` seconds. */
@@ -27,6 +27,12 @@ const POSES: Record<MascotState, { head: Loop; headY: Loop; armL: Loop; armR: Lo
   talking: { head: loop([0, -3, 2, -2, 0], 1.6), headY: loop([0, -2, 0, -1.5, 0], 1.6), armL: loop([28, 34, 28], 1.6), armR: loop([-70, -130, -95, -135, -70], 2.4), breath: loop([1, 1.02, 1], 1.6), blink: loop([1, 1, 0.1, 1], 3.5, [0, 0.9, 0.95, 1]) },
   working: { head: loop([4, 7, 4], 0.7), headY: loop([0, 1.5, 0], 0.7), armL: loop([-20, -40, -20], 0.7), armR: loop([20, 45, 20], 0.7), breath: loop([1, 1.02, 1], 0.7), blink: loop([0.75]) },
   sleeping: { head: loop([10, 13, 10], 4), headY: loop([4, 6, 4], 4), armL: loop([8]), armR: loop([-8]), breath: loop([1, 1.045, 1], 4), blink: loop([0]) },
+  // Moods: hopping with both arms up; head down and arms hanging; shaking with fists; frozen with hands up; dancing.
+  happy: { head: loop([-6, 6, -6], 0.9), headY: loop([0, -7, 0], 0.45), armL: loop([125, 150, 125], 0.45), armR: loop([-130, -155, -130], 0.45), breath: loop([1, 1.04, 1], 0.45), blink: loop([1, 1, 0.1, 1], 3, [0, 0.9, 0.95, 1]) },
+  sad: { head: loop([9, 11, 9], 4), headY: loop([6, 7, 6], 4), armL: loop([6]), armR: loop([-6]), breath: loop([1, 1.012, 1], 4), blink: loop([0.65, 0.6, 0.65], 4) },
+  angry: { head: loop([-3, 3, -3], 0.22), headY: loop([0]), armL: loop([-45, -55, -45], 0.22), armR: loop([45, 55, 45], 0.22), breath: loop([1, 1.04, 1], 0.3), blink: loop([0.8]) },
+  surprised: { head: loop([0, -2, 0], 1.2), headY: loop([0, -4, 0], 1.2), armL: loop([100, 108, 100], 1.2), armR: loop([-100, -108, -100], 1.2), breath: loop([1.03]), blink: loop([1.18]) },
+  party: { head: loop([-9, 9, -9], 0.7), headY: loop([0, -6, 0], 0.35), armL: loop([150, 100, 150], 0.7), armR: loop([-100, -150, -100], 0.7), breath: loop([1, 1.04, 1], 0.35), blink: loop([1, 1, 0.1, 1], 2, [0, 0.9, 0.95, 1]) },
 };
 
 /** A motion value playing a loop (or moving to a single value), started again when the loop changes. */
@@ -116,6 +122,9 @@ function Eye({ cx, blink, state }: { cx: number; blink: MotionValue<number>; sta
 
 /** The open smile of the drawing (a dark D with its tongue), or the state's mouth. */
 function Mouth({ state }: { state: MascotState }) {
+  if (state === "sad") return <path d="M91 108 Q101 100 111 108" fill="none" {...S} strokeWidth={3.2} />;
+  if (state === "angry") return <path d="M90 106 Q96 102 101 105 Q106 102 112 106" fill="none" {...S} strokeWidth={3.4} />;
+  if (state === "surprised") return <motion.ellipse cx={101} cy={106} rx={6} fill={C.mouth} stroke={C.line} strokeWidth={2.6} animate={{ ry: [6.5, 8, 6.5] }} transition={{ duration: 1.2, repeat: Infinity }} />;
   if (state === "talking")
     return <motion.ellipse cx={101} cy={105} rx={8} fill={C.mouth} stroke={C.line} strokeWidth={2.6} animate={{ ry: [2.5, 7, 3.5, 8, 3, 6, 2.5] }} transition={{ duration: 1.2, repeat: Infinity }} />;
   if (state === "thinking") return <ellipse cx={106} cy={105} rx={3.6} ry={3.1} fill={C.mouth} stroke={C.line} strokeWidth={2.6} />;
@@ -129,8 +138,53 @@ function Mouth({ state }: { state: MascotState }) {
   );
 }
 
-/** What floats around the mascot: a thought bubble, Zs while sleeping. */
+/** Eyebrows of the moods (angry: down to the middle; sad: up in the middle). */
+function Brows({ state }: { state: MascotState }) {
+  if (state === "angry") return <path d="M70 66 L92 74 M131 66 L109 74" fill="none" {...S} strokeWidth={4.2} />;
+  if (state === "sad") return <path d="M71 72 L91 66 M130 72 L110 66" fill="none" {...S} strokeWidth={3.4} />;
+  if (state === "surprised") return <path d="M72 62 Q82 56 92 62 M109 62 Q119 56 129 62" fill="none" {...S} strokeWidth={3.2} />;
+  return null;
+}
+
+const CONFETTI = ["#22c3c6", "#f5c542", "#e4572e", "#7b61ff", "#3ecf8e", "#ff7ab6"];
+
+/** What floats around the mascot: a thought bubble, Zs while sleeping, the moods' signs. */
 function Extras({ state }: { state: MascotState }) {
+  if (state === "sad")
+    return <motion.path d="M66 96 Q62 104 66 108 Q70 104 66 96 Z" fill="#7cc6ff" stroke={C.line} strokeWidth={1.6} animate={{ y: [0, 26], opacity: [1, 0] }} transition={{ duration: 1.6, repeat: Infinity, ease: "easeIn" }} />;
+  if (state === "angry")
+    return (
+      <motion.g animate={{ scale: [1, 1.15, 1] }} transition={{ duration: 0.5, repeat: Infinity }} style={{ transformOrigin: "160px 34px" }}>
+        <path d="M152 26 L158 32 M168 26 L162 32 M152 42 L158 36 M168 42 L162 36" fill="none" stroke="#e4572e" strokeWidth={4} strokeLinecap="round" />
+      </motion.g>
+    );
+  if (state === "surprised")
+    return (
+      <motion.text x={150} y={36} fontSize={30} fontWeight={900} fill="#f5c542" stroke={C.line} strokeWidth={1.4} animate={{ y: [36, 30, 36] }} transition={{ duration: 0.8, repeat: Infinity }}>
+        !
+      </motion.text>
+    );
+  if (state === "happy")
+    return (
+      <>
+        {[
+          [36, 40],
+          [164, 30],
+          [176, 70],
+        ].map(([x, y], i) => (
+          <motion.path key={i} d={`M${x} ${y - 7} L${x + 2} ${y - 2} L${x + 7} ${y} L${x + 2} ${y + 2} L${x} ${y + 7} L${x - 2} ${y + 2} L${x - 7} ${y} L${x - 2} ${y - 2} Z`} fill="#f5c542" stroke={C.line} strokeWidth={1.2} animate={{ scale: [0.4, 1.1, 0.4], opacity: [0.3, 1, 0.3] }} transition={{ duration: 0.9, repeat: Infinity, delay: i * 0.3 }} style={{ transformOrigin: `${x}px ${y}px` }} />
+        ))}
+      </>
+    );
+  if (state === "party")
+    return (
+      <>
+        {Array.from({ length: 14 }, (_, i) => {
+          const x = 14 + ((i * 53) % 176);
+          return <motion.rect key={i} x={x} y={-6} width={6} height={10} rx={1.5} fill={CONFETTI[i % CONFETTI.length]} animate={{ y: [-10, 210], rotate: [0, 360 * (i % 2 ? 1 : -1)] }} transition={{ duration: 1.6 + (i % 4) * 0.35, repeat: Infinity, delay: (i % 5) * 0.3, ease: "linear" }} style={{ transformOrigin: `${x + 3}px 0px` }} />;
+        })}
+      </>
+    );
   if (state === "thinking")
     return (
       <>
@@ -242,6 +296,7 @@ export function Mascot({ outfit = "diver", state = "idle", size = 96, still, cla
           <ellipse cx={101} cy={96} rx={7} ry={4.8} fill={C.line} />
           <ellipse cx={98.5} cy={94.4} rx={2.4} ry={1.3} fill={C.white} opacity={0.85} />
           <Mouth state={state} />
+          <Brows state={state} />
           {"eyes" in slots && slots.eyes}
           {"face" in slots && slots.face}
           {"headTop" in slots && slots.headTop}

@@ -1,23 +1,25 @@
-/** What the server keeps of each project's Confluence pages (read once, refreshed on demand), shared by the screens. */
+/**
+ * The projects (sub-folders of the Confluence projects folder) with what the server keeps of each (pages read
+ * once, refreshed on demand), shared by the screens.
+ */
 import { useEffect, useState } from "react";
-import { get, post } from "./api";
+import type { Project } from "@shared/types";
+import { get } from "./api";
 
-export type ProjectStatus = { id: string; pages: number; at?: string; url?: string; error?: string };
+let loaded: Promise<Project[]> | undefined;
+const listeners = new Set<(s: Project[]) => void>();
+const publish = (p: Promise<Project[]>) => ((loaded = p), p.then((s) => listeners.forEach((l) => l(s)), () => (loaded = undefined)), p);
 
-let loaded: Promise<ProjectStatus[]> | undefined;
-const listeners = new Set<(s: ProjectStatus[]) => void>();
-const publish = (p: Promise<ProjectStatus[]>) => ((loaded = p), p.then((s) => listeners.forEach((l) => l(s)), () => (loaded = undefined)), p);
-
-export function useProjectsStatus(enabled = true) {
-  const [status, setStatus] = useState<ProjectStatus[]>();
+export function useProjectList() {
+  const [projects, setProjects] = useState<Project[]>();
+  const [error, setError] = useState<string>();
   useEffect(() => {
-    if (!enabled) return;
-    listeners.add(setStatus);
-    (loaded ?? publish(get<ProjectStatus[]>("/projects/status"))).then(setStatus, () => undefined);
-    return () => void listeners.delete(setStatus);
-  }, [enabled]);
-  return status;
+    listeners.add(setProjects);
+    (loaded ?? publish(get<Project[]>("/projects"))).then(setProjects, (e) => setError(e instanceof Error ? e.message : String(e)));
+    return () => void listeners.delete(setProjects);
+  }, []);
+  return { projects, error };
 }
 
-/** Reads a project's pages from Confluence again (the next conversations get them). */
-export const refreshProject = (id: string) => publish(post<ProjectStatus[]>("/projects/refresh", { id }));
+/** Reads a project's pages from Confluence again ("*": the list of projects). */
+export const refreshProject = (id: string) => publish(get<Project[]>(`/projects?refresh=${encodeURIComponent(id)}`));

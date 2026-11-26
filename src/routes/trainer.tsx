@@ -4,8 +4,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { BarChart3Icon, DatabaseIcon, ExternalLinkIcon, FileJsonIcon, GraduationCapIcon } from "lucide-react";
 import { Workspace } from "@/components/workspace";
 import { ChatPanel } from "@/components/chat-panel";
-import { AddButton, ItemPicker, usePicked } from "@/components/pickers";
-import { Empty } from "@/components/common";
+import { ItemPicker, usePicked } from "@/components/pickers";
+import { Empty, ErrorBox, Loading } from "@/components/common";
 import { Button } from "@/components/ui/button";
 import { ReportFrame } from "@/features/views/report-view";
 import { ModelView } from "@/features/views/model-view";
@@ -22,7 +22,7 @@ export const Route = createFileRoute("/trainer")({ component: Trainer, validateS
 type TabId = "report" | "structure" | "model";
 
 function Trainer() {
-  const { items, current, select } = usePicked("report", "trainer");
+  const { items, entry, current, select, loading, error } = usePicked("trainer");
   const [tab, setTab] = useState<TabId>("report");
   const embed = useEmbed(current);
   const reportRef = useRef<Report | undefined>(undefined);
@@ -40,7 +40,7 @@ function Trainer() {
     <Workspace
       screen="trainer"
       title="Trainer"
-      item={<ItemPicker kind="report" items={items} current={current} onSelect={select} />}
+      item={<ItemPicker kind="report" current={entry} onSelect={select} />}
       actions={current?.webUrl && (
         <Button variant="outline" size="sm" asChild>
           <a href={current.webUrl} target="_blank" rel="noreferrer"><ExternalLinkIcon /> Power BI</a>
@@ -52,8 +52,12 @@ function Trainer() {
       scroll={false}
       chat={<ChatPanel chat={chat} screen="trainer" itemLabel={(id) => items.find((r) => r.id === id)?.name} disabled={current ? undefined : "Choose a report first"} placeholder="Ask about the report, or what to show…" suggestions={["Explain this page", "Show me the figures for my biggest region", "What changed most compared to last year?"]} />}
     >
-      {!current ? (
-        <Empty icon={<GraduationCapIcon />} title="Choose a report">Add a report you can open in Power BI (a workspace or an app): the assistant reads it, filters it and explains it with you.<div><AddButton kind="report" onAdded={select} /></div></Empty>
+      {error ? (
+        <div className="p-6"><ErrorBox>{error}</ErrorBox></div>
+      ) : loading ? (
+        <Loading label={entry ? `Opening "${entry.name}"…` : "Reading the catalog…"} />
+      ) : !current ? (
+        <Empty icon={<GraduationCapIcon />} title="Choose a report">Pick a report of the team's catalog: the assistant reads it, filters it and explains it with you.</Empty>
       ) : (
         <>
           {/* The report stays loaded on the other tabs: the assistant keeps acting on it. */}

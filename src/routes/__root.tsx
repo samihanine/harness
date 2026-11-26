@@ -1,8 +1,8 @@
 /// <reference types="vite/client" />
 import { useEffect, useState } from "react";
 import { Link, Outlet, createRootRoute, useLocation } from "@tanstack/react-router";
-import { SettingsIcon } from "lucide-react";
-import { DiorD, ScreenIcon } from "@/components/screen-icons";
+import { HomeIcon, SettingsIcon } from "lucide-react";
+import { ScreenIcon } from "@/components/screen-icons";
 import { Toaster } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { SCREEN_INFO } from "@/components/screens";
@@ -50,9 +50,10 @@ function Layout() {
       <div style={style} className="h-screen bg-app p-2.5 sm:p-3">
         <div className="flex h-full overflow-hidden rounded-[26px] border bg-sidebar shadow-[0_1px_2px_rgba(0,0,0,0.04)]">
           <nav className="flex w-[76px] shrink-0 flex-col items-center gap-2 py-5">
-            <Link to="/" aria-label="Home" className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-foreground text-background shadow-sm">
-              <DiorD className="size-7" />
-            </Link>
+            <RailLink to="/" label="Home" active={path === "/"}>
+              <HomeIcon className="size-5" />
+            </RailLink>
+            <div className="mb-2 h-px w-8 bg-border" />
             {shown.map((s) => {
               const info = SCREEN_INFO[s];
               return (

@@ -1,28 +1,32 @@
 /**
- * Projects: a name and a Confluence folder. The pages of the folders of the projects chosen in the chat
- * are the context of a conversation: given whole at its start up to a size, the others by their title
- * (the AI reads them with read_project_page). Pages are read once and kept on disk (.local/projects):
- * "Refresh" (Settings › Confluence, the chat's projects menu) reads them again.
+ * Projects: the sub-folders of the Confluence projects folder (CONFLUENCE_PROJECTS_FOLDER_ID), each named as
+ * its project. The pages of the projects chosen in the chat are given whole to the conversation at its start
+ * (up to MAX_CHARS; past it, the rest by title, read with read_project_page). Pages are read once and kept on
+ * disk (.local/projects): "Refresh" reads a project again.
  */
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { folderUrl, listPages, readPageMarkdown } from "./confluence";
-import { DATA_DIR, projects } from "./settings";
+import type { Project } from "@shared/types";
+import { folderChildren, folderUrl, listPages, readPageMarkdown } from "./confluence";
+import { DATA_DIR, settings } from "./settings";
 
 export type ProjectPage = { project: string; id: string; title: string; markdown: string };
 
-const MAX_CHARS = 80_000;
-const MAX_PAGES = 60;
+const MAX_CHARS = 150_000;
+const MAX_PAGES = 200;
+
 type Kept = { at: string; folderId: string; url?: string; pages: Omit<ProjectPage, "project">[] };
 const DIR = join(DATA_DIR, "projects");
 const memory = new Map<string, Promise<Kept>>();
 const fileOf = (folderId: string) => join(DIR, `${folderId.replace(/[^\w-]/g, "_")}.json`);
 
-/** Reads a folder's pages from Confluence and keeps them. */
+/** Reads a folder's pages (all its descendants) from Confluence and keeps them. */
 async function fetchFolder(folderId: string): Promise<Kept> {
   const list = (await listPages(folderId)).slice(0, MAX_PAGES);
-  const read = await Promise.all(list.map((p) => readPageMarkdown(p.id).then((x) => ({ id: p.id, title: x.title, markdown: x.markdown }), () => undefined)));
-  const kept: Kept = { at: new Date().toISOString(), folderId, url: await folderUrl(folderId).catch(() => undefined), pages: read.filter((x) => !!x) };
+  const read: (Kept["pages"][number] | undefined)[] = [];
+  // A few at a time: Confluence limits the calls per second.
+  for (let i = 0; i < list.length; i += 8) read.push(...(await Promise.all(list.slice(i, i + 8).map((p) => readPageMarkdown(p.id).then((x) => ({ id: p.id, title: x.title, markdown: x.markdown }), () => undefined)))));
+  const kept: Kept = { at: new Date().toISOString(), folderId, url: await folderUrl(folderId).catch(() => undefined), pages: read.filter((x): x is Kept["pages"][number] => !!x) };
   await mkdir(DIR, { recursive: true });
   await Bun.write(fileOf(folderId), JSON.stringify(kept));
   return kept;
@@ -43,19 +47,31 @@ function folder(folderId: string, fresh = false): Promise<Kept> {
   return p;
 }
 
-const folderPages = async (projectName: string, folderId: string): Promise<ProjectPage[]> => (await folder(folderId)).pages.map((p) => ({ ...p, project: projectName }));
+/** The projects: the sub-folders of the projects folder (read once a session, then on "Refresh"). */
+let listed: Promise<{ id: string; name: string }[]> | undefined;
+async function projectFolders(fresh = false) {
+  const root = (await settings()).confluence.projectsFolderId;
+  if (!root) return [];
+  if (fresh || !listed) {
+    listed = folderChildren(root).then((c) => c.map((x) => ({ id: x.id, name: x.title })));
+    listed.catch(() => (listed = undefined));
+  }
+  return listed;
+}
 
-/** What is kept of each project: pages, when they were read, the folder's address in Confluence. */
-export async function projectsStatus(refresh?: string) {
-  const all = await projects();
+/** The projects with what is kept of each (pages, when read, the folder's address); `refresh`: one read again ("*": the list too). */
+export async function projectsList(refresh?: string): Promise<Project[]> {
+  const all = await projectFolders(refresh === "*");
   return Promise.all(
     all.map(async (p) => {
-      if (!p.folderId) return { id: p.id, pages: 0 };
+      // Not read yet: said as such (reading every project's pages to list them would be slow).
+      const kept = p.id === refresh || memory.has(p.id) || (await Bun.file(fileOf(p.id)).exists());
+      if (!kept) return { id: p.id, name: p.name };
       try {
-        const k = await folder(p.folderId, p.id === refresh);
-        return { id: p.id, pages: k.pages.length, at: k.at, url: k.url };
+        const k = await folder(p.id, p.id === refresh);
+        return { id: p.id, name: p.name, pages: k.pages.length, at: k.at, url: k.url };
       } catch (e) {
-        return { id: p.id, pages: 0, error: e instanceof Error ? e.message : String(e) };
+        return { id: p.id, name: p.name, error: e instanceof Error ? e.message : String(e) };
       }
     }),
   );
@@ -63,31 +79,30 @@ export async function projectsStatus(refresh?: string) {
 
 /** The pages of the chosen projects (errors said, not thrown: a conversation starts anyway). */
 export async function projectPages(ids: string[]) {
-  const all = await projects();
-  const chosen = all.filter((p) => ids.includes(p.id));
+  const chosen = (await projectFolders()).filter((p) => ids.includes(p.id));
   const pages: ProjectPage[] = [];
   const errors: string[] = [];
-  for (const p of chosen) await folderPages(p.name, p.folderId).then((x) => pages.push(...x), (e) => errors.push(`${p.name}: ${e instanceof Error ? e.message : e}`));
+  for (const p of chosen) await folder(p.id).then((k) => pages.push(...k.pages.map((x) => ({ ...x, project: p.name }))), (e) => errors.push(`${p.name}: ${e instanceof Error ? e.message : e}`));
   return { pages, errors, names: chosen.map((p) => p.name) };
 }
 
-/** The context text of a conversation: the pages whole while they fit, then their titles. */
+/** The context text of a conversation: every page whole while they fit, then the titles of the rest. */
 export async function projectContext(ids: string[]) {
   if (!ids.length) return undefined;
   const { pages, errors, names } = await projectPages(ids);
   if (!pages.length && !errors.length) return undefined;
   let used = 0;
   const whole: string[] = [];
-  const listed: string[] = [];
+  const listedPages: string[] = [];
   for (const p of pages) {
     const text = `### ${p.title} (project ${p.project}, page ${p.id})\n${p.markdown}`;
     if (used + text.length <= MAX_CHARS) (whole.push(text), (used += text.length));
-    else listed.push(`- "${p.title}" (page ${p.id}, project ${p.project})`);
+    else listedPages.push(`- "${p.title}" (page ${p.id}, project ${p.project})`);
   }
   return [
     `Context of the projects ${names.map((n) => `"${n}"`).join(", ")} (Confluence pages: the company's rules, definitions and vocabulary — use them):`,
     ...whole,
-    listed.length ? `Other pages of these projects (read them with read_project_page when useful):\n${listed.join("\n")}` : "",
+    listedPages.length ? `Other pages of these projects (read them with read_project_page when useful):\n${listedPages.join("\n")}` : "",
     errors.length ? `Pages not readable: ${errors.join("; ")}` : "",
   ]
     .filter(Boolean)

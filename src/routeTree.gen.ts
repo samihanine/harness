@@ -14,6 +14,7 @@ import { Route as BuilderRouteImport } from './routes/builder'
 import { Route as PresenterRouteImport } from './routes/presenter'
 import { Route as ScientistRouteImport } from './routes/scientist'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as TeamsRouteImport } from './routes/teams'
 import { Route as TrainerRouteImport } from './routes/trainer'
 
 const IndexRoute = IndexRouteImport.update({
@@ -41,6 +42,11 @@ const SettingsRoute = SettingsRouteImport.update({
   path: '/settings',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TeamsRoute = TeamsRouteImport.update({
+  id: '/teams',
+  path: '/teams',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TrainerRoute = TrainerRouteImport.update({
   id: '/trainer',
   path: '/trainer',
@@ -53,6 +59,7 @@ export interface FileRoutesByFullPath {
   '/presenter': typeof PresenterRoute
   '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
+  '/teams': typeof TeamsRoute
   '/trainer': typeof TrainerRoute
 }
 export interface FileRoutesByTo {
@@ -61,6 +68,7 @@ export interface FileRoutesByTo {
   '/presenter': typeof PresenterRoute
   '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
+  '/teams': typeof TeamsRoute
   '/trainer': typeof TrainerRoute
 }
 export interface FileRoutesById {
@@ -70,14 +78,28 @@ export interface FileRoutesById {
   '/presenter': typeof PresenterRoute
   '/scientist': typeof ScientistRoute
   '/settings': typeof SettingsRoute
+  '/teams': typeof TeamsRoute
   '/trainer': typeof TrainerRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/builder' | '/presenter' | '/scientist' | '/settings' | '/trainer'
+    | '/'
+    | '/builder'
+    | '/presenter'
+    | '/scientist'
+    | '/settings'
+    | '/teams'
+    | '/trainer'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/builder' | '/presenter' | '/scientist' | '/settings' | '/trainer'
+  to:
+    | '/'
+    | '/builder'
+    | '/presenter'
+    | '/scientist'
+    | '/settings'
+    | '/teams'
+    | '/trainer'
   id:
     | '__root__'
     | '/'
@@ -85,6 +107,7 @@ export interface FileRouteTypes {
     | '/presenter'
     | '/scientist'
     | '/settings'
+    | '/teams'
     | '/trainer'
   fileRoutesById: FileRoutesById
 }
@@ -94,6 +117,7 @@ export interface RootRouteChildren {
   PresenterRoute: typeof PresenterRoute
   ScientistRoute: typeof ScientistRoute
   SettingsRoute: typeof SettingsRoute
+  TeamsRoute: typeof TeamsRoute
   TrainerRoute: typeof TrainerRoute
 }
 
@@ -134,6 +158,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SettingsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/teams': {
+      id: '/teams'
+      path: '/teams'
+      fullPath: '/teams'
+      preLoaderRoute: typeof TeamsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/trainer': {
       id: '/trainer'
       path: '/trainer'
@@ -150,6 +181,7 @@ const rootRouteChildren: RootRouteChildren = {
   PresenterRoute: PresenterRoute,
   ScientistRoute: ScientistRoute,
   SettingsRoute: SettingsRoute,
+  TeamsRoute: TeamsRoute,
   TrainerRoute: TrainerRoute,
 }
 export const routeTree = rootRouteImport

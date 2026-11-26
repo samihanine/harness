@@ -32,9 +32,8 @@ async function call<T = any>(path: string, init: RequestInit = {}): Promise<T> {
 
 const link = (base: string, page: { _links?: { webui?: string; base?: string } }) => (page._links?.webui ? `${page._links.base ?? base.replace(/\/+$/, "")}${page._links.webui}` : undefined);
 
-/** The pages of a folder (its descendants; the settings' folder when none is given), by title. */
-export async function listPages(folder?: string): Promise<{ id: string; title: string }[]> {
-  const folderId = folder ?? (await config()).folderId;
+/** The pages of a folder (all its descendants), by title. */
+export async function listPages(folderId: string): Promise<{ id: string; title: string }[]> {
   if (!folderId) throw new Error("No Confluence folder set (Settings › Confluence).");
   if (!/^\d+$/.test(folderId)) throw new Error(`"${folderId}" is not a Confluence folder id.`);
   const cql = encodeURIComponent(`ancestor=${folderId} and type=page order by title`);
@@ -75,16 +74,36 @@ export async function writePage(page: { id: string; title: string; version: numb
   return { id: String(p.id), title: p.title, version: p.version?.number ?? page.version + 1, html, webUrl: link(url, p) };
 }
 
-/** A new page in the folder (v2 API under a Cloud folder, v1 under a page). */
-export async function createPage(title: string, markdown = ""): Promise<ConfluencePage> {
-  const { url, folderId } = await config();
+/**
+ * What is directly in a folder: its sub-folders and pages (Cloud folders), or its child pages (a page used as
+ * a folder, Data Center).
+ */
+export async function folderChildren(folderId: string): Promise<{ id: string; title: string; type: "folder" | "page" }[]> {
+  if (!/^\d+$/.test(folderId)) throw new Error(`"${folderId}" is not a Confluence folder id.`);
+  const v2 = await call<{ results: { id: string; title: string; type: string }[] }>(`/api/v2/folders/${folderId}/direct-children?limit=250`).catch(() => undefined);
+  if (v2) return v2.results.filter((r) => r.type === "folder" || r.type === "page").map((r) => ({ id: String(r.id), title: r.title, type: r.type as "folder" | "page" })).sort((a, b) => a.title.localeCompare(b.title));
+  const v1 = await call<{ results: { id: string; title: string }[] }>(`/rest/api/content/${folderId}/child/page?limit=250`);
+  return v1.results.map((p) => ({ id: String(p.id), title: p.title, type: "page" as const })).sort((a, b) => a.title.localeCompare(b.title));
+}
+
+/** A new page in a folder (v2 API under a Cloud folder, v1 under a page). */
+export async function createPage(parentId: string, title: string, markdown = ""): Promise<ConfluencePage> {
+  const { url } = await config();
   const html = toStorage(markdown);
-  const folder = await call(`/rest/api/content/${folderId}?expand=space`);
-  const p =
-    folder.type === "folder"
-      ? await call(`/api/v2/pages`, { method: "POST", body: JSON.stringify({ spaceId: String(folder.space?.id), status: "current", title, parentId: folderId, body: { representation: "storage", value: html } }) })
-      : await call(`/rest/api/content`, { method: "POST", body: JSON.stringify({ type: "page", title, space: { key: folder.space?.key }, ancestors: [{ id: folderId }], body: { storage: { value: html, representation: "storage" } } }) });
+  const folder = await call(`/api/v2/folders/${parentId}`).catch(() => undefined);
+  const p = folder
+    ? await call(`/api/v2/pages`, { method: "POST", body: JSON.stringify({ spaceId: String(folder.spaceId), status: "current", title, parentId, body: { representation: "storage", value: html } }) })
+    : await (async () => {
+        const parent = await call(`/rest/api/content/${parentId}?expand=space`);
+        return call(`/rest/api/content`, { method: "POST", body: JSON.stringify({ type: "page", title, space: { key: parent.space?.key }, ancestors: [{ id: parentId }], body: { storage: { value: html, representation: "storage" } } }) });
+      })();
   return { id: String(p.id), title: p.title, version: typeof p.version === "object" ? (p.version?.number ?? 1) : 1, html, webUrl: link(url, p) };
+}
+
+/** Moves a page to the trash. */
+export async function deletePage(id: string) {
+  if (!/^\d+$/.test(id)) throw new Error("A Confluence page id is a number.");
+  await call(`/rest/api/content/${id}`, { method: "DELETE" });
 }
 
 /* ---------------------------- Markdown ⇄ storage ---------------------------- */

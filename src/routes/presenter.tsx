@@ -1,243 +1,243 @@
 /**
- * Presenter: decks made from the company template (markdown, its layouts and Power BI views) and imported
- * PowerPoints changed in place (custom slides, plus new slides from the template). Tabs: Edit, Present
- * (full screen, Power BI live), Template, and the reports and models the assistant may use.
+ * Presenter: the look apart from the content. Content: the slides' markdown (template, title, text, pictures,
+ * Power BI links, items), drawn at once. Visual: the visual templates of this browser (the company's to start
+ * with), favorites first, changed by the assistant or by hand, exported and imported. Present: full screen with
+ * the Power BI views live. Reports / Models: what the assistant may use. Downloads: PowerPoint (editable), PDF.
+ * An existing PowerPoint or a picture is attached in the chat: the assistant recreates its look and content.
  */
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { BarChart3Icon, CheckIcon, DatabaseIcon, DownloadIcon, FilePenLineIcon, LayoutTemplateIcon, Loader2Icon, PencilLineIcon, PlayIcon, PlusIcon, PresentationIcon, SparklesIcon, Undo2Icon, UploadIcon } from "lucide-react";
+import { BarChart3Icon, CopyIcon, DatabaseIcon, DownloadIcon, FileTextIcon, LayoutTemplateIcon, Loader2Icon, PlayIcon, PlusIcon, PresentationIcon, RotateCcwIcon, StarIcon, Trash2Icon, UploadIcon, ArrowDownIcon, ArrowUpIcon } from "lucide-react";
 import { toast } from "sonner";
-import { joinSlides, newDeck, slideSources } from "@shared/deck";
-import type { FileRef } from "@shared/types";
+import { joinBlocks, parseSlides, slideBlocks, slideContent, templateOf, templateSlots, type Template } from "@shared/slides";
+import { DEFAULT_TEMPLATES, exampleFor } from "@shared/slide-templates";
 import { Workspace } from "@/components/workspace";
 import { ChatPanel } from "@/components/chat-panel";
-import { PickerMenu, AddDialog } from "@/components/pickers";
-import { Empty } from "@/components/common";
+import { CatalogChecklist } from "@/components/pickers";
+import { DocPicker } from "@/components/doc-picker";
+import { Empty, Pills } from "@/components/common";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { useSlides } from "@/features/presenter/use-slides";
 import { Present } from "@/features/presenter/present";
-import { EditDeck, EditPptx } from "@/features/presenter/edit";
-import { TemplateGallery } from "@/features/presenter/template-gallery";
+import { SlideView, useTemplates } from "@/features/presenter/slides";
 import { useChat } from "@/lib/chat";
 import { screenSearch, useItemParam } from "@/lib/params";
-import { api, download, errorText, fileUrl, post } from "@/lib/api";
+import { api, download, errorText } from "@/lib/api";
 import { withStructure } from "@/lib/items";
-import { keepFile, keepServerFile, remove, save, useItems, type Stored } from "@/lib/store";
+import { datasetOf, openReport, useLibrary } from "@/lib/library";
+import { remove, save, useItems, type Stored } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/presenter")({ component: Presenter, validateSearch: screenSearch });
 
 type Deck = Stored["deck"];
-type Pptx = Stored["pptx"];
-type Doc = ({ kind: "deck" } & Deck) | ({ kind: "pptx" } & Pptx);
-type TabId = "edit" | "present" | "template" | "reports" | "models";
-const PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+type TabId = "content" | "visual" | "present" | "reports" | "models";
 
-/** "New presentation": from the template, or an imported PowerPoint. */
-function NewDialog({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; onCreated: (key: string) => void }) {
-  const [title, setTitle] = useState("New presentation");
-  const [busy, setBusy] = useState(false);
-  const input = useRef<HTMLInputElement>(null);
-  const fromTemplate = async () => {
-    const d: Deck = { id: crypto.randomUUID(), title, markdown: newDeck(title), updatedAt: new Date().toISOString() };
-    await save("deck", d);
-    onCreated(`deck:${d.id}`);
-    onOpenChange(false);
-  };
-  const upload = async (f: File) => {
-    setBusy(true);
-    try {
-      const ref = await keepFile(f, f.name);
-      const d: Pptx = { id: crypto.randomUUID(), name: f.name.replace(/\.pptx$/i, ""), fileId: ref.id, history: [], updatedAt: new Date().toISOString() };
-      await save("pptx", d);
-      onCreated(`pptx:${d.id}`);
-      onOpenChange(false);
-    } catch (e) {
-      toast.error(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
+const START = (title: string) => `template: cover\ndate: ${new Date().toLocaleDateString(undefined, { month: "long", year: "numeric" })}\n---\n# ${title}\n## What this presentation is about`;
+
+/** The Content tab: the slides on the left, the chosen one drawn large, its markdown under it (or the whole deck's). */
+function Content({ deck, templates, onChange }: { deck: Deck; templates: Template[]; onChange: (markdown: string) => void }) {
+  const [mode, setMode] = useState<"slide" | "deck">("slide");
+  const [index, setIndex] = useState(0);
+  const blocks = useMemo(() => slideBlocks(deck.markdown), [deck.markdown]);
+  const slides = useMemo(() => blocks.map(slideContent), [blocks]);
+  const i = Math.min(index, Math.max(0, blocks.length - 1));
+  const set = (list: string[], next = i) => (onChange(joinBlocks(list)), setIndex(Math.max(0, Math.min(list.length - 1, next))));
+  const c = slides[i];
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl rounded-3xl">
-        <DialogHeader>
-          <DialogTitle>New presentation</DialogTitle>
-        </DialogHeader>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-3 rounded-2xl border p-5">
-            <SparklesIcon className="size-6 text-primary" />
-            <div className="text-[15px] font-semibold">From the template</div>
-            <div className="text-[13px] text-muted-foreground">A new deck with the company's layouts (cover, agenda, a section, an example page), Power BI views and pictures. The assistant writes it with you.</div>
-            <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
-            <Button variant="dark" onClick={fromTemplate} disabled={!title.trim()}><PlusIcon /> Create</Button>
+    <div className="flex h-full flex-col gap-3 p-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <Pills value={mode} onChange={setMode} options={[{ id: "slide", label: "Slide by slide" }, { id: "deck", label: "Whole content (markdown)" }]} />
+        <div className="flex-1" />
+        <Button variant="outline" size="sm" onClick={() => set([...blocks, "template: content\n---\n# New slide\n\n- A first point"], blocks.length)}><PlusIcon /> Slide</Button>
+      </div>
+      {mode === "deck" ? (
+        <textarea value={deck.markdown} onChange={(e) => onChange(e.target.value)} spellCheck={false} className="min-h-0 flex-1 rounded-2xl border bg-muted/30 p-4 font-mono text-[12.5px] leading-relaxed outline-none focus:border-foreground/30" />
+      ) : !c ? (
+        <Empty icon={<PresentationIcon />} title="No slide yet">Ask the assistant, or add a slide.</Empty>
+      ) : (
+        <div className="flex min-h-0 flex-1 gap-4">
+          <div className="flex w-48 shrink-0 flex-col gap-2 overflow-y-auto pr-1">
+            {slides.map((s, n) => (
+              <button key={n} onClick={() => setIndex(n)} className={cn("rounded-xl border-2 p-1 text-left", n === i ? "border-primary" : "border-transparent hover:border-border")}>
+                <SlideView template={templateOf(templates, s.template)} content={s} className="rounded-lg border" />
+                <div className="mt-1 truncate px-1 text-[11.5px] text-muted-foreground">{n + 1} · {s.title ?? s.template}</div>
+              </button>
+            ))}
           </div>
-          <div className="flex flex-col gap-3 rounded-2xl border p-5">
-            <FilePenLineIcon className="size-6 text-primary" />
-            <div className="text-[15px] font-semibold">Import a PowerPoint</div>
-            <div className="text-[13px] text-muted-foreground">An existing .pptx changed in place: texts, tables, pictures (Power BI screenshots refreshed), and new slides from the template. Its design stays.</div>
-            <input ref={input} type="file" accept=".pptx" hidden onChange={(e) => e.target.files?.[0] && void upload(e.target.files[0])} />
-            <div className="flex-1" />
-            <Button variant="dark" onClick={() => input.current?.click()} disabled={busy}>{busy ? <Loader2Icon className="animate-spin" /> : <UploadIcon />} Choose a file</Button>
+          <div className="flex min-w-0 flex-1 flex-col gap-3 overflow-y-auto">
+            <SlideView template={templateOf(templates, c.template)} content={c} className="rounded-2xl border shadow-sm" />
+            <div className="flex items-center gap-1">
+              <span className="flex-1 text-[12.5px] text-muted-foreground">Slide {i + 1} · template <b>{templateOf(templates, c.template)?.name}</b> · slots: {templateSlots(templateOf(templates, c.template)).join(", ")}</span>
+              <Button variant="ghost" size="icon-sm" title="Move up" disabled={i === 0} onClick={() => { const l = [...blocks]; [l[i - 1], l[i]] = [l[i], l[i - 1]]; set(l, i - 1); }}><ArrowUpIcon /></Button>
+              <Button variant="ghost" size="icon-sm" title="Move down" disabled={i >= blocks.length - 1} onClick={() => { const l = [...blocks]; [l[i + 1], l[i]] = [l[i], l[i + 1]]; set(l, i + 1); }}><ArrowDownIcon /></Button>
+              <Button variant="ghost" size="icon-sm" title="Duplicate" onClick={() => set([...blocks.slice(0, i + 1), blocks[i], ...blocks.slice(i + 1)], i + 1)}><CopyIcon /></Button>
+              <Button variant="ghost" size="icon-sm" title="Delete" disabled={blocks.length < 2} onClick={() => set(blocks.filter((_, n) => n !== i))}><Trash2Icon /></Button>
+            </div>
+            <textarea value={blocks[i]} onChange={(e) => set(blocks.map((b, n) => (n === i ? e.target.value : b)))} spellCheck={false} className="min-h-44 flex-1 rounded-2xl border bg-muted/30 p-4 font-mono text-[12.5px] leading-relaxed outline-none focus:border-foreground/30" />
           </div>
         </div>
-      </DialogContent>
-    </Dialog>
+      )}
+    </div>
   );
 }
 
-/** The reports or models the assistant may use for this presentation (checked), with "Add". */
-function Sources({ kind, ids, setIds }: { kind: "report" | "dataset"; ids: string[]; setIds: (v: string[]) => void }) {
-  const items = (useItems(kind) ?? []) as { id: string; name: string }[];
-  const [adding, setAdding] = useState(false);
-  const Icon = kind === "report" ? BarChart3Icon : DatabaseIcon;
+/** The Visual tab: the templates (favorites first), drawn with example content; favorite, edit, duplicate, export / import. */
+function Visual({ templates, onUse }: { templates: Template[]; onUse: (t: Template) => void }) {
+  const [open, setOpen] = useState<string>();
+  const [text, setText] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+  const exportAll = () => download(new Blob([JSON.stringify(templates, null, 2)], { type: "application/json" }), "templates.json");
+  const importFile = async (f: File) => {
+    try {
+      const list = JSON.parse(await f.text()) as Template[];
+      for (const t of Array.isArray(list) ? list : [list]) if (t?.id && Array.isArray(t.elements)) await save("template", t);
+      toast.success("Templates imported");
+    } catch (e) {
+      toast.error(`Not a templates file: ${errorText(e)}`);
+    }
+  };
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-3 p-6">
-      <div className="flex items-center gap-3">
-        <div className="flex-1 text-[13px] text-muted-foreground">{kind === "report" ? "Reports whose pages and visuals the assistant may put in the slides (live in the presentation, pictures in the PowerPoint)." : "Semantic models the assistant may query (DAX) for the figures of the slides."}</div>
-        <Button variant="outline" size="sm" onClick={() => setAdding(true)}><PlusIcon /> {kind === "report" ? "Add a report" : "Add a model"}</Button>
+    <div className="flex flex-col gap-4 p-6">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex-1 text-[12.5px] text-muted-foreground">The look of the slides: ask the assistant for a new template or a change (also from an attached PowerPoint or picture), or edit one here. ★ favorites are the assistant's first choice.</div>
+        <input ref={input} type="file" hidden accept=".json" onChange={(e) => e.target.files?.[0] && void importFile(e.target.files[0])} />
+        <Button variant="outline" size="sm" onClick={() => input.current?.click()}><UploadIcon /> Import</Button>
+        <Button variant="outline" size="sm" onClick={exportAll}><DownloadIcon /> Export</Button>
+        <Button variant="ghost" size="sm" title="Put the company's templates back (yours are kept)" onClick={() => void Promise.all(DEFAULT_TEMPLATES.map((t) => save("template", { ...t, favorite: templates.find((x) => x.id === t.id)?.favorite }))).then(() => toast.success("Company templates restored"))}><RotateCcwIcon /> Company templates</Button>
       </div>
-      {items.map((r) => {
-        const on = ids.includes(r.id);
-        return (
-          <button key={r.id} onClick={() => setIds(on ? ids.filter((x) => x !== r.id) : [...ids, r.id])} className={cn("flex items-center gap-3 rounded-2xl border px-4 py-3 text-left", on && "border-foreground/40 bg-muted/50")}>
-            <span className={cn("flex size-5 items-center justify-center rounded-md border", on && "border-foreground bg-foreground text-background")}>{on && <CheckIcon className="size-3.5" />}</span>
-            <Icon className="size-4 text-muted-foreground" />
-            <span className="flex-1 text-[14px]">{r.name}</span>
-          </button>
-        );
-      })}
-      {!items.length && <Empty title={kind === "report" ? "No report yet" : "No model yet"} />}
-      <AddDialog kind={kind} open={adding} onOpenChange={setAdding} onAdded={(id) => setIds([...new Set([...ids, id])])} />
+      <div className="grid gap-5 lg:grid-cols-2 2xl:grid-cols-3">
+        {templates.map((t) => (
+          <div key={t.id} className="flex flex-col overflow-hidden rounded-2xl border bg-card">
+            <SlideView template={t} content={slideContent(exampleFor(t))} className="border-b" />
+            <div className="flex flex-1 flex-col gap-2 p-4">
+              <div className="flex items-center gap-2">
+                <button title={t.favorite ? "Remove from favorites" : "Favorite: the assistant's first choice"} onClick={() => void save("template", { ...t, favorite: !t.favorite })}>
+                  <StarIcon className={cn("size-4", t.favorite ? "fill-primary text-primary" : "text-muted-foreground")} />
+                </button>
+                <span className="flex-1 text-[14px] font-semibold">{t.name}</span>
+                <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[11px]">{t.id}</span>
+              </div>
+              <div className="text-[12.5px] text-muted-foreground">{t.description}</div>
+              {open === t.id && <textarea value={text} onChange={(e) => setText(e.target.value)} spellCheck={false} className="h-72 rounded-xl border bg-muted/40 p-3 font-mono text-[11px] outline-none" />}
+              <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
+                {open === t.id ? (
+                  <>
+                    <Button variant="dark" size="sm" onClick={() => { try { const next = JSON.parse(text) as Template; void save("template", { ...next, id: t.id }); setOpen(undefined); } catch (e) { toast.error(errorText(e)); } }}>Save</Button>
+                    <Button variant="ghost" size="sm" onClick={() => setOpen(undefined)}>Cancel</Button>
+                  </>
+                ) : (
+                  <Button variant="ghost" size="sm" onClick={() => (setText(JSON.stringify(t, null, 2)), setOpen(t.id))}>Edit</Button>
+                )}
+                <Button variant="ghost" size="sm" onClick={() => void save("template", { ...t, id: `${t.id}-copy-${Math.random().toString(36).slice(2, 5)}`, name: `${t.name} (copy)`, builtin: false, favorite: false })}><CopyIcon /> Duplicate</Button>
+                <Button variant="ghost" size="sm" onClick={() => confirm(`Remove the template "${t.name}"?`) && void remove("template", t.id)}><Trash2Icon /></Button>
+                <div className="flex-1" />
+                <Button variant="outline" size="sm" onClick={() => onUse(t)}><PlusIcon /> Add a slide</Button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 function Presenter() {
-  const decks = useItems("deck") ?? [];
-  const files = useItems("pptx") ?? [];
-  const reports = useItems("report") ?? [];
-  const datasets = useItems("dataset") ?? [];
-  const docs: Doc[] = [...decks.map((d) => ({ ...d, kind: "deck" as const })), ...files.map((d) => ({ ...d, kind: "pptx" as const }))].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-  const [key, setKey] = useItemParam("presenter:current");
-  const doc = docs.find((d) => `${d.kind}:${d.id}` === key) ?? docs[0];
-  const [tab, setTab] = useState<TabId>("edit");
-  const [creating, setCreating] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const docRef = useRef(doc);
-  docRef.current = doc;
-  const isDeck = doc?.kind === "deck";
-  const slides = useSlides(doc ? (doc.kind === "deck" ? { markdown: doc.markdown } : { fileId: doc.fileId }) : undefined, doc ? (doc.kind === "deck" ? `md:${doc.id}:${doc.updatedAt}` : `file:${doc.fileId}`) : "none");
-  const update = (d: Doc) => {
-    const { kind, ...rest } = d;
-    const next = { ...rest, updatedAt: new Date().toISOString() };
-    docRef.current = { ...next, kind } as Doc;
-    return save(kind, next as never);
+  const decks = (useItems("deck") ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const templates = useTemplates();
+  const [id, setId] = useItemParam("presenter:current");
+  const deck = decks.find((d) => d.id === id) ?? decks[0];
+  const [tab, setTab] = useState<TabId>("content");
+  const [busy, setBusy] = useState<string>();
+  const deckRef = useRef(deck);
+  deckRef.current = deck;
+  const templatesRef = useRef(templates);
+  templatesRef.current = templates;
+  const { entries: reports } = useLibrary("report");
+  const { entries: models } = useLibrary("dataset");
+  const slides = useMemo(() => (deck ? parseSlides(deck.markdown) : []), [deck?.markdown]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const update = (d: Deck) => {
+    const next = { ...d, updatedAt: new Date().toISOString() };
+    deckRef.current = next;
+    return save("deck", next);
   };
-  const name = (d: Doc) => (d.kind === "deck" ? d.title : d.name);
+  const create = async () => {
+    const title = "New presentation";
+    const d: Deck = { id: crypto.randomUUID(), title, markdown: START(title), updatedAt: new Date().toISOString() };
+    await save("deck", d);
+    setId(d.id);
+    setTab("content");
+  };
   const chat = useChat({
     screen: "presenter",
-    item: doc ? `${doc.kind}:${doc.id}` : "none",
+    item: deck?.id ?? "none",
     scope: async () => {
-      const d = docRef.current!;
-      const refs = await Promise.all(reports.filter((r) => d.reportIds?.includes(r.id)).map(async (r) => (await withStructure(r))!));
-      const models = datasets.filter((x) => d.datasetIds?.includes(x.id));
-      return d.kind === "deck"
-        ? { mode: "create" as const, doc: d.markdown, references: refs, datasets: models }
-        : { mode: "edit" as const, doc: { fileId: d.fileId, name: `${d.name}.pptx` }, files: [{ id: d.fileId, name: `${d.name}.pptx`, type: PPTX, size: 0 } as FileRef], references: refs, datasets: models };
+      const d = deckRef.current!;
+      const refs = await Promise.all((reports ?? []).filter((e) => e.id && d.reportIds?.includes(e.id)).map(async (e) => (await withStructure(await openReport(e).catch(() => undefined))) ?? { id: e.id!, name: e.name }));
+      return { doc: { title: d.title, markdown: d.markdown }, templates: templatesRef.current, references: refs, datasets: (models ?? []).filter((e) => e.id && d.datasetIds?.includes(e.id)).map(datasetOf) };
     },
-    onEffect: (effect, data) => {
-      const d = docRef.current;
-      if (effect !== "doc" || !d) return;
-      if (d.kind === "deck" && typeof data === "string") void update({ ...d, markdown: data, title: data.match(/^title:\s*(.+)$/m)?.[1]?.trim() ?? d.title });
-      if (d.kind === "pptx" && (data as { fileId?: string })?.fileId) {
-        const fileId = (data as { fileId: string }).fileId;
-        void update({ ...d, fileId, history: [...d.history, d.fileId] });
-        void keepServerFile({ id: fileId, name: `${d.name}.pptx`, type: PPTX, size: 0 });
+    onEffect: (name, data) => {
+      if (name === "deck" && deckRef.current) void update({ ...deckRef.current, markdown: data as string });
+      if (name === "templates") {
+        const next = data as Template[];
+        for (const t of next) void save("template", t);
+        for (const t of templatesRef.current) if (!next.some((x) => x.id === t.id)) void remove("template", t.id);
       }
     },
   });
-  const exportPptx = async () => {
-    if (!doc) return;
-    if (doc.kind === "pptx") return void Object.assign(document.createElement("a"), { href: fileUrl(doc.fileId), download: `${doc.name}.pptx` }).click();
-    setBusy(true);
+  const exportAs = async (kind: "pptx" | "pdf") => {
+    if (!deck) return;
+    setBusy(kind);
     try {
-      download(await api<Blob>("/deck/pptx", { json: { markdown: doc.markdown, name: doc.title } }), `${doc.title}.pptx`);
+      const blob = await api<Blob>(`/slides/${kind}`, { json: { markdown: deck.markdown, templates, title: deck.title } });
+      download(blob, `${deck.title}.${kind}`);
     } catch (e) {
       toast.error(errorText(e));
     } finally {
-      setBusy(false);
+      setBusy(undefined);
     }
-  };
-  /** A template layout added at the end: to the deck's markdown, or as a slide of the imported PowerPoint. */
-  const addTemplate = async (markdown: string) => {
-    const d = docRef.current;
-    if (!d) return;
-    if (d.kind === "deck") {
-      const { head, slides: list } = slideSources(d.markdown);
-      await update({ ...d, markdown: joinSlides(head, [...list, markdown]) });
-    } else {
-      const ref = await post<FileRef>("/pptx/add-template", { fileId: d.fileId, name: `${d.name}.pptx`, markdown, after: slides.pics?.length ?? 999 });
-      await update({ ...d, fileId: ref.id, history: [...d.history, d.fileId] });
-    }
-    setTab("edit");
   };
   return (
     <Workspace
       screen="presenter"
       title="Presenter"
-      item={
-        <PickerMenu
-          items={docs}
-          current={doc}
-          name={(d) => `${name(d)}${d.kind === "pptx" ? " (.pptx)" : ""}`}
-          onSelect={(id) => setKey(docs.find((d) => d.id === id) ? `${docs.find((d) => d.id === id)!.kind}:${id}` : "")}
-          onRename={(d, n) => void update(d.kind === "deck" ? { ...d, title: n } : { ...d, name: n })}
-          onDelete={(id) => void remove(docs.find((d) => d.id === id)?.kind ?? "deck", id)}
-          addLabel="New presentation…"
-          onAdd={() => setCreating(true)}
-          empty="No presentation"
-        />
-      }
+      item={<DocPicker items={decks} current={deck} name={(d) => d.title} onSelect={setId} onCreate={create} onDelete={(x) => void remove("deck", x)} onRename={(d, title) => void update({ ...d, title })} createLabel="New presentation" empty="No presentation" />}
       actions={
-        doc && (
+        deck && (
           <>
-            {doc.kind === "pptx" && <Button variant="outline" size="sm" onClick={() => void update({ ...doc, fileId: doc.history.at(-1)!, history: doc.history.slice(0, -1) })} disabled={!doc.history.length}><Undo2Icon /> Undo</Button>}
-            <Button variant="dark" size="sm" onClick={exportPptx} disabled={busy}>{busy ? <Loader2Icon className="animate-spin" /> : <DownloadIcon />} PowerPoint</Button>
+            <Button variant="outline" size="sm" disabled={!!busy} onClick={() => void exportAs("pdf")}>{busy === "pdf" ? <Loader2Icon className="animate-spin" /> : <FileTextIcon />} PDF</Button>
+            <Button variant="dark" size="sm" disabled={!!busy} onClick={() => void exportAs("pptx")}>{busy === "pptx" ? <Loader2Icon className="animate-spin" /> : <DownloadIcon />} PowerPoint</Button>
           </>
         )
       }
       tabs={[
-        { id: "edit", label: "Edit", icon: <PencilLineIcon /> },
+        { id: "content", label: "Content", icon: <PresentationIcon />, count: slides.length || undefined },
+        { id: "visual", label: "Visual", icon: <LayoutTemplateIcon />, count: templates.length || undefined },
         { id: "present", label: "Present", icon: <PlayIcon /> },
-        { id: "template", label: "Template", icon: <LayoutTemplateIcon /> },
-        { id: "reports", label: "Reports", icon: <BarChart3Icon />, count: doc?.reportIds?.length || undefined },
-        { id: "models", label: "Models", icon: <DatabaseIcon />, count: doc?.datasetIds?.length || undefined },
+        { id: "reports", label: "Reports", icon: <BarChart3Icon />, count: deck?.reportIds?.length || undefined },
+        { id: "models", label: "Models", icon: <DatabaseIcon />, count: deck?.datasetIds?.length || undefined },
       ]}
       tab={tab}
       onTab={setTab}
-      scroll={tab !== "edit"}
-      chat={<ChatPanel chat={chat} screen="presenter" itemLabel={(id) => { const d = docs.find((x) => `${x.kind}:${x.id}` === id); return d && name(d); }} disabled={doc ? undefined : "Create or import a presentation first"} placeholder={isDeck ? "Describe the deck, or the change to make…" : "What should change in the PowerPoint?"} suggestions={isDeck ? ["Make a 6-slide review with the key figures and Power BI visuals", "Add a slide comparing two regions with the same visual", "Shorten every slide to one key message"] : ["Refresh every Power BI screenshot with the current data", "Add a key figures slide from the template after slide 2", "Fix the typos and shorten the long texts"]} />}
+      scroll={tab !== "content"}
+      chat={<ChatPanel chat={chat} screen="presenter" itemLabel={(x) => decks.find((d) => d.id === x)?.title} accept="image/*,.pptx" disabled={deck ? undefined : "Create a presentation first"} placeholder="Describe the slides, or attach a PowerPoint or a picture to redo…" suggestions={["A 6-slide review of the pipeline with key figures and Power BI visuals", "Redo this PowerPoint with our templates (attach it)", "Make a new template: a big figure on the left, three points on the right"]} />}
     >
-      {!doc ? (
+      {!deck ? (
         <Empty icon={<PresentationIcon />} title="No presentation yet">
-          Create a deck from the template, or import a PowerPoint to update.
-          <div><Button variant="dark" size="sm" className="mt-3" onClick={() => setCreating(true)}><PlusIcon /> New presentation</Button></div>
+          Start empty, then ask the assistant — or attach an existing PowerPoint or a picture of a slide in the chat to redo it.
+          <div><Button variant="dark" size="sm" className="mt-3" onClick={create}><PlusIcon /> New presentation</Button></div>
         </Empty>
-      ) : tab === "edit" ? (
-        doc.kind === "deck" ? (
-          // Typing keeps the version (no new drawing at each key): "Refresh the preview" draws it.
-          <EditDeck markdown={doc.markdown} onChange={(markdown) => { const { kind: _kind, ...deck } = doc; void save("deck", { ...deck, markdown }); }} slides={slides} />
-        ) : <EditPptx fileId={doc.fileId} slides={slides} />
+      ) : tab === "content" ? (
+        <Content deck={deck} templates={templates} onChange={(markdown) => void update({ ...deck, markdown })} />
+      ) : tab === "visual" ? (
+        <Visual templates={templates} onUse={(t) => (void update({ ...deck, markdown: joinBlocks([...slideBlocks(deck.markdown), exampleFor(t)]) }), setTab("content"), toast.success(`Slide "${t.name}" added at the end`))} />
       ) : tab === "present" ? (
-        <Present slides={slides} markdown={doc.kind === "deck" ? doc.markdown : undefined} />
-      ) : tab === "template" ? (
-        <TemplateGallery onAdd={addTemplate} />
+        <Present slides={slides} templates={templates} />
+      ) : tab === "reports" ? (
+        <CatalogChecklist kind="report" ids={deck.reportIds ?? []} setIds={(reportIds) => void update({ ...deck, reportIds })} title="Reports" hint="The assistant takes its Power BI views (pages and visuals) from these reports." />
       ) : (
-        <Sources kind={tab === "reports" ? "report" : "dataset"} ids={(tab === "reports" ? doc.reportIds : doc.datasetIds) ?? []} setIds={(ids) => void update({ ...doc, ...(tab === "reports" ? { reportIds: ids } : { datasetIds: ids }) })} />
+        <CatalogChecklist kind="dataset" ids={deck.datasetIds ?? []} setIds={(datasetIds) => void update({ ...deck, datasetIds })} title="Semantic models" hint="The assistant takes its figures from these models (DAX)." />
       )}
-      <NewDialog open={creating} onOpenChange={setCreating} onCreated={setKey} />
     </Workspace>
   );
 }

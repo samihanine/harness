@@ -1,16 +1,19 @@
-/** The reports the user can open, to find one by name (e.g. the source of a screenshot in a deck). */
+/**
+ * The reports of the team's catalog (Confluence: name, what each is for), to pick the right one for a question,
+ * find a report the user mentions, or the source of a Power BI picture.
+ */
 import { z } from "zod";
-import { reportCatalog } from "@server/pbi/catalog";
+import { library } from "@server/library";
 import { tool } from "../tool";
 
 export const listReports = tool({
   name: "list_reports",
-  description: "List the Power BI reports the user can open (name, id, workspace), optionally filtered by words. Use it to find a report the user mentions, or the source of a Power BI picture.",
+  description: "The reports of the team's catalog: name, id and what each is for (its description), optionally filtered by words. Use it to find the report that answers a question best, a report the user mentions, or the source of a Power BI picture.",
   args: z.object({ search: z.string().optional() }),
   async run(a) {
     const words = (a.search ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-    const list = (await reportCatalog()).filter((r) => words.every((w) => `${r.name} ${r.workspace}`.toLowerCase().includes(w)));
-    if (!list.length) return a.search ? `No report matches "${a.search}".` : "No report.";
-    return list.slice(0, 80).map((r) => `- "${r.name}" id=${r.id}${r.groupId ? ` groupId=${r.groupId}` : ""} (${r.workspace})`).join("\n");
+    const list = (await library("report")).filter((r) => r.id && words.every((w) => `${r.name} ${r.description}`.toLowerCase().includes(w)));
+    if (!list.length) return a.search ? `No report of the catalog matches "${a.search}".` : "The catalog has no report.";
+    return list.slice(0, 80).map((r) => `- "${r.name}" id=${r.id}${r.groupId ? ` groupId=${r.groupId}` : ""}${r.appId ? ` appId=${r.appId}` : ""}${r.description ? `: ${r.description.replace(/\s+/g, " ").slice(0, 400)}` : ""}`).join("\n");
   },
 });

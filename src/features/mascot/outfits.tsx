@@ -298,6 +298,33 @@ export const OUTFITS = {
       </>
     ),
   },
+  /** The party: a striped cone hat with its pompom, a bow tie on a bright shirt, a party horn blown. */
+  party: {
+    feet: shoes("#7b61ff"),
+    sleeve: "#ff7ab6",
+    torso: (
+      <>
+        <path d={BODY} fill="#ff7ab6" {...S} />
+        {[136, 150, 164].map((y, i) => <circle key={y} cx={i % 2 ? 76 : 124} cy={y} r={3.2} fill={["#f5c542", "#22c3c6", "#7b61ff"][i]} />)}
+        <path d="M86 122 L100 129 L86 136 Z M114 122 L100 129 L114 136 Z" fill="#f5c542" {...S} strokeWidth={2.4} />
+        <circle cx={100} cy={129} r={4} fill="#e4572e" {...S} strokeWidth={2.2} />
+      </>
+    ),
+    headTop: (
+      <>
+        <path d="M78 52 L104 4 L126 50 Q102 58 78 52 Z" fill="#7b61ff" {...S} />
+        <path d="M85 40 L117 36 M92 26 L112 23 M98 14 L108 13" stroke="#f5c542" strokeWidth={4} strokeLinecap="round" />
+        <circle cx={104} cy={4} r={7} fill="#f5c542" {...S} strokeWidth={2.6} />
+      </>
+    ),
+    face: (
+      <>
+        <path d="M110 104 L150 92" stroke={C.line} strokeWidth={10} strokeLinecap="round" />
+        <path d="M110 104 L150 92" stroke="#22c3c6" strokeWidth={5.5} strokeLinecap="round" />
+        <path d="M150 92 Q168 84 166 100 Q164 110 152 104" fill="none" stroke="#e4572e" strokeWidth={4} strokeLinecap="round" />
+      </>
+    ),
+  },
 } satisfies Record<string, Slots>;
 
 export type Outfit = keyof typeof OUTFITS;

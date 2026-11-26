@@ -68,14 +68,14 @@ export function describeError(e: unknown): string {
 export async function runChat(req: ChatRequest, emit: (e: ChatEvent) => void, signal: AbortSignal) {
   const s = await settings();
   const agent = screenAgent(req.screen);
-  const tools = [askUser, ...agent.tools(req.scope)];
+  const tools = agent.chatMember ? agent.tools(req.scope) : [askUser, ...agent.tools(req.scope)];
   const scopeKey = scopeText(req.scope);
   let conv = conversations.get(req.conversationId);
   const provider = s.ai.provider;
   if (conv && conv.provider !== provider) conv = undefined; // another provider: restarted from the transcript
   if (!conv) {
     conv = {
-      state: { id: req.conversationId, screen: req.screen, asked: !!req.transcript, scratch: {} },
+      state: { id: req.conversationId, screen: req.screen, asked: !!req.transcript || !!agent.chatMember, scratch: {} },
       messages: [],
       system: agent.system(req.scope),
       scopeKey: "",

@@ -21,6 +21,8 @@ export async function api<T = any>(path: string, init: RequestInit & { json?: un
 export const get = <T = any>(path: string) => api<T>(path);
 export const post = <T = any>(path: string, json: unknown) => api<T>(path, { json });
 export const put = <T = any>(path: string, json: unknown) => api<T>(path, { method: "PUT", json });
+export const patch = <T = any>(path: string, json: unknown) => api<T>(path, { method: "PATCH", json });
+export const del = <T = any>(path: string) => api<T>(path, { method: "DELETE" });
 
 /** A file sent to the server (kept there a few days); `id` to send the same file again under its id. */
 export async function upload(file: Blob, name: string, id?: string): Promise<FileRef> {

@@ -310,6 +310,31 @@ export async function renderPdf(pdf: Uint8Array, pages?: number[], width = 1280)
   }
 }
 
+/** An HTML document printed as a PDF (page size given, backgrounds kept). */
+export async function renderPdfOf(html: string, size: { width: string; height: string }): Promise<Buffer> {
+  const page = await newPage();
+  try {
+    await page.setContent(html, { waitUntil: "load" });
+    return await page.pdf({ width: size.width, height: size.height, printBackground: true, margin: { top: "0", right: "0", bottom: "0", left: "0" } });
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
+/** A picture of an HTML page (`width` px wide, as tall as its content up to `maxHeight`). */
+export async function renderHtml(html: string, width = 1280, maxHeight = 2400): Promise<Buffer> {
+  const page = await newPage();
+  try {
+    await page.setViewportSize({ width, height: 800 });
+    await page.setContent(html, { waitUntil: "load" });
+    const height = Math.min(maxHeight, await page.evaluate(() => document.documentElement.scrollHeight));
+    const w = Math.min(width, await page.evaluate(() => document.documentElement.scrollWidth));
+    return await page.screenshot({ type: "png", clip: { x: 0, y: 0, width: Math.max(200, w), height: Math.max(100, height) }, scale: "css" });
+  } finally {
+    await page.close().catch(() => undefined);
+  }
+}
+
 /** A picture PowerPoint cannot take (SVG, WebP, AVIF…) drawn as a PNG (`width` px wide at most). */
 export async function rasterize(bytes: Uint8Array, mime: string, width = 1200): Promise<Buffer> {
   const page = await newPage();

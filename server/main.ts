@@ -10,28 +10,27 @@
  * HUB_ALLOWED_HOSTS open it to a network (no user accounts yet: one Microsoft sign-in for all).
  */
 import type { ChatEvent, ChatRequest, SettingsPatch } from "@shared/types";
-import { deckToPptx } from "./pptx/deck";
-import { resolveZones } from "./pptx/pbi-zones";
-import { templateGallery } from "./pptx/templates";
-import { deckZones, parseDeck } from "@shared/deck";
-import { slidePictures } from "./pptx/render";
 import { authStatus, embedToken, signIn, signOut } from "./ms/auth";
 import { pbi, scope } from "./ms/api";
 import { browserResult, forgetConversation, runChat } from "./agent/run";
 import { cleanFiles, fileInfo, readStoredFile, saveFile } from "./files";
 import { folderIdOf, publicSettings, resetSettings, settings, updateSettings } from "./settings";
 import { modelsOf, providerFor } from "./llm";
-import { projectsStatus } from "./projects";
+import { projectsList } from "./projects";
+import { saveGif, startTeams, teamsChats, teamsStatus, updateTeams, type TeamsConfig } from "./teams/bot";
+import { deckPdf, deckPptx, powerbiPicture } from "./slides/render";
+import { parseLink } from "@shared/links";
+import type { Template } from "@shared/slides";
+import { addFileSheets, closeSession, createWorkbook, ensureConnections, workbookBytes } from "./workbook/excel";
+import { sheetHtml, sheetPreview } from "./workbook/preview";
+import { forgetPbixCopy, importPbix, pbixInfo, pbixWithDefinition } from "./pbi/pbix";
+import { resolveDataset, resolveReport } from "./pbi/resolve";
+import { addToLibrary, changeLibrary, library, removeFromLibrary } from "./library";
 import { datasetCatalog, discoverDataset, discoverReport, reportCatalog } from "./pbi/catalog";
-import { reportsAccess, reportAccess } from "./pbi/access";
 import { reportStructure } from "./pbi/report-structure";
 import { modelInfo } from "./pbi/models";
-import { createBlankReport } from "./pbi/new-report";
-import { listPages } from "./confluence";
-import { analysisToExcel } from "./excel-export";
-import { engineFor } from "./data/engine";
+import { folderChildren, listPages } from "./confluence";
 import { closeBrowser, warmReport } from "./capture/browser";
-import type { Analysis } from "@shared/analysis";
 import { hasApp, staticFile } from "./static";
 
 /** Production: the built app is served too (always in the executable, which embeds it). */
@@ -146,34 +145,14 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (p === "/api/powerbi/report") {
     const r = ref(url);
     if (!GUID.test(r.id)) return fail("Bad report id", 400);
-    // From a link the workspace may be missing or wrong (a report shared with the user, an app): each place tried.
-    const known = (await reportCatalog().catch(() => [])).find((x) => x.id === r.id);
-    const tries = [
-      r.appId && (() => pbi(`/apps/${r.appId}/reports/${r.id}`)),
-      r.groupId && (() => pbi(`/groups/${r.groupId}/reports/${r.id}`)),
-      known?.appId && (() => pbi(`/apps/${known.appId}/reports/${r.id}`)),
-      known?.groupId && (() => pbi(`/groups/${known.groupId}/reports/${r.id}`)),
-      () => pbi(`/reports/${r.id}`),
-    ].filter(Boolean) as (() => Promise<any>)[];
-    let meta: any;
-    for (const t of tries) if ((meta = await t().catch(() => undefined))) break;
-    const at = { id: r.id, groupId: r.groupId ?? known?.groupId, appId: r.appId ?? known?.appId };
-    // Not readable by the API (shared to the user only): it can still be embedded by its id.
-    if (!meta) return json({ ...at, name: known?.name ?? `Report ${r.id.slice(0, 8)}`, datasetId: known?.datasetId, access: "view" });
-    const ds = meta.datasetId ? await pbi(`/datasets/${meta.datasetId}`).catch(() => undefined) : undefined;
-    if (at.appId) discoverReport({ id: r.id, name: meta.name, appId: at.appId, workspace: "App", datasetId: meta.datasetId, webUrl: meta.webUrl });
-    return json({ ...at, name: meta.name, datasetId: meta.datasetId, datasetGroupId: ds?.workspaceId ?? undefined, webUrl: meta.webUrl, access: await reportAccess(at) });
+    return json(await resolveReport(r));
   }
   if (p === "/api/powerbi/dataset") {
-    // A model from a pasted link (also an app's): its name, and it joins the list of models.
+    // A model from a link (also an app's): its name and workspace.
     const r = ref(url);
     if (!GUID.test(r.id)) return fail("Bad model id", 400);
-    const meta = await pbi(`${scope(r.groupId)}/datasets/${r.id}`).catch(() => pbi(`/datasets/${r.id}`));
-    const groupId = r.groupId ?? meta.workspaceId ?? undefined;
-    discoverDataset({ id: r.id, name: meta.name, groupId, workspace: groupId ? "Workspace" : "Shared" });
-    return json({ id: r.id, groupId, name: meta.name });
+    return json(await resolveDataset(r));
   }
-  if (p === "/api/powerbi/access" && m === "POST") return json(await reportsAccess((await req.json()) as { id: string; groupId?: string; appId?: string }[]));
   if (p === "/api/powerbi/test") {
     const t = Date.now();
     const [reports, models] = await Promise.all([reportCatalog(), datasetCatalog()]);
@@ -195,74 +174,94 @@ async function api(req: Request, url: URL): Promise<Response> {
     const { dax } = await import("./pbi/dax");
     return json([...(await dax({ id: b.id, groupId: b.groupId }, b.query))]);
   }
-  if (p === "/api/powerbi/new-report" && m === "POST") {
-    const b = (await req.json()) as { name: string; datasetId: string; groupId?: string };
-    return json(await createBlankReport(b.name, { id: b.datasetId, groupId: b.groupId }, b.groupId));
+
+  // Data Scientist: the analysis's workbook in OneDrive (Excel computes it), shown as HTML, downloaded as is.
+  if (p === "/api/workbook/create" && m === "POST") {
+    const b = (await req.json()) as { key: string; title: string };
+    return json(await createWorkbook(b.key, b.title));
   }
-  // Confluence (projects)
-  if (p === "/api/confluence/pages" && m === "GET") return json(await listPages(url.searchParams.get("folder") || undefined));
-  if (p === "/api/projects/status" && m === "GET") return json(await projectsStatus());
-  if (p === "/api/projects/refresh" && m === "POST") return json(await projectsStatus(((await req.json()) as { id: string }).id));
-  if (p === "/api/projects/test" && m === "POST") {
+  if (p === "/api/workbook/preview" && m === "GET") {
+    const preview = await sheetPreview(url.searchParams.get("itemId") ?? "", url.searchParams.get("sheet") ?? undefined);
+    return json({ sheets: preview.sheets, sheet: preview.sheet, total: preview.total, shown: { rows: preview.cells.length, cols: preview.widths.length }, html: sheetHtml(preview) });
+  }
+  if (p === "/api/workbook/connect" && m === "POST") {
+    const b = (await req.json()) as { itemId: string; models: { id: string; name: string }[] };
+    return json({ connections: await ensureConnections(b.itemId, b.models) });
+  }
+  if (p === "/api/workbook/add-file" && m === "POST") {
+    const b = (await req.json()) as { itemId: string; fileId: string };
+    const f = await readStoredFile(b.fileId);
+    return json({ sheets: await addFileSheets(b.itemId, { name: f.ref.name, data: f.data }) });
+  }
+  if (p === "/api/workbook/download" && m === "GET") {
+    const id = url.searchParams.get("itemId") ?? "";
+    await closeSession(id);
+    return new Response((await workbookBytes(id)) as unknown as BodyInit, { headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" } });
+  }
+  // Teams: the assistant of one chat (settings, its activity, the user's chats, the mascot's GIFs made by the app).
+  if (p === "/api/teams" && m === "GET") return json(await teamsStatus());
+  if (p === "/api/teams" && m === "POST") return json(await updateTeams((await req.json()) as Partial<TeamsConfig>));
+  if (p === "/api/teams/chats" && m === "GET") return json(await teamsChats());
+  if (p.startsWith("/api/teams/gif/") && m === "POST") return json((await saveGif(p.split("/").pop()!, new Uint8Array(await req.arrayBuffer())), { ok: true }));
+  // Builder: a dropped .pbix imported privately (My workspace) to be shown and changed; downloaded with its changes.
+  if (p === "/api/pbix/open" && m === "POST") {
+    const b = (await req.json()) as { fileId: string; name: string; key: string };
+    const data = (await readStoredFile(b.fileId)).data;
+    const info = await pbixInfo(data);
+    const copy = await importPbix(data, `[Hub] ${b.name.replace(/\.pbix$/i, "")} · ${b.key.slice(0, 6)}`);
+    return json({ ...info, ...copy });
+  }
+  if (p === "/api/pbix/save" && m === "POST") {
+    // The dropped file with the copy's current definition: downloaded, and kept as the item's latest version.
+    const b = (await req.json()) as { fileId: string; reportId: string; name: string };
+    const out = await pbixWithDefinition((await readStoredFile(b.fileId)).data, { id: b.reportId });
+    return json(await saveFile(Buffer.from(out), b.name.endsWith(".pbix") ? b.name : `${b.name}.pbix`, "application/octet-stream"));
+  }
+  if (p === "/api/pbix/forget" && m === "POST") return json((await forgetPbixCopy(((await req.json()) as { reportId: string }).reportId), { ok: true }));
+  // Confluence: projects (sub-folders of the projects folder) and the catalog of reports and models (a page each).
+  if (p === "/api/projects" && m === "GET") return json(await projectsList(url.searchParams.get("refresh") ?? undefined));
+  if (p === "/api/confluence/test" && m === "POST") {
     const { folderId } = (await req.json()) as { folderId: string };
-    const pages = await listPages(folderIdOf(folderId));
-    return json({ ok: true, text: `${pages.length} pages: ${pages.slice(0, 5).map((x) => x.title).join(", ")}${pages.length > 5 ? "…" : ""}` });
+    const children = await folderChildren(folderIdOf(folderId));
+    return json({ ok: true, text: `${children.length} items: ${children.slice(0, 6).map((x) => x.title).join(", ")}${children.length > 6 ? "…" : ""}` });
   }
-  // Presenter
-  if (p === "/api/deck/pptx" && m === "POST") {
-    const b = (await req.json()) as { markdown: string; name?: string };
-    const pptx = await deckToPptx(b.markdown);
-    return new Response(pptx as unknown as BodyInit, { headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.presentationml.presentation", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(b.name ?? "deck")}.pptx` } });
+  const lib = p.match(/^\/api\/library\/(report|dataset)(?:\/(\d+))?$/);
+  if (lib) {
+    const kind = lib[1] as "report" | "dataset";
+    if (m === "GET") return json(await library(kind, url.searchParams.get("fresh") === "1"));
+    if (m === "POST" && !lib[2]) return json(await addToLibrary(kind, (await req.json()) as { link: string; description?: string }));
+    if (m === "PATCH" && lib[2]) return json(await changeLibrary(kind, lib[2], (await req.json()) as { name?: string; description?: string }));
+    if (m === "DELETE" && lib[2]) return json(await removeFromLibrary(kind, lib[2]));
   }
-  if (p === "/api/deck/preview" && m === "POST") {
-    const b = (await req.json()) as { markdown?: string; fileId?: string; slides?: number[] };
-    const data = b.fileId ? (await readStoredFile(b.fileId)).data : new Uint8Array(await deckToPptx(b.markdown ?? ""));
-    const pics = await slidePictures(data, b.slides, 1280);
-    const files = await Promise.all(pics.map((png, i) => saveFile(png, `slide-${i + 1}.png`, "image/png")));
-    return json(files.map((f) => f.id));
+  // Presenter: templates × markdown, drawn as the app draws them (pictures, PDF) or as a native PowerPoint.
+  if (p.startsWith("/api/assets/template/") && m === "GET") {
+    const f = staticFile(`assets/template/${p.split("/").pop()!.replace(/[^\w.-]/g, "")}`);
+    return f ? new Response(f, { headers: { "Cache-Control": "max-age=86400" } }) : fail("No such picture", 404);
   }
-  if (p === "/api/deck/zones" && m === "POST") {
-    // The Power BI views of a deck, resolved for live embeds (presentation mode).
-    const { markdown } = (await req.json()) as { markdown: string };
-    return json(await resolveZones(deckZones(parseDeck(markdown))));
+  if (p === "/api/slides/powerbi" && m === "GET") {
+    const png = await powerbiPicture(url.searchParams.get("url") ?? "");
+    return new Response(png as unknown as BodyInit, { headers: { "Content-Type": "image/png", "Cache-Control": "max-age=600" } });
   }
-  if (p === "/api/deck/templates" && m === "GET") return json(await templateGallery());
-  if (p === "/api/pptx/structure" && m === "GET") {
-    const { Pptx } = await import("./pptx/ooxml");
-    return json(await (await Pptx.load((await readStoredFile(url.searchParams.get("fileId") ?? "")).data)).structure());
+  if (p === "/api/slides/pptx" && m === "POST") {
+    const b = (await req.json()) as { markdown: string; templates: Template[]; title?: string };
+    return new Response((await deckPptx(b.markdown, b.templates, b.title)) as unknown as BodyInit, { headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.presentationml.presentation" } });
   }
-  if (p === "/api/pptx/add-template" && m === "POST") {
-    // A slide drawn from the template added to an imported PowerPoint: a new version of the file.
-    const b = (await req.json()) as { fileId: string; name: string; markdown: string; after: number };
-    const { Pptx } = await import("./pptx/ooxml");
-    const target = await Pptx.load((await readStoredFile(b.fileId)).data);
-    const md = /^\s*layout\s*:/m.test(b.markdown.split("---")[0] ?? "") ? b.markdown : `layout: default\n---\n${b.markdown}`;
-    const drawn = await Pptx.load(new Uint8Array(await deckToPptx(`---\ntitle: ${b.name}\n---\n${md}`)));
-    await target.importSlide(drawn, 1, b.after);
-    return json(await saveFile(await target.save(), b.name, "application/vnd.openxmlformats-officedocument.presentationml.presentation"));
+  if (p === "/api/slides/pdf" && m === "POST") {
+    const b = (await req.json()) as { markdown: string; templates: Template[] };
+    return new Response((await deckPdf(b.markdown, b.templates)) as unknown as BodyInit, { headers: { "Content-Type": "application/pdf" } });
   }
-  // Data Scientist
-  if (p === "/api/analysis/export" && m === "POST") {
-    const a = (await req.json()) as Analysis;
-    return new Response((await analysisToExcel(a)) as unknown as BodyInit, { headers: { "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(a.title)}.xlsx` } });
+  if (p === "/api/slides/resolve" && m === "POST") {
+    // Power BI links of slides → the report's ids, page and visual names, for live views in the presentation.
+    const { urls } = (await req.json()) as { urls: string[] };
+    return json(await Promise.all(urls.map(async (u) => {
+      const l = parseLink(u);
+      const id = l?.report ?? l?.bare;
+      if (!id) return { url: u, error: "Not a report link" };
+      const r = await resolveReport({ id, groupId: l?.groupId, appId: l?.appId }).catch((e) => ({ error: e instanceof Error ? e.message : String(e) }) as never);
+      return { url: u, ref: { id: r.id, groupId: r.groupId, appId: r.appId }, pageName: l?.page, visualName: l?.visual };
+    })));
   }
-  if (p === "/api/analysis/refresh" && m === "POST") {
-    // Sources read again (fresh data), every block computed again.
-    const a = (await req.json()) as Analysis;
-    const scratch: Record<string, any> = {};
-    await engineFor(scratch, a);
-    const { select } = await import("./data/engine");
-    const blocks = a.blocks.map((b) => {
-      if (b.type === "text") return b;
-      try {
-        const r = select(scratch.engine, b.sql, 5000);
-        return { ...b, rows: r.rows, ...(b.type === "table" ? { columns: r.columns } : {}) };
-      } catch {
-        return b;
-      }
-    });
-    return json({ ...a, blocks, updatedAt: new Date().toISOString() });
-  }
+
   return fail(`No route ${m} ${p}`, 404);
 }
 
@@ -294,6 +293,7 @@ const server = Bun.serve({
 });
 
 void cleanFiles();
+startTeams();
 setInterval(() => void cleanFiles(), 86_400_000).unref?.();
 for (const sig of ["SIGINT", "SIGTERM"] as const)
   process.on(sig, async () => {

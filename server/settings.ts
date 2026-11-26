@@ -7,7 +7,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DEFAULT_PROJECT, SCREENS, type Project, type Provider, type PublicSettings, type ScreenId, type SettingsPatch } from "@shared/types";
+import { SCREENS, type Provider, type PublicSettings, type ScreenId, type SettingsPatch } from "@shared/types";
 
 export const DATA_DIR = process.env.HUB_DATA_DIR ?? join(process.cwd(), ".local");
 const FILE = join(DATA_DIR, "settings.json");
@@ -41,11 +41,17 @@ export type Settings = {
     claudeCode: { baseUrl: string; headers: string; keyHelper: string; key: string };
   };
   powerbi: { maxRows: number; timeoutMs: number; concurrency: number; cacheMs: number };
-  confluence: { url: string; email: string; folderId: string; key: string; projects: Project[] };
+  /** Three root folders: projects (a sub-folder each), the reports' catalog and the models' catalog (a page each). */
+  confluence: { url: string; email: string; key: string; projectsFolderId: string; reportsFolderId: string; datasetsFolderId: string };
 };
 
 /** A folder or page id from what was given: the id itself, or a link (…/folder/123…, …/pages/123…). */
 export const folderIdOf = (v: string) => v.match(/\/(?:folder|pages)\/(\d+)/)?.[1] ?? v.trim();
+/** A folder id from the environment (an id or a Confluence link), empty when it is not one. */
+const envFolder = (name: string) => {
+  const id = folderIdOf(env[name] ?? "");
+  return /^\d+$/.test(id) ? id : "";
+};
 
 const env = process.env;
 const num = (v: string | undefined, d: number) => (v && !Number.isNaN(Number(v)) ? Number(v) : d);
@@ -62,7 +68,7 @@ const defaults = (): Settings => ({
     claudeCode: { baseUrl: env.ANTHROPIC_BASE_URL && !/api\.anthropic\.com/.test(env.ANTHROPIC_BASE_URL) ? env.ANTHROPIC_BASE_URL : "", headers: env.ANTHROPIC_CUSTOM_HEADERS ?? "", keyHelper: env.OKTA_SCRIPT ?? "", key: "" },
   },
   powerbi: { maxRows: num(env.HUB_DAX_MAX_ROWS, 2000), timeoutMs: num(env.HUB_DAX_TIMEOUT_MS, 20_000), concurrency: num(env.HUB_DAX_CONCURRENCY, 2), cacheMs: num(env.HUB_DAX_CACHE_MS, 60_000) },
-  confluence: { url: env.CONFLUENCE_API_URL ?? "", email: env.CONFLUENCE_EMAIL ?? "", folderId: /^\d+$/.test(folderIdOf(env.CONFLUENCE_FOLDER_ID ?? "")) ? folderIdOf(env.CONFLUENCE_FOLDER_ID!) : "", key: env.CONFLUENCE_API_KEY ?? "", projects: [] },
+  confluence: { url: env.CONFLUENCE_API_URL ?? "", email: env.CONFLUENCE_EMAIL ?? "", key: env.CONFLUENCE_API_KEY ?? "", projectsFolderId: envFolder("CONFLUENCE_PROJECTS_FOLDER_ID"), reportsFolderId: envFolder("CONFLUENCE_REPORT_FOLDER_ID"), datasetsFolderId: envFolder("CONFLUENCE_DATASET_FOLDER_ID") },
 });
 
 /** Settings a .env value gives (shown in Settings: "from .env"). */
@@ -83,7 +89,9 @@ const ENV_KEYS: Record<string, string[]> = {
   "confluence.url": ["CONFLUENCE_API_URL"],
   "confluence.email": ["CONFLUENCE_EMAIL"],
   "confluence.key": ["CONFLUENCE_API_KEY"],
-  "confluence.folderId": ["CONFLUENCE_FOLDER_ID"],
+  "confluence.projectsFolderId": ["CONFLUENCE_PROJECTS_FOLDER_ID"],
+  "confluence.reportsFolderId": ["CONFLUENCE_REPORT_FOLDER_ID"],
+  "confluence.datasetsFolderId": ["CONFLUENCE_DATASET_FOLDER_ID"],
 };
 
 /** Only the changes made in Settings (merged over the defaults at each start). */
@@ -113,11 +121,8 @@ async function save() {
   current = merge(defaults(), saved);
 }
 
-/** The projects: the one of the settings' folder first (when set), then the others. */
-export async function projects(): Promise<Project[]> {
-  const c = (await settings()).confluence;
-  return [...(c.folderId ? [{ id: DEFAULT_PROJECT, name: env.CONFLUENCE_PROJECT_NAME || "Default", folderId: c.folderId }] : []), ...c.projects.filter((p) => p.id !== DEFAULT_PROJECT)];
-}
+/** Whether the reports' and models' catalog can be changed from the app (CONFLUENCE_CATALOG_EDIT). */
+export const catalogEditable = () => /^(1|true|yes)$/i.test(env.CONFLUENCE_CATALOG_EDIT ?? "");
 
 export async function publicSettings(): Promise<PublicSettings> {
   const s = await settings();
@@ -133,7 +138,7 @@ export async function publicSettings(): Promise<PublicSettings> {
       claudeCode: { baseUrl: s.ai.claudeCode.baseUrl, headers: s.ai.claudeCode.headers, keyHelper: s.ai.claudeCode.keyHelper, keySet: !!s.ai.claudeCode.key },
     },
     powerbi: s.powerbi,
-    confluence: { url: s.confluence.url, email: s.confluence.email, folderId: s.confluence.folderId, keySet: !!s.confluence.key, projects: await projects() },
+    confluence: { url: s.confluence.url, email: s.confluence.email, keySet: !!s.confluence.key, projectsFolderId: s.confluence.projectsFolderId, reportsFolderId: s.confluence.reportsFolderId, datasetsFolderId: s.confluence.datasetsFolderId, catalogEdit: catalogEditable() },
     env: Object.entries(ENV_KEYS).filter(([, keys]) => keys.some((k) => env[k])).map(([path]) => path),
   };
 }
@@ -148,7 +153,7 @@ export async function updateSettings(patch: SettingsPatch) {
     general: patch.general,
     ai: { ...ai, ...(anthropicKey ? { anthropicKey } : {}), maia: filled(maia), claudeCode: filled(claudeCode) },
     powerbi: patch.powerbi,
-    confluence: c && filled({ ...c, ...(c.folderId !== undefined ? { folderId: folderIdOf(c.folderId) } : {}), ...(c.projects ? { projects: c.projects.filter((p) => p.id !== DEFAULT_PROJECT).map((p) => ({ ...p, folderId: folderIdOf(p.folderId) })) } : {}) }),
+    confluence: c && filled(Object.fromEntries(Object.entries(c).map(([k, v]) => [k, /FolderId$/.test(k) && typeof v === "string" ? folderIdOf(v) : v]))),
   });
   await save();
   return publicSettings();
@@ -157,9 +162,7 @@ export async function updateSettings(patch: SettingsPatch) {
 /** Forgets the changes of a part of the settings (general, ai, powerbi, confluence): back to the .env values. */
 export async function resetSettings(part: "general" | "ai" | "powerbi" | "confluence") {
   await settings();
-  const keepProjects = part === "confluence" ? saved?.confluence?.projects : undefined;
   delete saved![part];
-  if (keepProjects) saved!.confluence = { projects: keepProjects };
   await save();
   return publicSettings();
 }

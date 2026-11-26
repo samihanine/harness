@@ -62,6 +62,20 @@ const filterToLegacy = (f: Json) => {
   return { ...rest, ...(field ? { expression: field } : {}) };
 };
 
+/**
+ * Report measures: PBIR's reportExtensions (dataType "Double" / "Text", formatString) ⇄ the legacy config's
+ * modelExtensions (dataType 3 / 1, formatInformation; each entity "extends" its table). Checked on the service.
+ */
+const entityToPbir = (e: Json) => ({
+  name: e.extends ?? e.name,
+  measures: (e.measures ?? []).map((m: Json) => ({ name: m.name, dataType: m.dataType === 1 ? "Text" : "Double", expression: m.expression, ...(m.formatInformation?.formatString ? { formatString: m.formatInformation.formatString } : {}), ...(m.hidden ? { hidden: true } : {}) })),
+});
+const entityToLegacy = (e: Json) => ({
+  name: e.name,
+  extends: e.name,
+  measures: (e.measures ?? []).map((m: Json) => ({ name: m.name, dataType: m.dataType === "Text" ? 1 : 3, expression: m.expression, errorMessage: null, hidden: !!m.hidden, formulaOverride: null, ...(m.formatString ? { formatInformation: { formatString: m.formatString, format: "General", thousandSeparator: /,/.test(m.formatString), currencyFormat: null, dateTimeCustomFormat: null } } : {}) })),
+});
+
 /* ----------------------------- Legacy → PBIR files ----------------------------- */
 
 function visualToPbir(container: Json): Json {
@@ -125,7 +139,7 @@ export function legacyToPbir(parts: Part[]): { parts: Part[]; legacy: Legacy } {
   json("definition/report.json", { themeCollection: config.themeCollection, ...(config.objects ? { objects: config.objects } : {}), ...(config.settings ? { settings: config.settings } : {}), filterConfig: { filters: parse(report.filters, []).map(filterToPbir) } });
   json("definition/pages/pages.json", { pageOrder: sections.map((s) => s.name), activePageName: sections[config.activeSectionIndex ?? 0]?.name });
   const ext = config.modelExtensions?.[0];
-  if (ext?.entities?.length) json("definition/reportExtensions.json", { name: ext.name ?? "extension", entities: ext.entities });
+  if (ext?.entities?.length) json("definition/reportExtensions.json", { name: ext.name ?? "extension", entities: ext.entities.map(entityToPbir) });
   for (const s of sections) {
     originals.set(`page:${s.name}`, s);
     json(`definition/pages/${s.name}/page.json`, pageToPbir(s));
@@ -239,7 +253,7 @@ export function pbirToLegacy(files: Part[], legacy: Legacy, changed: Set<string>
     report.filters = JSON.stringify((r.filterConfig?.filters ?? []).map(filterToLegacy));
   }
   const ext = read("definition/reportExtensions.json");
-  if (ext && touched("definition/reportExtensions.json")) config.modelExtensions = [{ ...(config.modelExtensions?.[0] ?? {}), name: ext.name ?? "extension", entities: ext.entities }];
+  if (ext && touched("definition/reportExtensions.json")) config.modelExtensions = [{ ...(config.modelExtensions?.[0] ?? {}), name: ext.name ?? "extension", entities: (ext.entities ?? []).map(entityToLegacy) }];
   const active = read("definition/pages/pages.json")?.activePageName;
   config.activeSectionIndex = Math.max(0, names.indexOf(active));
   report.config = JSON.stringify(config);

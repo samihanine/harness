@@ -23,13 +23,13 @@ export const FIRST_QUESTION_REMINDER =
 /** What the screen works on, as told to the AI (sent again only when it changes). */
 export function scopeText(scope: ChatScope) {
   const lines: string[] = [];
-  const access = (a?: string) => (a === "edit" ? "editable (definition)" : a === "editor" ? "editable in the embedded Power BI editor" : "view only");
-  if (scope.report) lines.push(`Report: "${scope.report.name}" (id ${scope.report.id}, ${access(scope.report.access)}${scope.report.datasetId ? `, semantic model ${scope.report.datasetId}` : ""})`);
+  if (scope.report) lines.push(`Report: "${scope.report.name}" (id ${scope.report.id}${scope.report.access === "edit" ? ", its definition editable" : ""}${scope.report.datasetId ? `, semantic model ${scope.report.datasetId}` : ""})`);
   if (scope.dataset) lines.push(`Semantic model: "${scope.dataset.name}" (id ${scope.dataset.id})`);
-  if (scope.references?.length) lines.push(`Reference reports for inspiration: ${scope.references.map((r) => `"${r.name}" (id ${r.id}, ${r.access === "edit" ? "full definition readable" : "structure only"})`).join(", ")}`);
+  if (scope.references?.length) lines.push(`Reports to use: ${scope.references.map((r) => `"${r.name}" (id ${r.id})`).join(", ")}`);
   if (scope.datasets?.length) lines.push(`Semantic models available: ${scope.datasets.map((d) => `"${d.name}" (id ${d.id})`).join(", ")}`);
   if (scope.files?.length) lines.push(`Files available: ${scope.files.map((f) => `"${f.name}" (id ${f.id})`).join(", ")}`);
-  if (scope.mode) lines.push(`Mode: ${scope.mode === "create" ? "create a deck from the template (markdown)" : "edit the uploaded PowerPoint"}`);
+  const doc = scope.doc as { title?: string; itemId?: string } | undefined;
+  if (doc?.title) lines.push(`Document: "${doc.title}"`);
 
   return lines.join("\n") || "Nothing selected yet.";
 }

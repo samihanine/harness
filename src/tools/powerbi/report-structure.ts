@@ -2,6 +2,7 @@
 import { z } from "zod";
 import { reportStructure as read } from "@server/pbi/report-structure";
 import { reportCatalog } from "@server/pbi/catalog";
+import { library } from "@server/library";
 import { json, tool, type ToolContext } from "../tool";
 
 /** A report of the screen (its report, a reference) or any report the user can open, by id. */
@@ -13,9 +14,12 @@ export async function reportRef(ctx: ToolContext, id?: string) {
   }
   const known = [s.report, ...(s.references ?? [])].find((r) => r && (r.id === id || r.name.toLowerCase() === id.toLowerCase()));
   if (known) return known;
+  // The team's catalog first, then any report the user can open.
+  const named = (await library("report").catch(() => [])).find((r) => r.id && (r.id === id || r.name.toLowerCase() === id.toLowerCase()));
+  if (named) return { id: named.id!, groupId: named.groupId, appId: named.appId, name: named.name };
   const any = (await reportCatalog()).find((r) => r.id === id || r.name.toLowerCase() === id.toLowerCase());
   if (!any) throw new Error(`No report "${id}" (list_reports lists them).`);
-  return { id: any.id, groupId: any.groupId, name: any.name };
+  return { id: any.id, groupId: any.groupId, appId: any.appId, name: any.name };
 }
 
 export const reportStructure = tool({

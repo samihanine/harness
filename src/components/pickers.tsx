@@ -1,129 +1,184 @@
 /**
- * Choosing the item a screen works on: the screen's own list (kept in this browser, renamable), and "Add"
- * to pick a report or a semantic model the user can open in Power BI — workspaces and apps, searched page
- * by page, or a pasted link (an app's report or model too). The Builder lists only the reports it can
- * change: their rights are checked in the background for the page shown.
+ * Choosing the reports and models a screen works on, from the team's catalog (Confluence, see
+ * src/lib/library.ts): the screen's picker (items hidden by this user left out, "Manage the list" to Settings
+ * when the catalog is editable), checklists of items (Data Scientist, Presenter, Builder references), and the
+ * dialog that adds an item to the catalog — any report or model the user can open in Power BI, found in their
+ * workspaces and apps or by a pasted link.
  */
 import { useEffect, useMemo, useState } from "react";
-import { CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, Loader2Icon, PencilIcon, PlusIcon, SearchIcon, Trash2Icon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
+import { CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, EyeIcon, EyeOffIcon, Loader2Icon, PencilIcon, PlusIcon, SearchIcon, Settings2Icon, Trash2Icon } from "lucide-react";
 import { toast } from "sonner";
-import type { DatasetRef, ReportAccess, ReportRef } from "@shared/types";
+import type { LibraryEntry, LibraryKind, ReportRef } from "@shared/types";
+import { datasetUrl, isPowerBiLink, parseLink, reportUrl } from "@shared/links";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
-import { errorText, get, post } from "@/lib/api";
-import { prepareDataset, prepareReport } from "@/lib/items";
-import { item, remove, save, useItems } from "@/lib/store";
+import { errorText, get } from "@/lib/api";
+import { openReport, useHidden, useLibrary } from "@/lib/library";
 import { useItemParam } from "@/lib/params";
+import { useSettings } from "@/lib/settings";
+import { useItems } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-type CatalogItem = { id: string; name: string; groupId?: string; appId?: string; workspace: string; datasetId?: string };
-
-const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+type CatalogItem = { id: string; name: string; groupId?: string; appId?: string; workspace: string };
 const PAGE = 20;
+const noun = (kind: LibraryKind) => (kind === "report" ? "report" : "semantic model");
+
+/** The catalog's items this user did not hide (all with `all`). */
+export function useVisible(kind: LibraryKind, all = false) {
+  const { entries, error } = useLibrary(kind);
+  const [hidden, setHidden] = useHidden(kind);
+  const items = useMemo(() => (entries ?? []).filter((e) => e.id && (all || !hidden.includes(e.id))), [entries, hidden, all]);
+  return { items, entries, error, hidden, setHidden, loading: !entries && !error };
+}
 
 /**
- * Any Power BI link → ids: the browser's address of a report or a model (a workspace's, an app's, "My
- * workspace", shared), an embed link (reportEmbed?reportId=…&groupId=…), or a bare id.
+ * The report of a screen: chosen from the catalog (in the address, else the last one chosen here), opened on
+ * first use (its details read: refused when the user cannot open it).
  */
-export function parseLink(url: string) {
-  const g = (re: RegExp) => url.match(re)?.[1]?.toLowerCase();
-  const report = g(/(?:reports|rdlreports)\/([0-9a-f-]{36})/i) ?? g(/[?&]reportId=([0-9a-f-]{36})/i);
-  const dataset = g(/(?:datasets|semanticmodels)\/([0-9a-f-]{36})/i) ?? g(/[?&]datasetId=([0-9a-f-]{36})/i);
-  const appId = g(/apps\/([0-9a-f-]{36})/i) ?? g(/[?&]appId=([0-9a-f-]{36})/i);
-  const groupId = g(/groups\/([0-9a-f-]{36})/i) ?? g(/[?&]groupId=([0-9a-f-]{36})/i);
-  const bare = !report && !dataset && !appId && !groupId ? url.match(GUID)?.[0]?.toLowerCase() : undefined;
-  return report || dataset || bare ? { report, dataset, bare, appId, groupId } : undefined;
-}
-type Link = NonNullable<ReturnType<typeof parseLink>>;
-
-/** What a link adds: a report (by its id), or a model — its own link, or the model of a report's link. */
-async function addFromLink(kind: "report" | "dataset", l: Link) {
-  if (kind === "report") {
-    const id = l.report ?? l.bare;
-    if (!id) throw new Error("This is the link of a semantic model, not of a report.");
-    return (await addReport({ id, groupId: l.groupId, appId: l.appId })).id;
-  }
-  if (l.dataset || (l.bare && !l.report)) return (await addDataset({ id: (l.dataset ?? l.bare)!, groupId: l.groupId })).id;
-  const q = new URLSearchParams({ id: l.report!, ...(l.groupId ? { groupId: l.groupId } : {}), ...(l.appId ? { appId: l.appId } : {}) });
-  const r = await get<ReportRef>(`/powerbi/report?${q}`);
-  if (!r.datasetId) throw new Error(`The model of "${r.name}" cannot be read with your rights.`);
-  return (await addDataset({ id: r.datasetId, groupId: r.datasetGroupId })).id;
+export function usePicked(screen: string) {
+  const { items, entries, error: listError, loading } = useVisible("report");
+  const [id, setId] = useItemParam(`picked:${screen}:report`);
+  const entry = items.find((x) => x.id === id) ?? (entries ?? []).find((x) => x.id === id) ?? (!id ? items[0] : undefined);
+  const stored = useItems("report")?.find((r) => r.id === entry?.id);
+  const [error, setError] = useState<string>();
+  useEffect(() => {
+    setError(undefined);
+    if (entry && !stored) openReport(entry).catch((e) => setError(`You cannot open "${entry.name}": ${errorText(e)}`));
+  }, [entry?.id, !!stored]); // eslint-disable-line react-hooks/exhaustive-deps
+  const current: ReportRef | undefined = entry && stored ? { ...stored, name: entry.name } : undefined;
+  return { items, entry, current, select: setId, loading: loading || (!!entry && !stored && !error), error: error ?? listError };
 }
 
-/** Reads a report's details from the server (model, access), keeps it, and reads its structure in the background. */
-export async function addReport(ref: { id: string; groupId?: string; appId?: string }) {
-  const q = new URLSearchParams({ id: ref.id, ...(ref.groupId ? { groupId: ref.groupId } : {}), ...(ref.appId ? { appId: ref.appId } : {}) });
-  const r = await get<ReportRef>(`/powerbi/report?${q}`);
-  const kept = await item("report", r.id);
-  const saved = { ...r, ...(kept ? { name: kept.name, structure: kept.structure, structureAt: kept.structureAt } : {}), addedAt: kept?.addedAt ?? Date.now() };
-  await save("report", saved);
-  prepareReport(saved);
-  return saved;
+/** "Manage the list" (Settings), shown when the catalog can be changed here. */
+function useManage(kind: LibraryKind) {
+  const settings = useSettings();
+  const navigate = useNavigate();
+  return settings?.confluence.catalogEdit ? () => void navigate({ to: "/settings", search: { tab: kind === "report" ? "reports" : "models" } as never }) : undefined;
 }
 
-export async function addDataset(ref: { id: string; groupId?: string; name?: string }) {
-  const q = new URLSearchParams({ id: ref.id, ...(ref.groupId ? { groupId: ref.groupId } : {}) });
-  const d = ref.name ? { id: ref.id, groupId: ref.groupId, name: ref.name } : await get<DatasetRef>(`/powerbi/dataset?${q}`);
-  const kept = await item("dataset", d.id);
-  const saved = { ...d, ...(kept ? { name: kept.name } : {}), addedAt: kept?.addedAt ?? Date.now() };
-  await save("dataset", saved);
-  prepareDataset(saved);
-  return saved;
+/** The picker in a screen's header: the catalog's reports, hide one, show the hidden ones, manage the list. */
+export function ItemPicker({ kind, current, onSelect }: { kind: LibraryKind; current?: { id?: string; name: string }; onSelect: (id: string) => void }) {
+  const [showHidden, setShowHidden] = useState(false);
+  const { items, hidden, setHidden } = useVisible(kind, showHidden);
+  const manage = useManage(kind);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button className="flex max-w-[420px] items-center gap-1 rounded-full px-2 py-1 text-[15px] text-muted-foreground hover:bg-muted hover:text-foreground">
+          <span className="truncate">{current?.name ?? `Choose a ${noun(kind)}`}</span>
+          <ChevronDownIcon className="size-4 shrink-0" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-h-[70vh] w-96 overflow-y-auto">
+        {items.map((it) => {
+          const off = hidden.includes(it.id!);
+          return (
+            <DropdownMenuItem key={it.id} onSelect={() => onSelect(it.id!)} className="group items-start">
+              <CheckIcon className={cn("mt-0.5 size-4", it.id === current?.id ? "opacity-100" : "opacity-0")} />
+              <div className={cn("min-w-0 flex-1", off && "opacity-50")}>
+                <div className="truncate">{it.name}</div>
+                {it.description && <div className="line-clamp-2 text-[11.5px] text-muted-foreground">{it.description}</div>}
+              </div>
+              <button className="opacity-0 group-hover:opacity-100" title={off ? "Show it in my list" : "Hide it from my list"} onClick={(e) => (e.stopPropagation(), setHidden(off ? hidden.filter((x) => x !== it.id) : [...hidden, it.id!]))}>
+                {off ? <EyeIcon className="size-3.5" /> : <EyeOffIcon className="size-3.5" />}
+              </button>
+            </DropdownMenuItem>
+          );
+        })}
+        {!items.length && <div className="px-2 py-1.5 text-[13px] text-muted-foreground">No {noun(kind)} in the catalog{hidden.length ? " (some are hidden)" : ""}.</div>}
+        <DropdownMenuSeparator />
+        {hidden.length > 0 && (
+          <DropdownMenuItem onSelect={(e) => (e.preventDefault(), setShowHidden(!showHidden))}>
+            {showHidden ? <EyeOffIcon /> : <EyeIcon />} {showHidden ? "Leave out the hidden ones" : `Show the hidden ones (${hidden.length})`}
+          </DropdownMenuItem>
+        )}
+        {manage && (
+          <DropdownMenuItem onSelect={manage}>
+            <Settings2Icon /> Manage the list…
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 }
 
-export function AddDialog({ kind, open, onOpenChange, onAdded, editable }: { kind: "report" | "dataset"; open: boolean; onOpenChange: (o: boolean) => void; onAdded: (id: string) => void; editable?: boolean }) {
+/** Items of the catalog to check (the ones a document may use), with "Manage the list". */
+export function CatalogChecklist({ kind, ids, setIds, title, hint }: { kind: LibraryKind; ids: string[]; setIds: (ids: string[]) => void; title: string; hint: string }) {
+  const { items, loading, error } = useVisible(kind);
+  const manage = useManage(kind);
+  return (
+    <div className="mx-auto flex max-w-3xl flex-col gap-3 p-6">
+      <div className="flex items-center gap-3">
+        <div className="flex-1">
+          <div className="text-[15px] font-semibold">{title}</div>
+          <div className="text-[13px] text-muted-foreground">{hint}</div>
+        </div>
+        {manage && <Button variant="outline" size="sm" onClick={manage}><Settings2Icon /> Manage the list</Button>}
+      </div>
+      {loading && <div className="flex items-center gap-2 text-[13px] text-muted-foreground"><Loader2Icon className="size-4 animate-spin" /> Reading the catalog…</div>}
+      {error && <div className="text-[13px] text-destructive">{error}</div>}
+      {items.map((r) => {
+        const on = ids.includes(r.id!);
+        return (
+          <button key={r.id} onClick={() => setIds(on ? ids.filter((x) => x !== r.id) : [...ids, r.id!])} className={cn("flex items-start gap-3 rounded-2xl border px-4 py-3 text-left", on && "border-foreground/40 bg-muted/50")}>
+            <span className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-md border", on && "border-foreground bg-foreground text-background")}>{on && <CheckIcon className="size-3.5" />}</span>
+            <div className="min-w-0 flex-1">
+              <div className="text-[14px]">{r.name}</div>
+              {r.description && <div className="line-clamp-2 text-[12.5px] text-muted-foreground">{r.description}</div>}
+            </div>
+          </button>
+        );
+      })}
+      {!loading && !error && !items.length && <div className="text-[13px] text-muted-foreground">The catalog has no {noun(kind)} yet.</div>}
+    </div>
+  );
+}
+
+/** Adds a report or a model to the catalog: from the user's workspaces and apps, page by page, or a pasted link. */
+export function AddDialog({ kind, open, onOpenChange, onAdd }: { kind: LibraryKind; open: boolean; onOpenChange: (o: boolean) => void; onAdd: (link: string) => Promise<void> }) {
   const [catalog, setCatalog] = useState<CatalogItem[]>();
   const [error, setError] = useState<string>();
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(0);
   const [busy, setBusy] = useState<string>();
-  const [access, setAccess] = useState<Record<string, ReportAccess>>({});
-  const [showAll, setShowAll] = useState(false);
   useEffect(() => {
     if (!open || catalog) return;
     get<CatalogItem[]>(kind === "report" ? "/powerbi/reports" : "/powerbi/datasets").then(setCatalog, (e) => setError(errorText(e)));
   }, [open, kind, catalog]);
-  useEffect(() => setPage(0), [query, showAll]);
+  useEffect(() => setPage(0), [query]);
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   const matching = (catalog ?? []).filter((c) => words.every((w) => `${c.name} ${c.workspace}`.toLowerCase().includes(w)));
-  // The Builder: apps' reports are never editable; the others are checked for the page shown.
-  const candidates = editable && !showAll ? matching.filter((c) => !c.appId && access[c.id] !== "view") : matching;
-  const shown = candidates.slice(page * PAGE, page * PAGE + PAGE);
-  const unknown = editable ? shown.filter((c) => !c.appId && !access[c.id]) : [];
-  useEffect(() => {
-    if (!unknown.length) return;
-    let gone = false;
-    post<Record<string, ReportAccess>>("/powerbi/access", unknown.map((c) => ({ id: c.id, groupId: c.groupId }))).then((a) => !gone && setAccess((x) => ({ ...x, ...a })), () => undefined);
-    return () => void (gone = true);
-  }, [unknown.map((c) => c.id).join()]); // eslint-disable-line react-hooks/exhaustive-deps
-  const choose = async (ref: { id: string; groupId?: string; appId?: string; name?: string } | Link) => {
-    setBusy("id" in ref ? ref.id : "link");
+  const shown = matching.slice(page * PAGE, page * PAGE + PAGE);
+  const pages = Math.max(1, Math.ceil(matching.length / PAGE));
+  const link = isPowerBiLink(query) ? parseLink(query) : undefined;
+  const add = async (key: string, url: string) => {
+    setBusy(key);
     try {
-      const id = !("id" in ref) ? await addFromLink(kind, ref) : kind === "report" ? (await addReport(ref)).id : (await addDataset(ref)).id;
-      onAdded(id);
+      await onAdd(url);
       onOpenChange(false);
+      setQuery("");
     } catch (e) {
       toast.error(errorText(e));
     } finally {
       setBusy(undefined);
     }
   };
-  const link = query.includes("powerbi.com") || GUID.test(query) ? parseLink(query) : undefined;
-  const pages = Math.max(1, Math.ceil(candidates.length / PAGE));
+  const urlOf = (c: CatalogItem) => (kind === "report" ? reportUrl(c) : datasetUrl(c));
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl rounded-3xl">
         <DialogHeader>
-          <DialogTitle>{kind === "report" ? (editable ? "Add a report you can edit" : "Add a report") : "Add a semantic model"}</DialogTitle>
+          <DialogTitle>Add a {noun(kind)} to the catalog</DialogTitle>
         </DialogHeader>
         <div className="flex items-center gap-2 rounded-xl border px-3">
           <SearchIcon className="size-4 text-muted-foreground" />
-          <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && link && !busy && void choose(link)} placeholder={kind === "report" ? "Search, or paste the report's address from your browser" : "Search, or paste the link of a model or of one of its reports"} className="h-10 flex-1 bg-transparent text-[14px] outline-none" />
+          <input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Enter" && link && !busy && void add("link", query.trim())} placeholder={kind === "report" ? "Search, or paste the report's address from your browser" : "Search, or paste the link of a model or of one of its reports"} className="h-10 flex-1 bg-transparent text-[14px] outline-none" />
         </div>
         {link && (
-          <Button variant="dark" onClick={() => choose(link)} disabled={!!busy}>
-            {busy === "link" ? <Loader2Icon className="animate-spin" /> : null} {kind === "dataset" && link.report && !link.dataset ? "Add this report's semantic model" : "Add from the link"}
+          <Button variant="dark" onClick={() => void add("link", query.trim())} disabled={!!busy}>
+            {busy === "link" ? <Loader2Icon className="animate-spin" /> : <PlusIcon />} {kind === "dataset" && link.report && !link.dataset ? "Add this report's semantic model" : "Add from the link"}
           </Button>
         )}
         <div className="max-h-[50vh] min-h-40 overflow-y-auto">
@@ -133,28 +188,18 @@ export function AddDialog({ kind, open, onOpenChange, onAdded, editable }: { kin
               <Loader2Icon className="size-4 animate-spin" /> Loading your {kind === "report" ? "reports" : "models"} (workspaces and apps)…
             </div>
           )}
-          {shown.map((c) => {
-            const a = c.appId ? "view" : access[c.id];
-            return (
-              <button key={c.id} onClick={() => choose(c)} disabled={!!busy || (editable && !showAll && !a)} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-muted disabled:opacity-60">
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[14px] font-medium">{c.name}</div>
-                  <div className="truncate text-[12px] text-muted-foreground">{c.workspace}</div>
-                </div>
-                {editable && (a ? <span className="badge bg-muted text-muted-foreground">{a === "edit" ? "editable" : a === "editor" ? "editor mode" : "view only"}</span> : <Loader2Icon className="size-3.5 animate-spin text-muted-foreground" />)}
-                {busy === c.id && <Loader2Icon className="size-4 animate-spin" />}
-              </button>
-            );
-          })}
-          {catalog && !shown.length && <div className="p-3 text-[13px] text-muted-foreground">{editable && !showAll ? "No editable report on this page." : "Nothing matches."}</div>}
+          {shown.map((c) => (
+            <button key={c.id} onClick={() => void add(c.id, urlOf(c))} disabled={!!busy} className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left hover:bg-muted disabled:opacity-60">
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[14px] font-medium">{c.name}</div>
+                <div className="truncate text-[12px] text-muted-foreground">{c.workspace}</div>
+              </div>
+              {busy === c.id && <Loader2Icon className="size-4 animate-spin" />}
+            </button>
+          ))}
+          {catalog && !shown.length && <div className="p-3 text-[13px] text-muted-foreground">Nothing matches.</div>}
         </div>
-        <div className="flex items-center gap-2 text-[12.5px] text-muted-foreground">
-          {editable && (
-            <label className="flex items-center gap-2">
-              <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> Show view-only reports too
-            </label>
-          )}
-          <div className="flex-1" />
+        <div className="flex items-center justify-end gap-2 text-[12.5px] text-muted-foreground">
           <Button variant="ghost" size="icon-sm" disabled={page === 0} onClick={() => setPage(page - 1)} aria-label="Previous page"><ChevronLeftIcon /></Button>
           <span className="tabular-nums">{page + 1} / {pages}</span>
           <Button variant="ghost" size="icon-sm" disabled={page >= pages - 1} onClick={() => setPage(page + 1)} aria-label="Next page"><ChevronRightIcon /></Button>
@@ -164,17 +209,7 @@ export function AddDialog({ kind, open, onOpenChange, onAdded, editable }: { kin
   );
 }
 
-/** The chosen report or model of a screen, with its list and "Add". */
-export function usePicked<K extends "report" | "dataset">(kind: K, screen: string) {
-  const items = useItems(kind);
-  // In the address (each browser tab its own), else the last one chosen here.
-  const [id, setId] = useItemParam(`picked:${screen}:${kind}`);
-  const sorted = useMemo(() => [...(items ?? [])].sort((a, b) => a.name.localeCompare(b.name)), [items]);
-  const current = sorted.find((x) => x.id === id) ?? (items && !id ? sorted[0] : undefined);
-  return { items: sorted, current, select: setId, loading: !items };
-}
-
-/** The picker in a screen's header: the item's name, a menu to switch, rename, remove or add. */
+/** The menu of a screen's own documents (analyses, decks): switch, rename, remove, create. */
 export function PickerMenu<T extends { id: string }>({ items, current, name, onSelect, onRename, onDelete, addLabel, onAdd, empty, extra }: { items: T[]; current?: T; name: (t: T) => string; onSelect: (id: string) => void; onRename: (t: T, name: string) => void; onDelete: (id: string) => void; addLabel: string; onAdd: () => void; empty: string; extra?: (t: T) => string | undefined }) {
   return (
     <DropdownMenu>
@@ -194,7 +229,7 @@ export function PickerMenu<T extends { id: string }>({ items, current, name, onS
               className="opacity-0 group-hover:opacity-100"
               onClick={(e) => {
                 e.stopPropagation();
-                const next = prompt("Name (in this app only)", name(it));
+                const next = prompt("Name", name(it));
                 if (next?.trim()) onRename(it, next.trim());
               }}
               aria-label="Rename"
@@ -205,7 +240,7 @@ export function PickerMenu<T extends { id: string }>({ items, current, name, onS
               className="opacity-0 group-hover:opacity-100"
               onClick={(e) => {
                 e.stopPropagation();
-                if (confirm(`Remove "${name(it)}" from the list?`)) onDelete(it.id);
+                if (confirm(`Remove "${name(it)}"?`)) onDelete(it.id);
               }}
               aria-label="Remove"
             >
@@ -222,36 +257,4 @@ export function PickerMenu<T extends { id: string }>({ items, current, name, onS
   );
 }
 
-export function ItemPicker<T extends { id: string; name: string }>({ kind, items, current, onSelect, label, extra, editable }: { kind: "report" | "dataset"; items: T[]; current?: T; onSelect: (id: string) => void; label?: string; extra?: (item: T) => string | undefined; editable?: boolean }) {
-  const [adding, setAdding] = useState(false);
-  return (
-    <>
-      <PickerMenu
-        items={items}
-        current={current}
-        name={(t) => t.name}
-        onSelect={onSelect}
-        onRename={(t, name) => void save(kind, { ...(t as object), name } as never)}
-        onDelete={(id) => void remove(kind, id)}
-        addLabel={kind === "report" ? "Add a report…" : "Add a semantic model…"}
-        onAdd={() => setAdding(true)}
-        empty={label ?? (kind === "report" ? "Choose a report" : "Choose a model")}
-        extra={extra}
-      />
-      <AddDialog kind={kind} open={adding} onOpenChange={setAdding} onAdded={onSelect} editable={editable} />
-    </>
-  );
-}
-
-/** "Add a report / model" as a button (empty states). */
-export function AddButton({ kind, onAdded, editable }: { kind: "report" | "dataset"; onAdded: (id: string) => void; editable?: boolean }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <Button variant="dark" size="sm" className="mt-3" onClick={() => setOpen(true)}>
-        <PlusIcon /> {kind === "report" ? "Add a report" : "Add a semantic model"}
-      </Button>
-      <AddDialog kind={kind} open={open} onOpenChange={setOpen} onAdded={onAdded} editable={editable} />
-    </>
-  );
-}
+export type { LibraryEntry };

@@ -32,7 +32,7 @@ s.ai.maia = { ...s.ai.maia, url: "http://127.0.0.1:3399", clientId: "id", client
 const scope = { dataset: { id: "eda77871-2401-4255-ba6c-2fc3c66902a1", name: "Revenue Opportunities" } };
 for (const message of ["Combien d'opportunités ?", "Non"]) {
   let text = "";
-  await runChat({ conversationId: "maia-check", screen: "scientist", message, scope: { datasets: [scope.dataset] } }, (e) => {
+  await runChat({ conversationId: "maia-check", screen: "trainer", message, scope: { report: { id: "2066ecc8-ead6-425b-a465-2475384528f1", name: "Revenue Opportunities", datasetId: scope.dataset.id } } }, (e) => {
     if (e.type === "text") text += e.text;
     if (e.type === "tool" && e.status !== "running") console.log(`  [${e.name} ${e.status}] ${(e.result ?? "").slice(0, 100)}`);
     if (e.type === "error") console.log("  ERROR", e.error);

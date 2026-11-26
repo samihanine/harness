@@ -1,9 +1,9 @@
 /** Settings in four tabs: General, AI, Power BI, Confluence. Secrets are written to the server, never read back. */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { BookOpenTextIcon, BotIcon, CheckIcon, DownloadIcon, ExternalLinkIcon, FolderOpenIcon, Loader2Icon, LogOutIcon, PaletteIcon, PlugZapIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, Trash2Icon, UploadIcon } from "lucide-react";
+import { BarChart3Icon, BookOpenTextIcon, BotIcon, CheckIcon, DatabaseIcon, EyeIcon, EyeOffIcon, DownloadIcon, ExternalLinkIcon, FolderOpenIcon, Loader2Icon, LogOutIcon, PaletteIcon, PlugZapIcon, PlusIcon, RefreshCwIcon, RotateCcwIcon, Trash2Icon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
-import { DEFAULT_PROJECT, SCREENS, type Project, type Provider, type SettingsPatch } from "@shared/types";
+import { SCREENS, type LibraryKind, type Provider, type SettingsPatch } from "@shared/types";
 import { Workspace } from "@/components/workspace";
 import { SCREEN_INFO } from "@/components/screens";
 import { ErrorBox, Loading } from "@/components/common";
@@ -12,15 +12,18 @@ import { Switch } from "@/components/ui/switch";
 import { Mascot, OUTFITS, OUTFIT_LABELS, STATES, STATE_LABELS, type MascotState, type Outfit } from "@/features/mascot";
 import { recordGif } from "@/features/mascot/gif";
 import { download, errorText, get, post } from "@/lib/api";
-import { refreshProject, useProjectsStatus } from "@/lib/projects";
+import { refreshProject, useProjectList } from "@/lib/projects";
+import { libraryEdit, openReport, refreshLibrary, useHidden, useLibrary } from "@/lib/library";
+import { reportStructure } from "@/lib/items";
+import { AddDialog } from "@/components/pickers";
 import { resetSettings, saveSettings, useSettings, type AppSettings } from "@/lib/settings";
 import { exportAll, importAll, list } from "@/lib/store";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/settings")({ component: Settings });
+export const Route = createFileRoute("/settings")({ component: Settings, validateSearch: (q: Record<string, unknown>) => ({ tab: typeof q.tab === "string" ? q.tab : undefined }) });
 
-type TabId = "general" | "ai" | "powerbi" | "confluence";
+type TabId = "general" | "ai" | "powerbi" | "confluence" | "reports" | "models";
 
 function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
   return (
@@ -292,65 +295,110 @@ function PowerBi({ s }: { s: AppSettings }) {
   );
 }
 
-/** A project's kept pages: how many, when they were read, "Refresh" and the folder in Confluence. */
-function ProjectPages({ id }: { id: string }) {
-  const status = useProjectsStatus()?.find((x) => x.id === id);
-  const [busy, setBusy] = useState(false);
+/** The projects found in the projects folder, with their kept pages: refresh, open in Confluence. */
+function Projects() {
+  const { projects, error } = useProjectList();
+  const [busy, setBusy] = useState<string>();
+  const refresh = (id: string) => (setBusy(id), refreshProject(id).catch((e) => toast.error(errorText(e))).finally(() => setBusy(undefined)));
   return (
-    <div className="flex w-full items-center gap-2 pl-7 text-[12.5px] text-muted-foreground">
-      <span className="flex-1">{!status ? "Reading the pages…" : status.error ? <span className="text-destructive">{status.error}</span> : `${status.pages} pages kept${status.at ? ` · read ${new Date(status.at).toLocaleString()}` : ""}`}</span>
-      <Button variant="ghost" size="sm" disabled={busy} onClick={() => (setBusy(true), refreshProject(id).catch((e) => toast.error(errorText(e))).finally(() => setBusy(false)))}>{busy ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Refresh the pages</Button>
-      {status?.url && <Button variant="ghost" size="sm" asChild><a href={status.url} target="_blank" rel="noreferrer"><ExternalLinkIcon /> Open in Confluence</a></Button>}
-    </div>
+    <Card title="Projects" aside={<Button variant="outline" size="sm" disabled={!!busy} onClick={() => refresh("*")}>{busy === "*" ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Read the list again</Button>}>
+      <div className="text-[12.5px] text-muted-foreground">Each sub-folder of the projects folder is a project (its name). The pages of the projects chosen in the chat (top of the assistant) are given whole to it at the start of each conversation. They are read once and kept: "Refresh" after they change.</div>
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {!projects && !error && <Loading />}
+      {projects?.map((p) => (
+        <div key={p.id} className="flex flex-wrap items-center gap-3 rounded-2xl border px-4 py-2.5">
+          <FolderOpenIcon className="size-4 text-muted-foreground" />
+          <span className="w-56 truncate text-[14px] font-medium">{p.name}</span>
+          <span className="flex-1 text-[12.5px] text-muted-foreground">{p.error ? <span className="text-destructive">{p.error}</span> : p.pages === undefined ? "not read yet (read when first used)" : `${p.pages} pages · read ${new Date(p.at!).toLocaleString()}`}</span>
+          <Button variant="ghost" size="sm" disabled={!!busy} onClick={() => refresh(p.id)}>{busy === p.id ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Refresh</Button>
+          {p.url && <Button variant="ghost" size="sm" asChild><a href={p.url} target="_blank" rel="noreferrer"><ExternalLinkIcon /> Open</a></Button>}
+        </div>
+      ))}
+      {projects && !projects.length && <div className="text-[13px] text-muted-foreground">No project: set the projects folder above (one sub-folder per project).</div>}
+    </Card>
   );
 }
 
 function ConfluenceSettings({ s }: { s: AppSettings }) {
   const save = useSave();
   const c = s.confluence;
-  const others = c.projects.filter((p) => p.id !== DEFAULT_PROJECT);
-  const saveProjects = (list: Project[]) => void save({ confluence: { projects: list } });
+  const folder = (label: string, key: "projectsFolderId" | "reportsFolderId" | "datasetsFolderId", env: string, hint: string) => (
+    <Field label={label} hint={`${hint} (${env}).`}>
+      <div className="flex items-center gap-2">
+        <div className="flex-1"><TextSetting value={c[key]} onSave={(v) => void save({ confluence: { [key]: v.trim() } })} mono placeholder="Folder id or link" /></div>
+        <TestButton path="/confluence/test" body={{ folderId: c[key] }} />
+      </div>
+    </Field>
+  );
   return (
     <div className="flex flex-col gap-5">
       <Card title="Confluence" reset="confluence">
         <Field label="Address" hint="e.g. https://<site>.atlassian.net/wiki"><TextSetting value={c.url} onSave={(v) => void save({ confluence: { url: v.trim() } })} mono /></Field>
         <Field label="Email" hint="Your Atlassian account (Cloud). Empty: the token is a Data Center personal token."><TextSetting value={c.email} onSave={(v) => void save({ confluence: { email: v.trim() } })} /></Field>
         <Field label="API token"><SecretInput set={c.keySet} onSave={(v) => void save({ confluence: { key: v } })} /></Field>
-        <Field label="Default project's folder" hint="Id (or link) of the folder whose pages are the default project (CONFLUENCE_FOLDER_ID)."><TextSetting value={c.folderId} onSave={(v) => void save({ confluence: { folderId: v.trim() } })} mono /></Field>
-        <Field label="Check"><TestButton path="/projects/test" body={{ folderId: c.folderId }} /></Field>
+        {folder("Projects folder", "projectsFolderId", "CONFLUENCE_PROJECTS_FOLDER_ID", "One sub-folder per project, named as the project")}
+        {folder("Reports folder", "reportsFolderId", "CONFLUENCE_REPORT_FOLDER_ID", "The team's reports: one page each (its name, link and description)")}
+        {folder("Models folder", "datasetsFolderId", "CONFLUENCE_DATASET_FOLDER_ID", "The team's semantic models: one page each")}
       </Card>
-      <Card title="Projects" aside={<Button variant="outline" size="sm" onClick={() => saveProjects([...others, { id: crypto.randomUUID().slice(0, 8), name: `Project ${others.length + 2}`, folderId: "" }])}><PlusIcon /> Add a project</Button>}>
-        <div className="text-[12.5px] text-muted-foreground">A project is a Confluence folder: the pages of the projects chosen in the chat (top of the assistant) are given to it at the start of each conversation — rules, definitions, vocabulary. The pages are read once and kept: "Refresh the pages" after they change.</div>
-        {c.projects.map((p) => (
-          <div key={p.id} className="flex flex-wrap items-center gap-3 rounded-2xl border p-3">
-            <FolderOpenIcon className="size-4 text-muted-foreground" />
-            {p.id === DEFAULT_PROJECT ? (
-              <span className="w-48 text-[14px] font-medium">{p.name} <span className="text-[12px] text-muted-foreground">(default)</span></span>
-            ) : (
-              <input className="input w-48" defaultValue={p.name} onBlur={(e) => e.target.value !== p.name && saveProjects(others.map((x) => (x.id === p.id ? { ...x, name: e.target.value } : x)))} />
-            )}
-            {p.id === DEFAULT_PROJECT ? (
-              <span className="flex-1 font-mono text-[12.5px] text-muted-foreground">{p.folderId}</span>
-            ) : (
-              <input className="input flex-1 font-mono text-[12.5px]" placeholder="Folder id or link" defaultValue={p.folderId} onBlur={(e) => e.target.value !== p.folderId && saveProjects(others.map((x) => (x.id === p.id ? { ...x, folderId: e.target.value } : x)))} />
-            )}
-            <TestButton path="/projects/test" body={{ folderId: p.folderId }} />
-            {p.id !== DEFAULT_PROJECT && <Button variant="ghost" size="icon-sm" onClick={() => saveProjects(others.filter((x) => x.id !== p.id))} aria-label="Remove"><Trash2Icon /></Button>}
-            <ProjectPages id={p.id} />
-          </div>
-        ))}
-        {!c.projects.length && <div className="text-[13px] text-muted-foreground">No project: set the default project's folder above, or add one.</div>}
-      </Card>
+      <Projects />
     </div>
+  );
+}
+
+/** The catalog of reports or models (Confluence pages): add, rename, describe, refresh, hide for me, remove. */
+function LibrarySettings({ kind }: { kind: LibraryKind }) {
+  const { entries, error } = useLibrary(kind);
+  const [hidden, setHidden] = useHidden(kind);
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState<string>();
+  const run = (key: string, f: () => Promise<unknown>, done?: string) => (setBusy(key), f().then(() => done && toast.success(done), (e) => toast.error(errorText(e))).finally(() => setBusy(undefined)));
+  const what = kind === "report" ? "reports" : "semantic models";
+  return (
+    <Card title={kind === "report" ? "Reports" : "Semantic models"} aside={<div className="flex gap-2"><Button variant="outline" size="sm" disabled={!!busy} onClick={() => run("list", () => refreshLibrary(kind))}>{busy === "list" ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Read again</Button><Button variant="dark" size="sm" onClick={() => setAdding(true)}><PlusIcon /> Add</Button></div>}>
+      <div className="text-[12.5px] text-muted-foreground">The team's {what}, one Confluence page each: its title is the name, its content the Power BI link and a description (what it is for — the assistants use it to choose). Hiding one hides it for you only.</div>
+      {error && <ErrorBox>{error}</ErrorBox>}
+      {!entries && !error && <Loading />}
+      {entries?.map((e) => {
+        const off = !!e.id && hidden.includes(e.id);
+        return (
+          <div key={e.pageId} className={cn("flex flex-col gap-2 rounded-2xl border p-3", off && "opacity-60")}>
+            <div className="flex items-center gap-2">
+              <input className="input h-8 flex-1 font-medium" defaultValue={e.name} onBlur={(x) => x.target.value.trim() && x.target.value.trim() !== e.name && run(e.pageId, () => libraryEdit.change(kind, e.pageId, { name: x.target.value.trim() }), "Renamed")} />
+              {kind === "report" && e.id && <Button variant="ghost" size="sm" disabled={!!busy} title="Read its structure again (kept in this browser)" onClick={() => run(e.pageId, async () => reportStructure(await openReport(e, true), true), "Structure read again")}>{busy === e.pageId ? <Loader2Icon className="animate-spin" /> : <RefreshCwIcon />} Refresh</Button>}
+              {e.id && <Button variant="ghost" size="icon-sm" title={off ? "Show it in my lists" : "Hide it from my lists"} onClick={() => setHidden(off ? hidden.filter((x) => x !== e.id) : [...hidden, e.id!])}>{off ? <EyeIcon /> : <EyeOffIcon />}</Button>}
+              {e.url && <Button variant="ghost" size="icon-sm" asChild title="Open in Power BI"><a href={e.url} target="_blank" rel="noreferrer"><ExternalLinkIcon /></a></Button>}
+              {e.pageUrl && <Button variant="ghost" size="icon-sm" asChild title="Open the Confluence page"><a href={e.pageUrl} target="_blank" rel="noreferrer"><BookOpenTextIcon /></a></Button>}
+              <Button variant="ghost" size="icon-sm" title="Remove from the catalog" disabled={!!busy} onClick={() => confirm(`Remove "${e.name}" from the catalog (its Confluence page goes to the trash)?`) && run(e.pageId, () => libraryEdit.remove(kind, e.pageId), "Removed")}><Trash2Icon /></Button>
+            </div>
+            <textarea className="input h-auto min-h-14 py-1.5 text-[12.5px]" placeholder="What it is for, who uses it, what it shows…" defaultValue={e.description} onBlur={(x) => x.target.value.trim() !== e.description && run(e.pageId, () => libraryEdit.change(kind, e.pageId, { description: x.target.value }), "Description saved")} />
+            {e.error && <div className="text-[12px] text-destructive">{e.error}</div>}
+          </div>
+        );
+      })}
+      {entries && !entries.length && <div className="text-[13px] text-muted-foreground">No {what} yet: add one.</div>}
+      <AddDialog kind={kind} open={adding} onOpenChange={setAdding} onAdd={(link) => libraryEdit.add(kind, link)} />
+    </Card>
   );
 }
 
 function Settings() {
   const s = useSettings();
-  const [tab, setTab] = useState<TabId>("general");
+  // The tab in the address (?tab=reports: "Manage the list" of the screens' pickers).
+  const search = Route.useSearch();
+  const navigate = Route.useNavigate();
+  const tab = (search.tab ?? "general") as TabId;
+  const setTab = (t: TabId) => void navigate({ search: { tab: t }, replace: true });
+  const catalog = !!s?.confluence.catalogEdit;
+  const tabs = [
+    { id: "general" as const, label: "General", icon: <PaletteIcon /> },
+    { id: "ai" as const, label: "AI", icon: <BotIcon /> },
+    { id: "powerbi" as const, label: "Power BI", icon: <span className="text-[11px] font-bold">BI</span> },
+    { id: "confluence" as const, label: "Confluence", icon: <BookOpenTextIcon /> },
+    ...(catalog ? [{ id: "reports" as const, label: "Reports", icon: <BarChart3Icon /> }, { id: "models" as const, label: "Models", icon: <DatabaseIcon /> }] : []),
+  ];
   return (
-    <Workspace screen="settings" title="Settings" tabs={[{ id: "general", label: "General", icon: <PaletteIcon /> }, { id: "ai", label: "AI", icon: <BotIcon /> }, { id: "powerbi", label: "Power BI", icon: <span className="text-[11px] font-bold">BI</span> }, { id: "confluence", label: "Confluence", icon: <BookOpenTextIcon /> }]} tab={tab} onTab={setTab}>
-      <div className="mx-auto max-w-4xl p-6">{!s ? <Loading /> : tab === "general" ? <General s={s} /> : tab === "ai" ? <Ai s={s} /> : tab === "powerbi" ? <PowerBi s={s} /> : <ConfluenceSettings s={s} />}</div>
+    <Workspace screen="settings" title="Settings" tabs={tabs} tab={tab} onTab={setTab}>
+      <div className="mx-auto max-w-4xl p-6">{!s ? <Loading /> : tab === "general" ? <General s={s} /> : tab === "ai" ? <Ai s={s} /> : tab === "powerbi" ? <PowerBi s={s} /> : tab === "reports" && catalog ? <LibrarySettings kind="report" /> : tab === "models" && catalog ? <LibrarySettings kind="dataset" /> : <ConfluenceSettings s={s} />}</div>
     </Workspace>
   );
 }

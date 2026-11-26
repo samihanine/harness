@@ -6,7 +6,7 @@
  */
 import { createStore, del, entries, get, set } from "idb-keyval";
 import { useEffect, useState, useSyncExternalStore } from "react";
-import type { Analysis } from "@shared/analysis";
+import type { Template } from "@shared/slides";
 import type { ChatItem, DatasetRef, FileRef, ReportRef, ScreenId } from "@shared/types";
 import { upload } from "./api";
 
@@ -15,17 +15,23 @@ const db = createStore("hub-v2", "items");
 export type Stored = {
   report: ReportRef & { addedAt: number };
   dataset: DatasetRef & { addedAt: number };
-  analysis: Analysis & { id: string; datasetIds: string[]; files: FileRef[] };
-  /** A deck written in markdown from the template; `reportIds` / `datasetIds`: what its assistant may use. */
+  /** A Data Scientist analysis: its workbook in the user's OneDrive (`itemId`), the models it uses, the files added to it. */
+  analysis: { id: string; title: string; itemId?: string; webUrl?: string; datasetIds: string[]; files: FileRef[]; updatedAt: string };
+  /** A presentation: its content in markdown (shared/slides.ts); `reportIds` / `datasetIds`: what its assistant may use. */
   deck: { id: string; title: string; markdown: string; updatedAt: string; reportIds?: string[]; datasetIds?: string[] };
-  /** An imported PowerPoint (each change a new file: `history` to go back). */
-  pptx: { id: string; name: string; fileId: string; history: string[]; updatedAt: string; reportIds?: string[]; datasetIds?: string[] };
+  /** A visual template of the Presenter (this browser's; exported and imported as JSON). */
+  template: Template;
   /**
    * A conversation with a screen's assistant, about one item. `view`: the report's state when it last
    * answered (page, filters, slicers: a bookmark), shown again when the conversation is opened; `rating` and
    * `comment`: the user's feedback.
    */
   conversation: { id: string; screen: ScreenId; item: string; title: string; items: ChatItem[]; updatedAt: string; createdAt?: string; view?: string; rating?: "up" | "down"; comment?: string };
+  /**
+   * A report of the Builder: the .pbix the user dropped (`fileId`: its latest version, with the changes) and
+   * its private copy in Power BI that the app shows and the assistant changes (`reportId`).
+   */
+  pbix: { id: string; name: string; fileId: string; reportId?: string; datasetId?: string; datasetGroupId?: string; format?: string; live?: boolean; referenceIds?: string[]; updatedAt: string };
   /** A semantic model's structure (tables, columns with value examples, measures, relationships), read once. */
   model: { id: string; info: unknown; at: string };
 };

@@ -13,11 +13,8 @@ import { download, errorText, post } from "./api";
 import { describeError } from "@/tools/browser/report-actions";
 import { ensureFiles, item, projectsOf, readLocal, remove, save, useItems, writeLocal, type Stored } from "./store";
 import { modelsFor } from "./items";
-import { loadSettings } from "./settings";
 import { useScreenSearch } from "./params";
 
-/** Without a choice yet: the default project (the settings' Confluence folder), when there is one. */
-const defaultProjects = async () => (await loadSettings().catch(() => undefined))?.confluence.projects.slice(0, 1).map((p) => p.id) ?? [];
 
 export type BrowserActions = Record<string, (args: any) => Promise<unknown>>;
 type Conversation = Stored["conversation"];
@@ -114,7 +111,7 @@ export function useChat(o: ChatOptions) {
       try {
         const base = await opts.current.scope();
         // With the projects chosen in the chat header, and the models already read (not read again).
-        const projects = projectsOf() ?? (await defaultProjects());
+        const projects = projectsOf() ?? [];
         const ids = [base.report?.datasetId, base.dataset?.id, ...(base.datasets ?? []).map((d) => d.id)];
         const scope: ChatScope = { ...base, projects, models: { ...(await modelsFor(ids)), ...(base.models ?? {}) } };
         await ensureFiles([...files, ...(scope.files ?? [])]);

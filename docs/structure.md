@@ -7,16 +7,18 @@ server/                 the Bun server (API, AI, Microsoft, Confluence)
   files.ts              files in .local/files (uploads, captures, PowerPoint versions)
   ms/                   device-code sign-in (auth.ts), Power BI / Fabric / Graph REST (api.ts)
   pbi/                  DAX with limits, model reading, definitions (TMDL, PBIR, PBIR-Legacy as PBIR: legacy.ts),
-                        report structure, Builder draft, visual specs, layout, measures, catalog, access
+                        report structure, Builder draft and .pbix (pbix.ts), visual specs, layout, catalog, resolve
   llm/                  provider-neutral messages; Anthropic, Maia (TrustLayer), Claude Code
   agent/                the agent loop (run.ts), each screen's prompt and tools (screens.ts)
   capture/browser.ts    headless browser: report pictures, embedded structures, PDF pages
-  pptx/                 markdown deck → PowerPoint (deck.ts), existing .pptx edits (ooxml.ts), pictures (render.ts)
-  data/engine.ts        the Data Scientist's SQL database (SQLite in memory)
+  slides/render.ts      presentations: pictures, PDF and native PowerPoint of templates × markdown
+  pptx/                 reading an attached .pptx (ooxml.ts) and its pictures through OneDrive (render.ts)
+  workbook/             the Data Scientist's workbook: Excel's API, its file's XML, its HTML preview
+  teams/                the Teams assistant: Graph chat calls (api.ts), the watching loop (bot.ts)
+  library.ts            the catalog of reports and models (Confluence pages)
   confluence.ts         Confluence REST, markdown ⇄ storage format
   projects.ts           the projects' Confluence pages (kept in .local/projects) as a conversation's context
-  excel-export.ts       an analysis as an Excel workbook
-shared/                 types and formats used by both sides (chat events, deck markdown, analyses)
+shared/                 types and formats used by both sides (chat events, slides and templates, links)
 src/
   routes/               one file per screen
   components/           Workspace, ChatPanel, pickers, screen icons, shadcn ui/

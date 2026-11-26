@@ -10,7 +10,7 @@ import { Markdown } from "./markdown";
 import { Button } from "./ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
-import { refreshProject, useProjectsStatus } from "@/lib/projects";
+import { refreshProject, useProjectList } from "@/lib/projects";
 import { Mascot, outfitOf } from "@/features/mascot";
 import type { useChat } from "@/lib/chat";
 import { errorText, fileUrl } from "@/lib/api";
@@ -21,18 +21,17 @@ import { cn } from "@/lib/utils";
 type Chat = ReturnType<typeof useChat>;
 type Assistant = Extract<ChatItem, { kind: "assistant" }>;
 
-const LABELS: Record<ScreenId, string> = { trainer: "Trainer", builder: "Builder", scientist: "Data Scientist", presenter: "Presenter" };
+const LABELS: Record<ScreenId, string> = { trainer: "Trainer", builder: "Builder", scientist: "Data Scientist", presenter: "Presenter", teams: "Teams" };
 
 /** The projects whose Confluence pages are the context (global choice, several allowed). */
 function ProjectsMenu() {
-  const settings = useSettings();
   const [chosen, setChosen] = useProjects();
   const [open, setOpen] = useState(false);
-  const status = useProjectsStatus(open);
+  const { projects } = useProjectList();
   const [busy, setBusy] = useState(false);
-  const all = settings?.confluence.projects ?? [];
+  const all = projects ?? [];
   if (!all.length) return null;
-  const ids = chosen ?? all.slice(0, 1).map((p) => p.id);
+  const ids = (chosen ?? []).filter((id) => all.some((p) => p.id === id));
   const names = all.filter((p) => ids.includes(p.id)).map((p) => p.name);
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -46,12 +45,12 @@ function ProjectsMenu() {
         <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Projects: their Confluence pages (read once and kept) are given to the assistant at the start of a conversation.</div>
         {all.map((p) => {
           const on = ids.includes(p.id);
-          const st = status?.find((x) => x.id === p.id);
+          const st = p;
           return (
             <DropdownMenuItem key={p.id} onSelect={(e) => (e.preventDefault(), setChosen(on ? ids.filter((x) => x !== p.id) : [...ids, p.id]))}>
               <span className={cn("flex size-4 items-center justify-center rounded border", on && "border-foreground bg-foreground text-background")}>{on && <CheckIcon className="size-3" />}</span>
               <span className="flex-1 truncate">{p.name}</span>
-              {st && <span className="text-[11px] text-muted-foreground">{st.error ? "!" : `${st.pages} p.`}</span>}
+              {st.error ? <span className="text-[11px] text-destructive">!</span> : st.pages !== undefined && <span className="text-[11px] text-muted-foreground">{st.pages} p.</span>}
               {st?.url && (
                 <a href={st.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} title="Open the folder in Confluence" className="text-muted-foreground hover:text-foreground">
                   <ExternalLinkIcon className="size-3.5" />
@@ -233,7 +232,6 @@ const TOOL_NAMES: Record<string, string> = {
   visual_data: "Read a visual's data",
   look_at_report: "Looked at the report",
   report_structure: "Read a report's structure",
-  list_reports: "Listed reports",
   report_overview: "Read the draft",
   add_page: "Added a page",
   add_visual: "Added a visual",
@@ -241,6 +239,11 @@ const TOOL_NAMES: Record<string, string> = {
   format_visual: "Formatted a visual",
   format_options: "Format options",
   layout_page: "Laid out a page",
+  place_visuals: "Placed visuals",
+  report_measure: "Saved a report measure",
+  replace_text: "Replaced texts",
+  list_reports: "Read the catalog",
+  read_project_page: "Read a project page",
   remove: "Removed",
   save_report: "Saved the report",
   discard_changes: "Discarded changes",

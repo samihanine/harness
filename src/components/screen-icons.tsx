@@ -4,7 +4,6 @@
  * on the parent). Inspired by the products' logos, not copies of them.
  */
 import type { ScreenId } from "@shared/types";
-import { D_PATH, D_VIEWBOX } from "./dior-d";
 
 const Bars = () => (
   <g>
@@ -47,6 +46,16 @@ export function ScreenIcon({ screen, className = "size-[26px]" }: { screen: Scre
           <path d="M8 7.5l8 9M16 7.5l-8 9" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" className="origin-center transition-transform duration-300 group-hover:rotate-90 group-hover:scale-90" />
         </svg>
       );
+    case "teams":
+      return (
+        <svg viewBox="0 0 24 24" className={className} aria-hidden>
+          <circle cx="18" cy="7" r="2.6" fill="#7B83EB" className="origin-[18px_7px] transition-transform duration-300 group-hover:scale-125" />
+          <path d="M15.5 10.5h5a1.5 1.5 0 0 1 1.5 1.5v4a3.5 3.5 0 0 1-6.5 1.8" fill="#7B83EB" />
+          <circle cx="12" cy="5.8" r="3" fill="#5059C9" />
+          <rect x="2" y="7" width="12" height="12" rx="2" fill="#4B53BC" className="transition-transform duration-300 group-hover:-translate-y-0.5" />
+          <path d="M5 10.3h6M8 10.3v6" stroke="#fff" strokeWidth="1.9" strokeLinecap="round" />
+        </svg>
+      );
     case "presenter":
       return (
         <svg viewBox="0 0 24 24" className={className} aria-hidden>
@@ -57,10 +66,3 @@ export function ScreenIcon({ screen, className = "size-[26px]" }: { screen: Scre
       );
   }
 }
-
-/** The app's logo: the D of the Dior wordmark. */
-export const DiorD = ({ className }: { className?: string }) => (
-  <svg viewBox={D_VIEWBOX} className={className} aria-hidden>
-    <path d={D_PATH} fill="currentColor" fillRule="evenodd" />
-  </svg>
-);

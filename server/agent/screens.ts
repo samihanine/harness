@@ -3,7 +3,6 @@ import type { ChatScope, ScreenId } from "@shared/types";
 import type { Tool, ToolContext } from "@/tools/tool";
 import { slicerBriefing } from "@/tools/trainer/briefing";
 import { readProjectPage } from "@/tools/common/read-context";
-import { EDITOR_TOOLS } from "@/tools/editor/editor";
 import { modelStructure } from "@/tools/model/model-structure";
 import { describeTable } from "@/tools/model/describe-table";
 import { searchModel } from "@/tools/model/search-model";
@@ -26,22 +25,20 @@ import { formatOptions, formatVisual } from "@/tools/builder/format-visual";
 import { layoutPage, placeVisuals } from "@/tools/builder/layout-page";
 import { removeItem } from "@/tools/builder/remove";
 import { discardChanges, saveReport } from "@/tools/builder/save-report";
-import { deleteMeasure, saveMeasure } from "@/tools/datasets/measures";
-import { listSources } from "@/tools/scientist/sources";
-import { loadDax, loadFile } from "@/tools/scientist/load";
-import { createStep, sqlQuery } from "@/tools/scientist/sql";
-import { readAnalysis, removeBlock, setBlock, setTitle } from "@/tools/scientist/blocks";
-import { capturePowerbi } from "@/tools/deck/capture-powerbi";
-import { editSlides, readDeck, writeDeck } from "@/tools/deck/deck";
-import { lookAtDeck } from "@/tools/deck/look-at-deck";
-import { lookAtSlides, pptxStructure, viewPicture } from "@/tools/pptx/structure";
-import { addPicture, addTemplateSlide, addText, replacePicture, replaceText, setText, shapeAction, slideAction } from "@/tools/pptx/edit";
+import { lookAtSheet, readRange, workbookInfo } from "@/tools/workbook/read";
+import { addChart, conditionalFormat, createTable, dataValidation, formatRange, sheetAction, writeRange } from "@/tools/workbook/write";
+import { loadDax, modelGrid } from "@/tools/workbook/model";
 import { TRAINER } from "@/prompts/trainer";
-import { BUILDER, BUILDER_EDITOR } from "@/prompts/builder";
+import { BUILDER } from "@/prompts/builder";
+import { reportMeasure } from "@/tools/builder/report-measure";
 import { SCIENTIST } from "@/prompts/scientist";
-import { PRESENTER_CREATE, PRESENTER_EDIT } from "@/prompts/presenter";
+import { PRESENTER } from "@/prompts/presenter";
+import { teamsPrompt } from "@/prompts/teams";
+import { TEAMS_TOOLS } from "@/tools/teams/teams";
+import { SLIDE_TOOLS } from "@/tools/slides/slides";
 
-export type ScreenAgent = { system: (scope: ChatScope) => string; tools: (scope: ChatScope) => Tool[]; briefing?: (ctx: ToolContext) => Promise<string | undefined> };
+/** `chatMember`: no clarification question first (an assistant in a chat answers at once, or not at all). */
+export type ScreenAgent = { system: (scope: ChatScope) => string; tools: (scope: ChatScope) => Tool[]; briefing?: (ctx: ToolContext) => Promise<string | undefined>; chatMember?: boolean };
 
 const modelTools = [modelStructure, describeTable, searchModel, runDax];
 const hasModel = (s: ChatScope) => !!(s.dataset || s.report?.datasetId || s.datasets?.length);
@@ -51,33 +48,30 @@ const AGENTS: Record<ScreenId, ScreenAgent> = {
   trainer: {
     system: () => TRAINER,
     briefing: slicerBriefing,
-    tools: (s) => withContext(s, [readView, setSlicer, setFilter, goToPage, resetView, visualData, lookAtReport, reportStructure, ...(hasModel(s) ? modelTools : [])]),
+    tools: (s) => withContext(s, [readView, setSlicer, setFilter, goToPage, resetView, visualData, lookAtReport, reportStructure, listReports, ...(hasModel(s) ? modelTools : [])]),
   },
   builder: {
-    system: (s) => (s.report?.access === "editor" ? BUILDER_EDITOR : BUILDER),
+    system: () => BUILDER,
     tools: (s) => {
-      const read = [lookAtReport, reportStructure, listReports, ...(hasModel(s) ? [...modelTools, saveMeasure] : [])];
-      // Editable definition: the PBIR tools; editable in the Power BI editor only: the editor tools; else reading.
-      if (s.report?.access === "edit") return withContext(s, [reportOverview, addPage, addVisual, updateVisual, formatVisual, formatOptions, layoutPage, placeVisuals, removeItem, saveReport, discardChanges, readDefinitionFile, writeDefinitionFile, ...read]);
-      if (s.report?.access === "editor") return withContext(s, [...EDITOR_TOOLS, ...read]);
+      const read = [lookAtReport, reportStructure, listReports, ...(hasModel(s) ? modelTools : [])];
+      // The copy of the user's .pbix (My workspace): its definition is the draft; the model is never changed.
+      if (s.report) return withContext(s, [reportOverview, addPage, addVisual, updateVisual, formatVisual, formatOptions, layoutPage, placeVisuals, removeItem, reportMeasure, saveReport, discardChanges, readDefinitionFile, writeDefinitionFile, ...read]);
       return withContext(s, read);
     },
   },
   scientist: {
     system: () => SCIENTIST,
-    tools: (s) => withContext(s, [listSources, loadDax, loadFile, sqlQuery, createStep, setBlock, removeBlock, readAnalysis, setTitle, ...(hasModel(s) ? [...modelTools, saveMeasure, deleteMeasure] : [])]),
+    tools: (s) => withContext(s, [workbookInfo, readRange, lookAtSheet, writeRange, formatRange, conditionalFormat, dataValidation, sheetAction, createTable, addChart, ...(hasModel(s) ? [...modelTools, modelGrid, loadDax] : [])]),
+  },
+  teams: {
+    chatMember: true,
+    system: (s) => teamsPrompt((s.doc ?? {}) as Parameters<typeof teamsPrompt>[0]),
+    // Reading only: the reports and models chosen for it, the projects' pages, the chat.
+    tools: (s) => withContext(s, [...TEAMS_TOOLS, listReports, reportStructure, lookAtReport, ...(hasModel(s) ? modelTools : [])]),
   },
   presenter: {
-    system: (s) => (s.mode === "edit" ? PRESENTER_EDIT : PRESENTER_CREATE),
-    tools: (s) =>
-      withContext(s, [
-        ...(s.mode === "edit" ? [pptxStructure, lookAtSlides, viewPicture, setText, replaceText, replacePicture, addPicture, addText, shapeAction, slideAction, addTemplateSlide] : [readDeck, writeDeck, editSlides, lookAtDeck]),
-        capturePowerbi,
-        listReports,
-        reportStructure,
-        lookAtReport,
-        ...(hasModel(s) ? modelTools : []),
-      ]),
+    system: () => PRESENTER,
+    tools: (s) => withContext(s, [...SLIDE_TOOLS, listReports, reportStructure, lookAtReport, ...(hasModel(s) ? modelTools : [])]),
   },
 };
 

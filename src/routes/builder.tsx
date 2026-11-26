@@ -1,186 +1,205 @@
-/** Builder: the assistant builds and changes a Power BI report (its PBIR definition), shown live on the right. */
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReportAccess } from "@shared/types";
+/**
+ * Builder: the user drops a .pbix; it is imported privately into their My workspace and shown embedded, as Power
+ * BI draws it; the assistant changes its definition (every option of Power BI Desktop: pages, visuals,
+ * formatting, report measures — never the model); the user downloads the .pbix with the changes, its
+ * connection to the model kept.
+ */
+import { useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { BarChart3Icon, BlocksIcon, CheckIcon, DatabaseIcon, ExternalLinkIcon, FileJsonIcon, LibraryIcon, Loader2Icon, PencilRulerIcon, PlusIcon } from "lucide-react";
+import { BarChart3Icon, BlocksIcon, DatabaseIcon, DownloadIcon, FileJsonIcon, LibraryIcon, Loader2Icon, UploadIcon } from "lucide-react";
 import { toast } from "sonner";
+import type { ReportRef } from "@shared/types";
 import { Workspace } from "@/components/workspace";
 import { ChatPanel } from "@/components/chat-panel";
-import { AddButton, AddDialog, ItemPicker, addReport, usePicked } from "@/components/pickers";
-import { Empty } from "@/components/common";
+import { CatalogChecklist } from "@/components/pickers";
+import { DocPicker } from "@/components/doc-picker";
+import { Empty, ErrorBox } from "@/components/common";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ReportFrame } from "@/features/views/report-view";
 import { ModelView } from "@/features/views/model-view";
 import { StructureView } from "@/features/views/structure-view";
-import { editorActions } from "@/tools/browser/editor-actions";
 import { captureView, showView, useEmbed, type Report } from "@/features/powerbi/embed";
 import { reportActions } from "@/tools/browser/report-actions";
 import { useChat } from "@/lib/chat";
-import { screenSearch } from "@/lib/params";
-import { errorText, get, post } from "@/lib/api";
-import { save, useItems, useLocal } from "@/lib/store";
-import { withStructure } from "@/lib/items";
+import { screenSearch, useItemParam } from "@/lib/params";
+import { download, errorText, fileUrl, post } from "@/lib/api";
+import { item, keepFile, keepServerFile, remove, save, useItems, type Stored } from "@/lib/store";
+import { reportStructure, withStructure } from "@/lib/items";
+import { openReport, useLibrary } from "@/lib/library";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/builder")({ component: Builder, validateSearch: screenSearch });
 
 type TabId = "report" | "structure" | "model" | "references";
+type Doc = Stored["pbix"];
+type Opened = ReportRef & { format?: string; live?: boolean };
 
-function NewReport({ open, onOpenChange, onCreated }: { open: boolean; onOpenChange: (o: boolean) => void; onCreated: (id: string) => void }) {
-  const [name, setName] = useState("New report");
-  const [models, setModels] = useState<{ id: string; name: string; groupId?: string; workspace: string }[]>();
-  const [model, setModel] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  const [query, setQuery] = useState("");
-  if (open && !models) void get("/powerbi/datasets").then(setModels, (e) => toast.error(errorText(e)));
-  const create = async () => {
-    const m = models?.find((x) => x.id === model);
-    if (!m) return;
-    setBusy(true);
-    try {
-      const r = await post<{ id: string; groupId?: string }>("/powerbi/new-report", { name, datasetId: m.id, groupId: m.groupId });
-      await addReport(r);
-      onCreated(r.id);
-      onOpenChange(false);
-    } catch (e) {
-      toast.error(errorText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg rounded-3xl">
-        <DialogHeader>
-          <DialogTitle>New report</DialogTitle>
-        </DialogHeader>
-        <label className="label">Name</label>
-        <input className="input" value={name} onChange={(e) => setName(e.target.value)} />
-        <label className="label">Semantic model</label>
-        <input className="input" placeholder="Search" value={query} onChange={(e) => setQuery(e.target.value)} />
-        <div className="max-h-60 overflow-y-auto rounded-xl border">
-          {!models && <div className="flex items-center gap-2 p-3 text-[13px] text-muted-foreground"><Loader2Icon className="size-4 animate-spin" /> Loading…</div>}
-          {models?.filter((m) => `${m.name} ${m.workspace}`.toLowerCase().includes(query.toLowerCase())).map((m) => (
-            <button key={m.id} onClick={() => setModel(m.id)} className={cn("flex w-full items-center gap-2 px-3 py-2 text-left text-[13.5px] hover:bg-muted", model === m.id && "bg-muted")}>
-              <CheckIcon className={cn("size-4", model === m.id ? "opacity-100" : "opacity-0")} />
-              <span className="flex-1">{m.name}</span>
-              <span className="text-[12px] text-muted-foreground">{m.workspace}</span>
-            </button>
-          ))}
-        </div>
-        <Button variant="dark" disabled={!model || !name.trim() || busy} onClick={create}>
-          {busy ? <Loader2Icon className="animate-spin" /> : <PlusIcon />} Create
-        </Button>
-      </DialogContent>
-    </Dialog>
-  );
+/** Imports a .pbix (or its latest version) into Power BI: the copy the app shows and the assistant changes. */
+async function openCopy(d: Doc) {
+  const r = await post<Opened>("/pbix/open", { fileId: d.fileId, name: d.name, key: d.id });
+  const next: Doc = { ...d, reportId: r.id, datasetId: r.datasetId, datasetGroupId: r.datasetGroupId, format: r.format, live: r.live, updatedAt: new Date().toISOString() };
+  await save("pbix", next);
+  // The copy as a report of this browser: its structure kept like the others'.
+  await save("report", { id: r.id, name: d.name, datasetId: r.datasetId, datasetGroupId: r.datasetGroupId, access: "edit", addedAt: Date.now() });
+  void reportStructure({ id: r.id, name: d.name }, true).catch(() => undefined);
+  return next;
 }
 
-function References({ current, ids, setIds }: { current?: string; ids: string[]; setIds: (v: string[]) => void }) {
-  const reports = (useItems("report") ?? []).filter((r) => r.id !== current);
-  const [adding, setAdding] = useState(false);
+function Drop({ onFiles, busy }: { onFiles: (f: FileList | File[]) => void; busy: boolean }) {
+  const input = useRef<HTMLInputElement>(null);
+  const [over, setOver] = useState(false);
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4 p-6">
-      <div className="flex items-center gap-3">
-        <div className="flex-1">
-          <div className="text-[15px] font-semibold">Reference reports</div>
-          <div className="text-[13px] text-muted-foreground">The assistant takes them as inspiration (layout, visuals, style). Editable ones give it their whole definition; view-only ones, what they show.</div>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => setAdding(true)}><PlusIcon /> Add a report</Button>
-      </div>
-      {reports.length === 0 && <Empty icon={<LibraryIcon />} title="No other report">Add reports to use them as references.</Empty>}
-      {reports.map((r) => {
-        const on = ids.includes(r.id);
-        return (
-          <button key={r.id} onClick={() => setIds(on ? ids.filter((x) => x !== r.id) : [...ids, r.id])} className={cn("flex items-center gap-3 rounded-2xl border px-4 py-3 text-left", on && "border-foreground/40 bg-muted/50")}>
-            <span className={cn("flex size-5 items-center justify-center rounded-md border", on && "border-foreground bg-foreground text-background")}>{on && <CheckIcon className="size-3.5" />}</span>
-            <span className="flex-1 text-[14px]">{r.name}</span>
-            <span className="badge bg-muted text-muted-foreground">{r.access === "edit" ? "full definition" : "view only"}</span>
-          </button>
-        );
-      })}
-      <AddDialog kind="report" open={adding} onOpenChange={setAdding} onAdded={(id) => setIds([...ids, id])} />
+    <div
+      onDragOver={(e) => (e.preventDefault(), setOver(true))}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => (e.preventDefault(), setOver(false), e.dataTransfer.files.length && onFiles(e.dataTransfer.files))}
+      className={cn("m-6 flex flex-1 flex-col items-center justify-center gap-3 rounded-3xl border-2 border-dashed p-10 text-center", over ? "border-primary bg-primary/5" : "border-border")}
+    >
+      <BlocksIcon className="size-8 text-muted-foreground" />
+      <div className="text-[16px] font-semibold">Drop a Power BI file (.pbix)</div>
+      <div className="max-w-md text-[13px] text-muted-foreground">A report connected to a semantic model (the Build permission is enough). It is shown here as Power BI draws it; the assistant changes it with every option of Power BI Desktop; you download it with its connection kept.</div>
+      <input ref={input} type="file" hidden accept=".pbix" onChange={(e) => e.target.files?.length && onFiles(e.target.files)} />
+      <Button variant="dark" size="sm" disabled={busy} onClick={() => input.current?.click()}>{busy ? <Loader2Icon className="animate-spin" /> : <UploadIcon />} Choose a .pbix</Button>
     </div>
   );
 }
 
 function Builder() {
-  const { items, current, select } = usePicked("report", "builder");
-  const all = useItems("report") ?? [];
+  const docs = (useItems("pbix") ?? []).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const [id, setId] = useItemParam("builder:current");
+  const doc = docs.find((d) => d.id === id) ?? docs[0];
   const [tab, setTab] = useState<TabId>("report");
   const [reload, setReload] = useState(0);
-  const [creating, setCreating] = useState(false);
-  const [refIds, setRefIds] = useLocal<string[]>(`builder:refs:${current?.id}`, []);
-  // Editor mode: the report opens in the Power BI editor (its definition cannot be written by the API).
-  const editorMode = current?.access === "editor";
-  const embed = useEmbed(current, reload, editorMode ? "edit" : "view");
+  const [busy, setBusy] = useState<string>();
+  const [error, setError] = useState<string>();
+  const report: ReportRef | undefined = useMemo(() => (doc?.reportId ? { id: doc.reportId, name: doc.name, datasetId: doc.datasetId, datasetGroupId: doc.datasetGroupId, access: "edit" } : undefined), [doc?.reportId, doc?.name, doc?.datasetId, doc?.datasetGroupId]);
+  const embed = useEmbed(report, reload);
   const reportRef = useRef<Report | undefined>(undefined);
   reportRef.current = embed.report;
-  const references = all.filter((r) => refIds.includes(r.id));
+  const { entries } = useLibrary("report");
+  const referenceIds = doc?.referenceIds ?? [];
+
+  /** The open item's latest version saved as a file (after each save of the assistant: the .pbix to download). */
+  const snapshot = async (d: Doc) => {
+    if (!d.reportId) return d;
+    const f = await post<{ id: string; name: string }>("/pbix/save", { fileId: d.fileId, reportId: d.reportId, name: d.name });
+    await keepServerFile(f as never);
+    const next = { ...((await item("pbix", d.id)) ?? d), fileId: f.id, updatedAt: new Date().toISOString() };
+    await save("pbix", next);
+    return next;
+  };
+
+  const add = async (files: FileList | File[]) => {
+    const f = Array.from(files).find((x) => /\.pbix$/i.test(x.name));
+    if (!f) return void toast.error("Drop a .pbix file.");
+    setBusy("open");
+    setError(undefined);
+    try {
+      const ref = await keepFile(f, f.name);
+      const d: Doc = { id: crypto.randomUUID(), name: f.name.replace(/\.pbix$/i, ""), fileId: ref.id, updatedAt: new Date().toISOString() };
+      await save("pbix", d);
+      setId(d.id);
+      await openCopy(d);
+      setTab("report");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
   const chat = useChat({
     screen: "builder",
-    item: current?.id ?? "none",
-    scope: async () => ({ report: await withStructure(current), references: await Promise.all(references.map(async (r) => (await withStructure(r))!)) }),
-    actions: () => ({ ...reportActions(() => reportRef.current, embed.ready), ...editorActions(() => reportRef.current, embed.ready) }),
-    onEffect: (name) => name === "reload" && setReload((n) => n + 1),
+    item: doc?.id ?? "none",
+    scope: async () => {
+      const refs = await Promise.all((entries ?? []).filter((e) => e.id && referenceIds.includes(e.id)).map(async (e) => (await withStructure(await openReport(e)))!));
+      return { report: await withStructure(report), references: refs };
+    },
+    actions: () => reportActions(() => reportRef.current, embed.ready),
+    onEffect: (name) => {
+      if (name !== "reload") return;
+      setReload((n) => n + 1);
+      // The .pbix to download follows the changes (in the background).
+      if (doc) void snapshot(doc).catch(() => undefined);
+    },
     view: () => captureView(reportRef.current),
-    restoreView: (state) => showView(() => reportRef.current, current!.id, embed.ready, state),
+    restoreView: (state) => showView(() => reportRef.current, report!.id, embed.ready, state),
   });
-  const model = useMemo(() => (current?.datasetId ? { id: current.datasetId, groupId: current.datasetGroupId } : undefined), [current?.datasetId, current?.datasetGroupId]);
-  // A report kept as not editable is checked again (its rights, or what the Builder can write, may have changed).
-  useEffect(() => {
-    if (!current || current.access === "edit") return;
-    void post<Record<string, ReportAccess>>("/powerbi/access", [{ id: current.id, groupId: current.groupId, appId: current.appId }]).then((a) => {
-      if (a[current.id] === "edit") void save("report", { ...current, access: "edit" });
-    }, () => undefined);
-  }, [current?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dl = async () => {
+    if (!doc) return;
+    setBusy("download");
+    try {
+      const d = await snapshot(doc);
+      const blob = await (await fetch(fileUrl(d.fileId))).blob();
+      download(blob, `${d.name}.pbix`);
+    } catch (e) {
+      toast.error(errorText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+  // The copy may be gone (removed in Power BI): imported again from the latest version.
+  const reopen = async () => {
+    if (!doc) return;
+    setBusy("open");
+    setError(undefined);
+    try {
+      await openCopy(doc);
+      setReload((n) => n + 1);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(undefined);
+    }
+  };
+  const removeDoc = async (x: string) => {
+    const d = docs.find((y) => y.id === x);
+    if (d?.reportId) void post("/pbix/forget", { reportId: d.reportId }).catch(() => undefined);
+    await remove("pbix", x);
+  };
+
+  const model = useMemo(() => (doc?.datasetId ? { id: doc.datasetId, groupId: doc.datasetGroupId } : undefined), [doc?.datasetId, doc?.datasetGroupId]);
   return (
     <Workspace
       screen="builder"
       title="Builder"
-      item={<ItemPicker kind="report" items={items} current={current} onSelect={select} editable extra={(r) => (r.access === "view" ? "view only" : r.access === "editor" ? "editor mode" : undefined)} />}
+      item={<DocPicker items={docs} current={doc} name={(d) => d.name} onSelect={setId} onCreate={() => setId("")} onDelete={(x) => void removeDoc(x)} onRename={(d, name) => void save("pbix", { ...d, name })} createLabel="Open another .pbix…" empty="No report" />}
       actions={
-        <>
-          <Button variant="dark" size="sm" onClick={() => setCreating(true)}><PlusIcon /> New report</Button>
-          {current?.webUrl && (
-            <Button variant="outline" size="sm" asChild>
-              <a href={current.webUrl} target="_blank" rel="noreferrer"><ExternalLinkIcon /> Power BI</a>
-            </Button>
-          )}
-        </>
+        doc && (
+          <Button variant="dark" size="sm" disabled={!!busy || !doc.reportId} onClick={() => void dl()}>
+            {busy === "download" ? <Loader2Icon className="animate-spin" /> : <DownloadIcon />} Download .pbix
+          </Button>
+        )
       }
-      tabs={[{ id: "report", label: "Report", icon: <BarChart3Icon /> }, { id: "structure", label: "Structure", icon: <FileJsonIcon /> }, { id: "model", label: "Semantic model", icon: <DatabaseIcon /> }, { id: "references", label: "References", icon: <LibraryIcon />, count: references.length || undefined }]}
+      tabs={doc ? [{ id: "report", label: "Report", icon: <BarChart3Icon /> }, { id: "structure", label: "Structure", icon: <FileJsonIcon /> }, { id: "model", label: "Semantic model", icon: <DatabaseIcon /> }, { id: "references", label: "References", icon: <LibraryIcon />, count: referenceIds.length || undefined }] : undefined}
       tab={tab}
       onTab={setTab}
       scroll={false}
-      chat={<ChatPanel chat={chat} screen="builder" itemLabel={(id) => all.find((r) => r.id === id)?.name} disabled={!current ? "Choose or create a report first" : current.access === "view" ? "This report is view only: choose one you can edit, or try the editor mode" : undefined} placeholder="Describe the page to build, or drop a screenshot to redo…" suggestions={["Build an overview page with the key figures", "Redo the page of this screenshot (attach it)", "Make this page look like my reference report"]} />}
+      chat={<ChatPanel chat={chat} screen="builder" itemLabel={(x) => docs.find((d) => d.id === x)?.name} disabled={!doc ? "Drop a .pbix first" : !doc.reportId ? "Opening the report…" : undefined} placeholder="Describe the page to build, or drop a screenshot to redo…" suggestions={["Build an overview page with the key figures", "Redo the page of this screenshot (attach it)", "Make this page look like my reference report"]} />}
     >
-      {!current ? (
-        <Empty icon={<BlocksIcon />} title="Choose or create a report">Pick a report you can edit, or create one on a semantic model: the assistant builds its pages.<div><AddButton kind="report" onAdded={select} editable /></div></Empty>
+      {!doc || id === "" ? (
+        <div className="flex min-h-0 flex-1 flex-col">
+          {error && <div className="mx-6 mt-6"><ErrorBox>{error}</ErrorBox></div>}
+          <Drop onFiles={(f) => void add(f)} busy={busy === "open"} />
+        </div>
       ) : (
         <>
           <div className={cn("min-h-0 flex-1 flex-col", tab === "report" ? "flex" : "hidden")}>
-            {current.access === "view" && (
-              <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl border bg-muted/40 px-4 py-2.5 text-[13px]">
-                <span className="flex-1">The API gives no definition of this report. If you can edit it in Power BI, the assistant can work in the Power BI editor instead.</span>
-                <Button variant="dark" size="sm" onClick={() => void save("report", { ...current, access: "editor" })}><PencilRulerIcon /> Try the editor mode</Button>
+            {doc.live === false && <div className="mx-3 mt-3 rounded-2xl bg-muted/50 px-4 py-2 text-[12.5px]">This file holds its own model (imported data): the report is changed, its model stays as it is.</div>}
+            {(error || embed.error) && (
+              <div className="mx-3 mt-3 flex items-center gap-3">
+                <ErrorBox className="flex-1">{error ?? embed.error}</ErrorBox>
+                <Button variant="outline" size="sm" disabled={!!busy} onClick={() => void reopen()}>{busy === "open" ? <Loader2Icon className="animate-spin" /> : null} Open it again</Button>
               </div>
             )}
-            {editorMode && (
-              <div className="mx-3 mt-3 flex items-center gap-3 rounded-2xl bg-primary/10 px-4 py-2 text-[12.5px]">
-                <span className="flex-1">{embed.error ? "Power BI refused to open this report in its editor: you cannot edit it." : "Editor mode: the assistant changes this report live in the Power BI editor, then saves it."}</span>
-                {embed.error && <Button variant="outline" size="sm" onClick={() => void save("report", { ...current, access: "view" })}>Back to view only</Button>}
-              </div>
-            )}
-            <ReportFrame embed={embed} refOf={current} />
+            {!doc.reportId ? <Empty icon={<Loader2Icon className="animate-spin" />} title="Opening the report in Power BI…">The file is imported into your My workspace (private) to be shown here.</Empty> : <ReportFrame embed={embed} refOf={report} />}
           </div>
-          {tab === "structure" && <div className="min-h-0 flex-1 overflow-auto"><StructureView report={current} /></div>}
-          {tab === "model" && <div className="min-h-0 flex-1 overflow-auto"><ModelView refOf={model} name={current.name} /></div>}
-          {tab === "references" && <div className="min-h-0 flex-1 overflow-auto"><References current={current.id} ids={refIds} setIds={setRefIds} /></div>}
+          {tab === "structure" && <div className="min-h-0 flex-1 overflow-auto"><StructureView report={report} /></div>}
+          {tab === "model" && <div className="min-h-0 flex-1 overflow-auto"><ModelView refOf={model} name={doc.name} /></div>}
+          {tab === "references" && <div className="min-h-0 flex-1 overflow-auto"><CatalogChecklist kind="report" ids={referenceIds} setIds={(ids) => void save("pbix", { ...doc, referenceIds: ids })} title="Reference reports" hint="The assistant takes them as inspiration (layout, visuals, style): their structure, and what they show." /></div>}
         </>
       )}
-      <NewReport open={creating} onOpenChange={setCreating} onCreated={select} />
     </Workspace>
   );
 }
